@@ -1,0 +1,23 @@
+{
+  "name": "conquest-of-europa",
+  "version": "1.0.0",
+  "description": "Multiplayer top-down RTS on a map of Europe",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "build-map": "node tools/build-map.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "topojson-client": "^3.1.0",
+    "world-atlas": "^2.0.2"
+  },
+  "engines": {
+    "node": ">=20.16"
+  }
+}

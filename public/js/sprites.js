@@ -1,0 +1,383 @@
+// Procedurally drawn, cached sprites: unit cones with type icons, and castles.
+// Sprites are 64x64 logical px, rendered at 2x for crisp scaling.
+import { UNIT_CLASSES } from './units/index.js';
+import { UPGRADE_TYPES } from '/shared/config.js';
+
+const RES = 2;
+const SIZE = 64;
+const INK = '#1c130b';
+
+// Unit cone geometry (logical px). The unit's position maps to the base centre.
+export const CONE = { cx: 32, by: 46, rx: 22, ry: 10, apex: 25 };
+// Castle anchor: the city position maps to this point of the sprite.
+export const CASTLE_ANCHOR = { x: 32, y: 47 };
+
+const unitCache = new Map();
+const castleCache = new Map();
+const urlCache = new Map();
+
+function rgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+export function mix(hex, target, t) {
+  const c = rgb(hex);
+  return `rgb(${c.map((v, i) => Math.round(v + (target[i] - v) * t)).join(',')})`;
+}
+const lighten = (hex, t) => mix(hex, [255, 255, 255], t);
+const darken = (hex, t) => mix(hex, [0, 0, 0], t);
+
+function makeCanvas() {
+  const c = document.createElement('canvas');
+  c.width = c.height = SIZE * RES;
+  const ctx = c.getContext('2d');
+  ctx.scale(RES, RES);
+  return [c, ctx];
+}
+
+// ------------------------------------------------------------------ icons
+// Each unit class (js/units/*.js) draws its own emblem in a 100x100 box.
+export function drawIcon(ctx, type, cx, cy, size) {
+  const UnitClass = UNIT_CLASSES[type];
+  ctx.save();
+  ctx.translate(cx - size / 2, cy - size / 2);
+  ctx.scale(size / 100, size / 100);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  UnitClass.drawIcon(ctx, true);
+  UnitClass.drawIcon(ctx, false);
+  ctx.restore();
+}
+
+// ------------------------------------------------------------------ unit cone
+export function unitSprite(color, type) {
+  const key = color + type;
+  let c = unitCache.get(key);
+  if (c) return c;
+  let ctx;
+  [c, ctx] = makeCanvas();
+  const { cx, by, rx, ry, apex } = CONE;
+
+  // Ground shadow.
+  ctx.fillStyle = 'rgba(0,0,0,0.32)';
+  ctx.beginPath(); ctx.ellipse(cx + 3, by + 3, rx + 1, ry + 1, 0, 0, Math.PI * 2); ctx.fill();
+
+  // Cone silhouette: apex + tangent lines to the base ellipse + lower half of the ellipse.
+  const ay = by - apex;
+  const k = apex / ry;
+  const tu = Math.sqrt(1 - 1 / (k * k)), tv = -1 / k;
+  const th = Math.atan2(tv, tu);
+  const body = new Path2D();
+  body.moveTo(cx, ay);
+  body.lineTo(cx + rx * tu, by + ry * tv);
+  body.ellipse(cx, by, rx, ry, 0, th, Math.PI - th, false);
+  body.closePath();
+
+  const grad = ctx.createLinearGradient(cx - rx, 0, cx + rx, 0);
+  grad.addColorStop(0, lighten(color, 0.45));
+  grad.addColorStop(0.45, color);
+  grad.addColorStop(1, darken(color, 0.5));
+  ctx.fillStyle = grad;
+  ctx.fill(body);
+
+  // Soft highlight near the apex.
+  const hl = ctx.createRadialGradient(cx - 6, ay + 8, 1, cx - 6, ay + 8, 16);
+  hl.addColorStop(0, 'rgba(255,255,255,0.45)');
+  hl.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = hl;
+  ctx.fill(body);
+
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.6;
+  ctx.lineJoin = 'round';
+  ctx.stroke(body);
+
+  // Rim along the front of the base.
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.ellipse(cx, by, rx - 1.5, ry - 1.5, 0, 0.25, Math.PI - 0.25); ctx.stroke();
+
+  drawIcon(ctx, type, cx, ay - 2, 30);
+  unitCache.set(key, c);
+  return c;
+}
+
+// ------------------------------------------------------------------ castle
+const STONE = '#c4bba5';
+const STONE_DARK = '#8f8774';
+const GOLD = '#e2b93b';
+const WALL_FLAG = 1 << UPGRADE_TYPES.indexOf('wall');
+const TOWER_FLAG = 1 << UPGRADE_TYPES.indexOf('tower');
+const CASTLE_FLAG = 1 << UPGRADE_TYPES.indexOf('castle');
+const FARM_FLAG = 1 << UPGRADE_TYPES.indexOf('farm');
+const BARRACKS_FLAG = 1 << UPGRADE_TYPES.indexOf('barracks');
+const WHEAT = '#e8c454';
+const TIMBER = '#9b6a3a';
+const STEEL = '#e6e2d6';
+
+// Long timber hall with a roof in the owner's colour (Barracks upgrade). Drawn at the castle's
+// front right, outside the walls, opposite the Farm's field.
+function drawBarracks(ctx, color, x0 = 42, y0 = 50, scale = 1) {
+  ctx.save();
+  ctx.translate(x0, y0);
+  ctx.scale(scale, scale);
+  const body = new Path2D();
+  body.rect(1.5, 5.5, 18, 7.5);
+  ctx.fillStyle = TIMBER;
+  ctx.fill(body);
+  const roof = new Path2D();
+  roof.moveTo(0, 6); roof.lineTo(4, 0); roof.lineTo(17, 0); roof.lineTo(21, 6); roof.closePath();
+  ctx.fillStyle = color;
+  ctx.fill(roof);
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.2;
+  ctx.stroke(body);
+  ctx.stroke(roof);
+  ctx.fillStyle = INK;
+  ctx.fillRect(9.2, 8.5, 2.6, 4.5);                   // door
+  ctx.fillRect(4, 8, 2.4, 2); ctx.fillRect(14.6, 8, 2.4, 2);   // windows
+  ctx.restore();
+}
+
+// Two crossed swords (Barracks button icon).
+function drawSwords(ctx, cx, cy, s) {
+  for (const dir of [-1, 1]) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(dir * Math.PI / 4);
+    ctx.scale(s, s);
+    ctx.lineWidth = 1.5 / s;
+    ctx.strokeStyle = INK;
+    const blade = new Path2D();
+    blade.moveTo(-1.3, 4); blade.lineTo(-1.3, -8); blade.lineTo(0, -10.5); blade.lineTo(1.3, -8); blade.lineTo(1.3, 4); blade.closePath();
+    ctx.fillStyle = STEEL; ctx.fill(blade); ctx.stroke(blade);
+    ctx.fillStyle = GOLD;
+    ctx.fillRect(-4, 4, 8, 1.8); ctx.strokeRect(-4, 4, 8, 1.8);   // cross-guard
+    ctx.fillStyle = TIMBER;
+    ctx.fillRect(-1, 5.8, 2, 3.6); ctx.strokeRect(-1, 5.8, 2, 3.6); // grip
+    ctx.restore();
+  }
+}
+
+// Golden field with furrows (Farm upgrade). Drawn at the castle's front left, outside the walls.
+function drawField(ctx, x0 = 0, y0 = 51, scale = 1) {
+  ctx.save();
+  ctx.translate(x0, y0);
+  ctx.scale(scale, scale);
+  const field = new Path2D();
+  field.moveTo(1, 4); field.lineTo(15, 0); field.lineTo(20, 10); field.lineTo(4, 12); field.closePath();
+  ctx.fillStyle = WHEAT;
+  ctx.fill(field);
+  ctx.strokeStyle = 'rgba(120,80,20,0.75)';
+  ctx.lineWidth = 0.9;
+  for (let k = 1; k < 4; k++) {
+    const t = k / 4;
+    ctx.beginPath();
+    ctx.moveTo(1 + 3 * t, 4 + 8 * t);
+    ctx.lineTo(15 + 5 * t, 0 + 10 * t);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.3;
+  ctx.stroke(field);
+  ctx.restore();
+}
+
+// Banner on a pole over the left wall (Castle upgrade).
+function drawBanner(ctx, color, x = 12, top = 6) {
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.moveTo(x, 24); ctx.lineTo(x, top); ctx.stroke();
+  const flag = new Path2D();
+  flag.moveTo(x + 0.8, top); flag.lineTo(x + 13, top + 2.5); flag.lineTo(x + 8, top + 5); flag.lineTo(x + 13, top + 8);
+  flag.lineTo(x + 0.8, top + 9); flag.closePath();
+  ctx.fillStyle = color;
+  ctx.fill(flag);
+  ctx.lineWidth = 1.2;
+  ctx.stroke(flag);
+  ctx.fillStyle = GOLD;
+  ctx.beginPath(); ctx.arc(x, top - 1, 1.6, 0, Math.PI * 2); ctx.fill();
+}
+
+// Stone curtain wall ringing the castle: the back half is drawn behind it, the front half in front.
+function drawRingWall(ctx, front) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(32, 50, 29, 9, 0, front ? 0 : Math.PI, front ? Math.PI : Math.PI * 2);
+  ctx.lineCap = 'butt';
+  ctx.strokeStyle = INK; ctx.lineWidth = 7.5; ctx.stroke();
+  ctx.strokeStyle = front ? STONE : STONE_DARK; ctx.lineWidth = 5; ctx.stroke();
+  if (front) {
+    ctx.fillStyle = STONE;
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1;
+    for (let a = 0.22; a < Math.PI - 0.15; a += 0.36) {
+      const x = 32 + Math.cos(a) * 29, y = 50 + Math.sin(a) * 9 - 5;
+      ctx.fillRect(x - 1.7, y - 2.4, 3.4, 2.8);
+      ctx.strokeRect(x - 1.7, y - 2.4, 3.4, 2.8);
+    }
+  }
+  ctx.restore();
+}
+
+// Tall extra tower on the right of the castle.
+function drawTower(ctx, color) {
+  const p = new Path2D();
+  p.moveTo(45, 50); p.lineTo(45, 8);
+  for (const x of [45, 49.5, 54]) { p.lineTo(x, 8); p.lineTo(x, 2); p.lineTo(x + 3, 2); p.lineTo(x + 3, 8); }
+  p.lineTo(57, 8); p.lineTo(57, 50); p.closePath();
+  const grad = ctx.createLinearGradient(45, 0, 57, 0);
+  grad.addColorStop(0, lighten(color, 0.5)); grad.addColorStop(1, darken(color, 0.3));
+  ctx.fillStyle = grad;
+  ctx.fill(p);
+  ctx.strokeStyle = INK; ctx.lineWidth = 1.6;
+  ctx.stroke(p);
+  ctx.fillStyle = INK;
+  ctx.fillRect(50, 14, 2, 6);
+  ctx.fillRect(50, 28, 2, 6);
+}
+
+// Castle in the owner's colour; `flags` adds the built upgrades (see UPGRADE_TYPES).
+export function castleSprite(color, flags = 0) {
+  const cacheKey = `${color}|${flags}`;
+  let c = castleCache.get(cacheKey);
+  if (c) return c;
+  let ctx;
+  [c, ctx] = makeCanvas();
+  const light = lighten(color, 0.35), dark = darken(color, 0.4);
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.8;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath(); ctx.ellipse(34, 52, flags & WALL_FLAG ? 31 : 27, flags & WALL_FLAG ? 10 : 7, 0, 0, Math.PI * 2); ctx.fill();
+  if (flags & WALL_FLAG) drawRingWall(ctx, false);
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.8;
+
+  const wallGrad = ctx.createLinearGradient(8, 0, 56, 0);
+  wallGrad.addColorStop(0, light); wallGrad.addColorStop(0.5, color); wallGrad.addColorStop(1, dark);
+
+  // Outer wall with crenellations.
+  const wall = new Path2D();
+  wall.moveTo(8, 52); wall.lineTo(8, 26);
+  const merlons = [8, 15, 22, 29, 36, 43, 50];
+  for (let i = 0; i < merlons.length; i++) {
+    const x = merlons[i];
+    wall.lineTo(x, 26); wall.lineTo(x, 22); wall.lineTo(x + 4, 22); wall.lineTo(x + 4, 26);
+  }
+  wall.lineTo(56, 26); wall.lineTo(56, 52); wall.closePath();
+  ctx.fillStyle = wallGrad; ctx.fill(wall); ctx.stroke(wall);
+
+  // Keep (taller, with a gold band, when the Castle upgrade is built).
+  const great = flags & CASTLE_FLAG;
+  const kt = great ? 6 : 12;
+  const keep = new Path2D();
+  keep.moveTo(23, 52); keep.lineTo(23, kt);
+  for (const x of [23, 30, 37]) { keep.lineTo(x, kt); keep.lineTo(x, kt - 5); keep.lineTo(x + 4, kt - 5); keep.lineTo(x + 4, kt); }
+  keep.lineTo(41, kt); keep.lineTo(41, 52); keep.closePath();
+  const keepGrad = ctx.createLinearGradient(23, 0, 41, 0);
+  keepGrad.addColorStop(0, lighten(color, 0.55)); keepGrad.addColorStop(1, color);
+  ctx.fillStyle = keepGrad; ctx.fill(keep); ctx.stroke(keep);
+  if (great) {
+    ctx.fillStyle = GOLD;
+    ctx.fillRect(23.8, kt + 2, 16.4, 2.4);
+  }
+
+  // Gate and windows.
+  ctx.fillStyle = INK;
+  ctx.beginPath(); ctx.moveTo(27.5, 52); ctx.lineTo(27.5, 44); ctx.arc(32, 44, 4.5, Math.PI, 0); ctx.lineTo(36.5, 52); ctx.closePath(); ctx.fill();
+  ctx.fillRect(30.5, 19, 3, 6);
+  ctx.fillRect(13, 32, 3, 5); ctx.fillRect(48, 32, 3, 5);
+
+  if (great) drawBanner(ctx, color);
+  if (flags & TOWER_FLAG) drawTower(ctx, color);
+  if (flags & WALL_FLAG) drawRingWall(ctx, true);
+  if (flags & FARM_FLAG) drawField(ctx);
+  if (flags & BARRACKS_FLAG) drawBarracks(ctx, color);
+
+  castleCache.set(cacheKey, c);
+  return c;
+}
+
+// Icon for an upgrade button or queue slot (data URL).
+export function upgradeIconURL(key, color) {
+  const cacheKey = `up|${key}|${color}`;
+  let u = urlCache.get(cacheKey);
+  if (u) return u;
+  const [c, ctx] = makeCanvas();
+  ctx.lineJoin = 'round';
+  if (key === 'wall') {
+    const p = new Path2D();
+    p.moveTo(6, 54); p.lineTo(6, 26);
+    for (const x of [6, 17, 28, 39, 50]) { p.lineTo(x, 26); p.lineTo(x, 18); p.lineTo(x + 8, 18); p.lineTo(x + 8, 26); }
+    p.lineTo(58, 26); p.lineTo(58, 54); p.closePath();
+    ctx.fillStyle = STONE;
+    ctx.fill(p);
+    ctx.strokeStyle = 'rgba(28,19,11,0.45)';
+    ctx.lineWidth = 1.2;
+    for (const y of [34, 42, 50]) { ctx.beginPath(); ctx.moveTo(6, y); ctx.lineTo(58, y); ctx.stroke(); }
+    for (let row = 0; row < 3; row++) {
+      for (let x = 12 + (row % 2) * 6; x < 58; x += 12) {
+        ctx.beginPath(); ctx.moveTo(x, 26 + row * 8); ctx.lineTo(x, 34 + row * 8); ctx.stroke();
+      }
+    }
+    ctx.strokeStyle = INK; ctx.lineWidth = 2.2;
+    ctx.stroke(p);
+  } else if (key === 'farm') {
+    // A barn in the owner's colour behind a big wheat field.
+    const barn = new Path2D();
+    barn.moveTo(30, 34); barn.lineTo(30, 20); barn.lineTo(41, 10); barn.lineTo(52, 20); barn.lineTo(52, 34); barn.closePath();
+    ctx.fillStyle = color;
+    ctx.fill(barn);
+    ctx.strokeStyle = INK; ctx.lineWidth = 2;
+    ctx.stroke(barn);
+    ctx.fillStyle = INK;
+    ctx.fillRect(38, 24, 6, 10);
+    drawField(ctx, 2, 26, 2.8);
+  } else if (key === 'barracks') {
+    // The barracks hall, big, under two crossed swords.
+    drawSwords(ctx, 32, 15, 1.7);
+    drawBarracks(ctx, color, 3, 28, 2.75);
+  } else if (key === 'castle') {
+    // Great keep with a gold band and a banner.
+    const kt = 16;
+    const keep = new Path2D();
+    keep.moveTo(16, 58); keep.lineTo(16, kt);
+    for (const x of [16, 26, 36]) { keep.lineTo(x, kt); keep.lineTo(x, kt - 7); keep.lineTo(x + 6, kt - 7); keep.lineTo(x + 6, kt); }
+    keep.lineTo(42, kt); keep.lineTo(42, 58); keep.closePath();
+    const grad = ctx.createLinearGradient(16, 0, 42, 0);
+    grad.addColorStop(0, lighten(color, 0.55)); grad.addColorStop(1, color);
+    ctx.fillStyle = grad;
+    ctx.fill(keep);
+    ctx.strokeStyle = INK; ctx.lineWidth = 2;
+    ctx.stroke(keep);
+    ctx.fillStyle = GOLD;
+    ctx.fillRect(17, kt + 3, 24, 3);
+    ctx.fillStyle = INK;
+    ctx.beginPath(); ctx.moveTo(24, 58); ctx.lineTo(24, 48); ctx.arc(29, 48, 5, Math.PI, 0); ctx.lineTo(34, 58); ctx.closePath(); ctx.fill();
+    drawBanner(ctx, color, 48, 8);
+  } else {
+    // The castle's extra tower, widened and centred.
+    ctx.save();
+    ctx.translate(32, 4);
+    ctx.scale(1.7, 1.08);
+    ctx.translate(-51, 0);
+    drawTower(ctx, color);
+    ctx.restore();
+  }
+  u = c.toDataURL();
+  urlCache.set(cacheKey, u);
+  return u;
+}
+
+// Data URL of a unit sprite (used for HUD buttons).
+export function unitIconURL(color, type) {
+  const key = color + type;
+  let u = urlCache.get(key);
+  if (!u) {
+    u = unitSprite(color, type).toDataURL();
+    urlCache.set(key, u);
+  }
+  return u;
+}

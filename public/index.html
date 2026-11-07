@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conquest of Europa</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M4 30V12h4v4h4v-4h4v4h4v-4h4v4h4v-4h4v18H18v-7a2 2 0 0 0-4 0v7z' fill='%23c9a24a' stroke='%232a1d12' stroke-width='1.5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="backdrop"></canvas>
+
+  <!-- Name entry -->
+  <section id="screen-name" class="screen menu">
+    <div class="card">
+      <h1>Conquest of Europa</h1>
+      <p class="tagline">Raise armies, storm cities, and be the first to hold <b>120</b> of them.</p>
+      <form id="name-form" autocomplete="off">
+        <label for="name-input">Your name</label>
+        <input id="name-input" maxlength="20" placeholder="e.g. Charlemagne" required>
+        <button type="submit" class="primary" id="name-submit">Continue</button>
+      </form>
+      <p id="conn-status" class="muted small"></p>
+    </div>
+  </section>
+
+  <!-- Lobby: list of games -->
+  <section id="screen-lobby" class="screen menu" hidden>
+    <div class="card wide">
+      <header class="card-head">
+        <h2>Game lobby</h2>
+        <span class="muted">Playing as <b id="lobby-name"></b> <button type="button" id="change-name" class="link">change</button></span>
+      </header>
+      <form id="create-form" class="row" autocomplete="off">
+        <input id="game-title" maxlength="32" placeholder="New game name">
+        <button type="submit" class="primary">Create game</button>
+      </form>
+      <p id="lobby-warning" class="warning" hidden></p>
+      <h3>Games</h3>
+      <p id="lobby-online" class="muted small lobby-online"></p>
+      <div id="game-list" class="game-list"></div>
+    </div>
+  </section>
+
+  <!-- Waiting room -->
+  <section id="screen-room" class="screen menu" hidden>
+    <div class="card">
+      <h2 id="room-title"></h2>
+      <p class="muted" id="room-info"></p>
+      <ul id="room-players" class="room-players"></ul>
+      <div class="row end">
+        <button type="button" id="room-leave">Leave</button>
+        <button type="button" id="room-start" class="primary">Start game</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Game -->
+  <section id="screen-game" class="screen" hidden>
+    <canvas id="view"></canvas>
+
+    <div id="topbar" class="hud">
+      <div class="stat" id="stat-turn"><span class="hourglass"></span><small>Turns</small><b id="hud-turn">0</b><small id="hud-turn-next"></small></div>
+      <div class="stat" id="stat-gold"><span class="coin"></span><b id="hud-gold">0</b><small id="hud-income"></small></div>
+      <div class="stat" title="Cities held. 120 wins the game."><span class="tower"></span><b id="hud-cities">0</b><small>/ 120</small></div>
+      <div class="stat" title="Units you command"><span class="army"></span><b id="hud-units">0</b></div>
+      <div class="title" id="hud-title"></div>
+      <div class="buttons">
+        <button type="button" id="btn-rebuild" hidden>Rebuild navigation</button>
+        <button type="button" id="btn-mapedit" hidden>Edit map</button>
+        <button type="button" id="btn-edit" title="Edit the game balance (admins only)" hidden>Edit</button>
+        <button type="button" id="btn-scores" title="Players (Tab)">Players</button>
+        <button type="button" id="btn-help" title="Controls (F1)">Help</button>
+        <button type="button" id="btn-leave" title="Leave game">Leave</button>
+      </div>
+    </div>
+
+    <div id="feed" class="feed"></div>
+
+    <div id="minimap-wrap" class="hud"><canvas id="minimap"></canvas></div>
+    <div id="panel" class="hud panel"></div>
+    <div id="build-col" class="build-col" hidden>
+      <div id="upgrade-box" class="build-box"></div>
+      <div id="unit-box" class="build-box"></div>
+    </div>
+
+    <div id="scoreboard" class="overlay hud" hidden></div>
+    <div id="help" class="overlay hud" hidden>
+      <h3>Controls</h3>
+      <table>
+        <tr><td>Left click / drag</td><td>Select units · box-select · click a city (a frame with no units selects your cities)</td></tr>
+        <tr><td>Shift + click / drag</td><td>Add units or cities to the selection</td></tr>
+        <tr><td>Double click</td><td>On a unit: all your units of that type on screen · on your city: all your cities on screen</td></tr>
+        <tr><td>Right click</td><td>Move · attack unit or city · set rally (city selected)</td></tr>
+        <tr><td>Hold A + right click</td><td>Units selected: attack-move (fight anything on the way; works on the minimap too)</td></tr>
+        <tr><td>S</td><td>Units selected: stop</td></tr>
+        <tr><td>Delete</td><td>Units selected: disband (they lose HP until they die; cities can't be disbanded)</td></tr>
+        <tr><td>Q / W / E / R</td><td>Build infantry / archers / cavalry / knight in every selected city</td></tr>
+        <tr><td>A / S / D / F / G</td><td>Cities selected: build Wall / Tower / Castle / Farm / Barracks in every selected city</td></tr>
+        <tr><td>Ctrl + 1–9, then 1–9</td><td>Save / recall control group (press twice to jump)</td></tr>
+        <tr><td>H</td><td>Jump to your next city</td></tr>
+        <tr><td>Hold Alt</td><td>Show the attack radius of every city · Alt + drag selects only your cities, not units</td></tr>
+        <tr><td>Space</td><td>Center on selection</td></tr>
+        <tr><td>F2</td><td>Select all your units</td></tr>
+        <tr><td>Arrows · screen edge · middle drag</td><td>Scroll the map</td></tr>
+        <tr><td>Mouse wheel</td><td>Zoom</td></tr>
+        <tr><td>Tab</td><td>Players · F1 this help · Esc deselect</td></tr>
+      </table>
+      <p class="muted small">Capture a city by bringing its HP to zero. Units walk only on land and find their own way around seas; islands such as Britain or Sicily cannot be reached by land units. Units regenerate HP after a few seconds out of combat.</p>
+      <button type="button" id="help-close" class="primary">Got it</button>
+    </div>
+
+    <div id="banner" class="banner" hidden></div>
+    <div id="gameover" class="overlay hud" hidden>
+      <h2 id="gameover-title"></h2>
+      <p id="gameover-text" class="muted"></p>
+      <ul id="gameover-players" class="reveal" hidden></ul>
+      <button type="button" id="gameover-leave" class="primary">Back to lobby</button>
+    </div>
+  </section>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
