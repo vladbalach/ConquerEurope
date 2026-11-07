@@ -1,7 +1,7 @@
 // Minimal WebSocket wrapper with typed message handlers, for the lobby server.
-// Game traffic goes browser to browser (p2p.js), so this connection is often quiet: a ping every
-// few minutes keeps it open, and keeps a free host that sleeps when idle (e.g. Render) awake.
-const PING_MS = 4 * 60 * 1000;
+// Game traffic goes browser to browser (p2p.js), so this connection is often quiet: a small ping
+// keeps it open, and keeps a free host that sleeps when idle (e.g. Render) awake.
+const PING_MS = 25 * 1000;      // short enough for proxies, routers and browsers that drop quiet connections
 
 export class Net {
   constructor() {

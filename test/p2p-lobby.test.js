@@ -56,6 +56,8 @@ async function startedGame(title) {
   b.send({ t: 'join', gameId });
   c.send({ t: 'join', gameId });
   await Promise.all([b.waitFor('joined'), c.waitFor('joined')]);
+  // The waiting room lists nicknames (that is allowed before the start): let it arrive first.
+  await Promise.all([a, b, c].map((x) => x.waitFor('room', (m) => m.players.length === 3)));
   for (const x of [a, b, c]) x.inbox.length = 0;
   a.send({ t: 'start' });
   const host = await a.waitFor('host');
@@ -96,6 +98,24 @@ test('starting hands the game to the host\'s browser: a roster without nicknames
     assert.deepEqual(new Set(r.players.map((p) => p.name)), new Set(NAMES));
     assert.ok(r.players.every((p) => /^#/.test(p.color)));
   }
+});
+
+test('players without a direct link play through the server relay', async () => {
+  const { a, b, c, host, bId, cId } = await startedGame('p2p relay');
+  // A player's messages reach only the host, with the player's id.
+  b.send({ t: 'relay', msg: { t: 'relayOpen' } });
+  assert.deepEqual(await a.waitFor('relay'), { t: 'relay', from: bId, msg: { t: 'relayOpen' } });
+  c.send({ t: 'relay', to: bId, msg: { t: 'move', ids: [1] } });
+  assert.equal((await a.waitFor('relay', (m) => m.msg.t === 'move')).from, cId);
+  // The host's messages reach the player it names.
+  a.send({ t: 'relay', to: bId, msg: { t: 'snap', time: 1 } });
+  assert.deepEqual(await b.waitFor('relay'), { t: 'relay', msg: { t: 'snap', time: 1 } });
+  assert.ok(!c.inbox.some((m) => m.t === 'relay'), 'other players get nothing');
+  assert.ok(!b.inbox.some((m) => m.t === 'relay' && m.msg.t === 'move'), 'players cannot reach each other');
+  // A relayed player whose connection drops is cut off from the host: the host is told.
+  sockets[sockets.length - 2].close();     // B's socket (A, B, C were opened last)
+  assert.equal((await a.waitFor('relay', (m) => m.msg.t === 'relayClose')).from, bId);
+  assert.equal(host.you !== bId, true);
 });
 
 test('when the host leaves, the game is over for everyone', async () => {

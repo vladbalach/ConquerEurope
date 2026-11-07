@@ -69,7 +69,14 @@ for those, set up a TURN relay with environment variables on the server ([server
 | `ICE_SERVERS` | A JSON array of `RTCIceServer` objects used instead of the defaults, for any other STUN/TURN provider. |
 | `RELAY_ONLY=1` | All traffic goes through the TURN relay. Without it, a direct link shows the host each player's IP address, which could tell friends who is who. With it, nobody learns another player's address. Needs a TURN server. |
 
-A player who cannot reach the host within 20 seconds is told so and returns to the lobby.
+**Automatic fallback through the server.** If a player's direct link to the host has not opened after 7 seconds,
+their game goes through the lobby server instead (`relay` messages), and they see "No direct connection to the
+host: your game goes through the server." The same happens when a direct link dies during a game (a network
+change, a laptop going to sleep, a browser pausing a background tab): the player carries on through the server, and
+the others see them leave and come back. The game plays the same. It just costs the server bandwidth, about
+0.1–0.35 GB per relayed player per hour (messages are compressed). On a free plan with a small monthly allowance
+(Render: 5 GB), set up the Cloudflare TURN relay above if many of your players need the fallback. The browser
+console (F12) says which way each player connected.
 
 ## Rules
 

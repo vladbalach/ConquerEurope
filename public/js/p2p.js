@@ -6,7 +6,11 @@
 // Both sessions offer `link.send(msg)` for this page's orders, and call onMessage(msg) with the
 // game's messages (start, snap, event, score, room, gameover), exactly like the old server did.
 
-const CONNECT_TIMEOUT_MS = 20000;
+// No direct link after this long: go through the lobby server instead (relay). Direct links
+// normally open within a second or two; some networks (mobile data, some company or home
+// routers) never allow them.
+const DIRECT_TIMEOUT_MS = 7000;
+const RELAY_TIMEOUT_MS = 15000;      // the host does not answer through the relay either: give up
 const MAX_BUFFERED = 1 << 20;        // a player whose link falls this far behind skips snapshots
 
 function rtcConfig(ice) {
@@ -42,6 +46,7 @@ export class HostSession {
     this.onMessage = onMessage;
     this.onError = onError || (() => {});
     this.peers = new Map();          // player id -> { pc, channel, candidates }
+    this.relayed = new Set();        // players without a direct link: their messages go through the server
     this.worker = new Worker(new URL('./host-worker.js', import.meta.url), { type: 'module' });
     this.worker.onmessage = (e) => this.fromWorker(e.data);
     this.worker.onerror = (e) => this.onError(`The game could not run: ${e.message || 'worker error'}`);
@@ -54,6 +59,12 @@ export class HostSession {
     if (m.type === 'send') {
       if (m.to === this.you) {
         this.onMessage(m.msg);
+        return;
+      }
+      if (this.relayed.has(m.to)) {
+        const ws = this.net.ws;
+        if (m.msg.t === 'snap' && ws && ws.bufferedAmount > MAX_BUFFERED) return;
+        this.net.send({ t: 'relay', to: m.to, msg: m.msg });
         return;
       }
       const ch = this.peers.get(m.to)?.channel;
@@ -71,6 +82,7 @@ export class HostSession {
   async onSignal(from, data) {
     if (data.sdp && data.sdp.type === 'offer') {
       this.dropPeer(from, false);    // a new offer replaces an old link (the player reconnects)
+      this.relayed.delete(from);
       const pc = new RTCPeerConnection(rtcConfig(this.ice));
       const peer = { pc, channel: null, candidates: new Candidates(pc), online: false };
       this.peers.set(from, peer);
@@ -103,6 +115,19 @@ export class HostSession {
     }
   }
 
+  // A message from a player who plays through the server relay (no direct link).
+  onRelay(from, msg) {
+    if (msg.t === 'relayOpen') {
+      this.dropPeer(from, false);    // their direct link never opened
+      this.relayed.add(from);
+      this.worker.postMessage({ type: 'connect', id: from });
+    } else if (msg.t === 'relayClose') {
+      if (this.relayed.delete(from)) this.worker.postMessage({ type: 'disconnect', id: from });
+    } else if (this.relayed.has(from)) {
+      this.worker.postMessage({ type: 'msg', from, msg });
+    }
+  }
+
   // The link to a player is gone. `tell`: let the game know they are offline.
   dropPeer(id, tell) {
     const peer = this.peers.get(id);
@@ -127,18 +152,23 @@ export class HostSession {
 // ------------------------------------------------------------------ other players
 export class PeerSession {
   // onLost(text): the link to the host is gone, or could not be made.
-  constructor({ net, gameId, you, ice, onMessage, onLost }) {
+  // onStatus(text): how the connection is going, for the screen.
+  constructor({ net, gameId, you, ice, onMessage, onLost, onStatus }) {
     this.isHost = false;
     this.net = net;
     this.gameId = gameId;
     this.you = you;
     this.onMessage = onMessage;
     this.onLost = onLost;
+    this.onStatus = onStatus || (() => {});
     this.done = false;
-    this.open = false;
+    this.open = false;               // the direct link is open
+    this.relay = false;              // playing through the lobby server instead
+    this.started = false;            // the host's game has reached us
     this.link = {
       send: (msg) => {
-        if (this.channel && this.channel.readyState === 'open') this.channel.send(JSON.stringify(msg));
+        if (this.relay) this.net.send({ t: 'relay', msg });
+        else if (this.channel && this.channel.readyState === 'open') this.channel.send(JSON.stringify(msg));
       },
     };
 
@@ -149,32 +179,83 @@ export class PeerSession {
       if (e.candidate) this.net.send({ t: 'signal', data: { candidate: e.candidate.toJSON() } });
     };
     ch.onopen = () => {
+      if (this.relay || this.done) return;
       this.open = true;
       clearTimeout(this.timer);
+      console.info('Connected to the host directly (WebRTC).');
     };
     ch.onmessage = (e) => {
       const msg = parse(e.data);
-      if (msg) this.onMessage(msg);
+      if (msg) this.receive(msg);
     };
-    ch.onclose = () => this.lost('Lost the connection to the host. The game may be over, or their network dropped.');
+    // The direct link failed, or died during the game (network change, a sleeping laptop, a
+    // browser pausing a background tab): carry on through the server. If the host really left,
+    // the lobby server says so and the game ends then.
+    ch.onclose = () => { if (this.open) this.linkLost(); };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed') this.lost('Lost the connection to the host.');
+      if (pc.connectionState !== 'failed' || this.relay) return;
+      if (this.open) this.linkLost();
+      else this.useRelay();
     };
-    this.timer = setTimeout(() => {
-      if (!this.open) {
-        this.lost('Could not connect to the host. A firewall on their network or yours may block ' +
-          'direct connections between players; an admin can set up a TURN relay (see README).');
-      }
-    }, CONNECT_TIMEOUT_MS);
+    this.timer = setTimeout(() => { if (!this.open) this.useRelay(); }, DIRECT_TIMEOUT_MS);
     pc.createOffer()
       .then((offer) => pc.setLocalDescription(offer))
       .then(() => this.net.send({ t: 'signal', data: { sdp: pc.localDescription.toJSON() } }))
-      .catch((e) => this.lost(`Could not connect to the host: ${e.message}`));
+      .catch(() => this.useRelay());
+  }
+
+  receive(msg) {
+    this.started = true;
+    this.heard = true;
+    this.onMessage(msg);
+  }
+
+  // The direct link died during the game.
+  linkLost() {
+    if (this.relay || this.done) return;
+    console.info('The direct link to the host was lost: switching to the server relay.');
+    this.open = false;
+    this.useRelay('Lost the direct connection to the host: reconnecting through the server…');
+  }
+
+  // No direct link to the host: send and receive the game through the lobby server.
+  useRelay(status = 'No direct connection to the host: connecting through the server…') {
+    if (this.relay || this.done || this.open) return;
+    this.relay = true;
+    clearTimeout(this.timer);
+    console.info('No direct connection to the host: playing through the server relay.');
+    this.closeDirect();
+    this.onStatus(status);
+    this.openRelay();
+  }
+
+  // Ask the host (through the server) for the game. Also after our lobby connection came back,
+  // since the relay runs over it.
+  openRelay() {
+    this.heard = false;
+    this.net.send({ t: 'relay', msg: { t: 'relayOpen' } });
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      if (!this.heard) this.lost('Could not reach the host, neither directly nor through the server.');
+    }, RELAY_TIMEOUT_MS);
+  }
+
+  // A game message from the host through the server relay.
+  onRelay(msg) {
+    if (this.relay && !this.done) this.receive(msg);
+  }
+
+  closeDirect() {
+    const { pc, channel } = this;
+    if (channel) channel.onclose = null;
+    if (pc) pc.onconnectionstatechange = null;
+    try { channel && channel.close(); } catch { /* already closed */ }
+    try { pc && pc.close(); } catch { /* already closed */ }
   }
 
   // The host's answer and ICE candidates, passed on by the lobby server.
   onSignal(from, data) {
-    if (this.done) return;
+    if (this.done || this.relay) return;
     if (data.sdp && data.sdp.type === 'answer') {
       this.pc.setRemoteDescription(data.sdp).then(() => this.candidates.flush()).catch(() => {});
     } else if (data.candidate) {

@@ -361,6 +361,21 @@ function handle(client, msg) {
     }
     case 'ping':
       return;                          // keeps the connection (and a sleeping free host) awake
+    case 'relay': {
+      // Fallback when a player's browser cannot open a direct link to the host (some mobile,
+      // company or home networks block it): their game messages go through this server.
+      // Players reach only the host; the host reaches any player of its game.
+      const g = client.game, p = client.player;
+      if (!g || !p || g.status !== 'running' || !msg.msg || typeof msg.msg !== 'object') return;
+      if (p.id === g.hostId) {
+        const target = g.players.get(msg.to);
+        if (target && target !== p && target.client) target.client.send({ t: 'relay', msg: msg.msg });
+      } else {
+        const host = g.players.get(g.hostId);
+        if (host && host.client) host.client.send({ t: 'relay', from: p.id, msg: msg.msg });
+      }
+      return;
+    }
     case 'setBalance':
     case 'resetBalance': {
       // Admins change unit, upgrade and city stats for everyone, effective immediately.
@@ -387,7 +402,12 @@ function handle(client, msg) {
   }
 }
 
-const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 64 * 1024 });
+// Relayed game snapshots can be large: allow 1 MB messages, and compress (snapshots shrink
+// several times), which keeps a free host's monthly bandwidth for longer.
+const wss = new WebSocketServer({
+  server, path: '/ws', maxPayload: 1024 * 1024,
+  perMessageDeflate: { threshold: 1024 },
+});
 
 wss.on('connection', (ws) => {
   const client = {
@@ -422,6 +442,9 @@ wss.on('connection', (ws) => {
         p.client = null;
         p.connected = false;
         p.disconnectedAt = Date.now();
+        // A player relayed through this server is now cut off from the host: tell the host.
+        const host = g.status === 'running' && p.id !== g.hostId ? g.players.get(g.hostId) : null;
+        if (host && host.client) host.client.send({ t: 'relay', from: p.id, msg: { t: 'relayClose' } });
       }
       if (g.players.size === 0) games.delete(g.id);
       lobbyDirty = true;

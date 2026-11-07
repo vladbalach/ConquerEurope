@@ -338,6 +338,7 @@ const GAME_MESSAGES = {
       map, net, link, gameId: joined.gameId, you: msg.you, title: msg.title, players: msg.players,
       onLeave: leaveGame, debug, admin: isAdmin, mapState,
     });
+    if (session && session.relay) game.hud.feed('No direct connection to the host: your game goes through the server.');
   },
   room(msg) { if (game) game.setPlayers(msg.players); },
   snap(msg) { if (game) game.onSnap(msg); },
@@ -357,20 +358,39 @@ net.on('host', (msg) => {
 
 // Connect to the host's browser (at the start, or to come back after a refresh or a drop).
 net.on('connectHost', (msg) => {
-  if (session && !session.isHost && session.gameId === msg.gameId && session.open && !session.done) return;
+  if (session && !session.isHost && session.gameId === msg.gameId && !session.done) {
+    if (session.open) return;          // our lobby connection came back; the direct link is fine
+    if (session.relay) {               // the relay runs over the lobby connection: pick it up again
+      session.openRelay();
+      return;
+    }
+  }
   endSession();
+  // Until the host's game arrives, the waiting room says what is happening.
+  const status = (text) => {
+    if (game) game.hud.feed(text);
+    else { $('room-info').textContent = text; $('room-start').hidden = true; }
+  };
+  status('The game has started: connecting to the host…');
   session = new PeerSession({
-    net, gameId: msg.gameId, you: msg.you, ice: msg.ice, onMessage: onGameMessage,
+    net, gameId: msg.gameId, you: msg.you, ice: msg.ice, onMessage: onGameMessage, onStatus: status,
     onLost: (text) => {
       session = null;
       if (game) game.onHostLost(text);
-      else toast(text);
+      else { status(text); toast(text); }
     },
   });
 });
 
 net.on('signal', (msg) => {
   if (session) Promise.resolve(session.onSignal(msg.from, msg.data)).catch((e) => console.warn('signal', e));
+});
+
+// Game messages through the lobby server, for players without a direct link to the host.
+net.on('relay', (msg) => {
+  if (!session || !msg.msg) return;
+  if (session.isHost) session.onRelay(msg.from, msg.msg);
+  else session.onRelay(msg.msg);
 });
 
 // The game is over: the lobby server reveals every nickname (the host never had them).
@@ -445,7 +465,7 @@ $('room-leave').addEventListener('click', leaveGame);
 $('room-start').addEventListener('click', () => net.send({ t: 'start' }));
 
 // Handy for debugging from the browser console: coe.game.cam, coe.game.renderUnits, ...
-window.coe = { get game() { return game; } };
+window.coe = { get game() { return game; }, get session() { return session; }, net };
 
 // ------------------------------------------------------------------ boot
 async function boot() {
