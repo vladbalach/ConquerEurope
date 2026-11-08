@@ -150,9 +150,3 @@ The wall now comes in two grades. One button (or **A**) orders both:
 
 - Units no longer stop for a moment when you give them a new order soon after the last one. Clicking the same spot
   over and over used to keep them standing still.
-
-### Developer console (debug builds)
-
-- `reset hp`: gives every unit and city in the game full HP.
-- `gold N`: sets every player's gold to N.
-- The host accepts both only in debug builds, and every player sees who used them in the feed.

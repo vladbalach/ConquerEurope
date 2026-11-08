@@ -535,8 +535,8 @@ $('create-form').addEventListener('submit', (e) => {
 $('room-leave').addEventListener('click', leaveGame);
 $('room-start').addEventListener('click', () => net.send({ t: 'start' }));
 
-// Handy for debugging from the browser console: coe.game.cam, coe.game.renderUnits, ...
-window.coe = { get game() { return game; }, get session() { return session; }, net };
+// Handy for debugging from the browser console (debug builds): coe.game.cam, coe.game.renderUnits, ...
+if (DEBUG) window.coe = { get game() { return game; }, get session() { return session; }, net };
 
 // ------------------------------------------------------------------ boot
 async function boot() {

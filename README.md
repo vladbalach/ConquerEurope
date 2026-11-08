@@ -254,9 +254,9 @@ and city stat. Change any number and press **Save**:
 - **Reset to defaults** goes back to `shared/config.js` and deletes the file.
 - Values outside a sensible range are clamped, for example HP is at least 1.
 
-Players who are not admins don't see the button, and the server refuses balance changes from them. **For now every
-player is an admin** (`EVERYONE_IS_ADMIN` in [server/index.js](server/index.js); `isAdmin()` is where a real check
-goes later). To set which stats can be edited and their limits, see [shared/balance.js](shared/balance.js).
+Players who are not admins don't see the button, and the server refuses balance changes from them. **On master nobody
+is an admin:** `EVERYONE_IS_ADMIN` in [server/index.js](server/index.js) is `false`. The `dev` branch sets it to `true`,
+which makes every player an admin. `isAdmin()` is where a real check goes later. To set which stats can be edited and their limits, see [shared/balance.js](shared/balance.js).
 
 #### Moving cities (Edit map button)
 
@@ -316,8 +316,8 @@ if they send the messages themselves.
 
 ## Debug mode
 
-`DEBUG` at the top of [shared/config.js](shared/config.js) switches the developer tools on.
-**Set it to `false` before publishing.** The debug code is then not even loaded by the browser, and the server
+`DEBUG` at the top of [shared/config.js](shared/config.js) switches the developer tools on. It is `false` on master and
+`true` on the `dev` branch. **Keep it `false` in anything you publish.** The debug code is then not even loaded by the browser, and the server
 stops sending timing data. While it is on, the corner of the screen shows "DEBUG · ~ console".
 
 Press **~** (the key left of 1) to open the console. ↑/↓ browse history, Tab completes, and Esc or ~ closes it.

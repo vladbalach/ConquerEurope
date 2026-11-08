@@ -12,7 +12,7 @@
 //  Developer tools: the in-game console (press ~) with `stat fps`, `stat unit` and
 //  `stat unitgraph`, plus server timings sent to the browser.
 //  SET TO false BEFORE PUBLISHING: the debug code is then not even loaded.
-export const DEBUG = true;
+export const DEBUG = false;
 
 // ------------------------------------------------------------------ units
 //  hp           maximum hit points

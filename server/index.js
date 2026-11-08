@@ -43,8 +43,9 @@ const editor = new MapEditor({
 
 // ------------------------------------------------------------------ admins and game balance
 // Admins may change unit, upgrade and city stats while the server runs (Edit button in a game).
-// For now every player is an admin; later this can check a list of names or accounts.
-const EVERYONE_IS_ADMIN = true;
+// Off: nobody is an admin, so the Edit and Edit map buttons are hidden. True makes every player an
+// admin; later isAdmin() can check a list of names or accounts.
+const EVERYONE_IS_ADMIN = false;
 function isAdmin(client) {    // eslint-disable-line no-unused-vars
   return EVERYONE_IS_ADMIN;
 }
@@ -111,6 +112,11 @@ const server = http.createServer((req, res) => {
   if (DEBUG && urlPath === '/debug/navgrid') {
     res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-cache' });
     res.end(JSON.stringify(nav.debugExport()));
+    return;
+  }
+  // The debug tools' browser code is not served at all outside debug builds.
+  if (!DEBUG && urlPath.startsWith('/js/debug/')) {
+    res.writeHead(404, { 'Content-Type': 'text/plain' }).end('Not found');
     return;
   }
   if (urlPath === '/') urlPath = '/index.html';
