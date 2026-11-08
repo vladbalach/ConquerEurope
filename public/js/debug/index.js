@@ -6,8 +6,10 @@ import { NavOverlay } from './navigation.js';
 
 const STAT_TARGETS = ['fps', 'unit', 'unitgraph', 'none'];
 const SHOW_TARGETS = ['navigation', 'none'];
+const RESET_TARGETS = ['hp'];
 
-export function createDebug() {
+// getGame(): the game this page is in (a GameClient), or null in the lobby.
+export function createDebug({ getGame = () => null } = {}) {
   const con = new DevConsole();
   // Top-right column for the stats overlays and the navigation legend; each shows and hides on its own.
   const column = document.createElement('div');
@@ -69,6 +71,39 @@ export function createDebug() {
     if (first) con.log(nav.summary(), 'dim');
   }, (args) => (args.length === 0 ? SHOW_TARGETS : []));
 
+  // Game cheats for testing. They change the game itself, so they are sent to the game's host
+  // like any order (the host accepts them only in debug builds) and every player is told.
+  con.register('reset', 'reset hp: every unit and city in the game back to full HP', (args) => {
+    const what = (args[0] || '').toLowerCase();
+    if (!RESET_TARGETS.includes(what)) {
+      con.log('Usage: reset hp', 'err');
+      return;
+    }
+    const game = getGame();
+    if (!game || game.ended) {
+      con.log('reset hp: works only in a running game', 'err');
+      return;
+    }
+    game.link.send({ t: 'resetHp' });
+    con.log('reset hp: sent to the game. Every unit and city gets full HP.');
+  }, (args) => (args.length === 0 ? RESET_TARGETS : []));
+
+  con.register('gold', "gold N: set every player's gold to N", (args) => {
+    const n = Number(args[0]);
+    if (!args[0] || !Number.isFinite(n) || n < 0) {
+      con.log('Usage: gold N   (N = 0 or more, e.g. gold 1000)', 'err');
+      return;
+    }
+    const game = getGame();
+    if (!game || game.ended) {
+      con.log('gold: works only in a running game', 'err');
+      return;
+    }
+    const gold = Math.round(Math.min(n, 1e9));
+    game.link.send({ t: 'setGold', gold });
+    con.log(`gold: sent to the game. Every player gets ${gold.toLocaleString('en-US')} gold.`);
+  });
+
   // A visible reminder that this is a debug build, and a line in the in-game help.
   const badge = document.createElement('div');
   badge.className = 'dev-badge';
@@ -78,7 +113,7 @@ export function createDebug() {
   if (helpTable) {
     const row = helpTable.insertRow();
     row.insertCell().textContent = '~';
-    row.insertCell().textContent = 'Developer console (debug builds): stat fps, stat unit, stat unitgraph, show navigation';
+    row.insertCell().textContent = 'Developer console (debug builds): stat fps, stat unit, stat unitgraph, show navigation, reset hp, gold N';
   }
 
   return {

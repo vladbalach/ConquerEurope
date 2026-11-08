@@ -1,16 +1,22 @@
 // In-game client state: snapshot interpolation, selection, commands, effects.
 import {
-  UNITS, CITY, CITY_UPGRADES, UPGRADE_TYPES, PRODUCTION_ITEMS, ECONOMY, NEUTRAL_COLOR, PLAYER_COLOR_NAMES,
+  UNITS, CITY, CITY_UPGRADES, UPGRADE_TYPES, PRODUCTION_ITEMS, ECONOMY, LIBERATOR, TECHS, TECH_TYPES,
+  NEUTRAL_COLOR, PLAYER_COLOR_NAMES,
 } from '/shared/config.js';
+import { liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows } from '/shared/tech.js';
+import { sanitizeOptions, citiesToWin, describeOptions } from '/shared/options.js';
+import { regionCities, regionHolder } from '/shared/regions.js';
 import { UNIT_CLASSES } from './units/index.js';
 import { Renderer } from './render.js';
 import { Input } from './input.js';
-import { Hud } from './hud.js';
+import { Hud, colorTag } from './hud.js';
+import { playSound } from './sound.js';
 
 const INTERP_DELAY = 0.13;   // seconds behind the newest snapshot
+const TICK_SECONDS = 3;      // a clock tick sounds in each of the last seconds of a turn
 
 export class GameClient {
-  constructor({ map, net, link, gameId, you, title, players, onLeave, debug = null, admin = false, mapState = null }) {
+  constructor({ map, net, link, gameId, you, title, options, players, onLeave, debug = null, admin = false, mapState = null }) {
     this.map = map;
     this.net = net;              // the lobby server: balance and map edits
     this.link = link || net;     // the game, run by the host's browser: orders go here (p2p.js)
@@ -22,12 +28,15 @@ export class GameClient {
     this.gameId = gameId;
     this.you = you;
     this.title = title;
+    this.options = sanitizeOptions(options, map.cities.length);   // victory rules the host picked
+    this.turn = 0;
     this.onLeave = onLeave;
     this.players = new Map();
     this.setPlayers(players);
 
     const n = map.cities.length;
     this.cityOwner = new Int16Array(n).fill(-1);
+    this.regionCities = regionCities(map);       // region -> its city ids
     this.cityHp = new Float32Array(n).fill(CITY.hp);
     this.cityUpgrades = new Uint8Array(n);     // built upgrades per city: bit per UPGRADE_TYPES entry
     this.upgradesVersion = 0;
@@ -45,7 +54,6 @@ export class GameClient {
     this.selectedCities = new Set();   // own cities; several can be selected at once
     this.inspect = null;
     this.groups = new Map();
-    this.homeIndex = -1;
 
     this.effects = { shots: [], sparks: [], deaths: [], markers: [], flashes: [] };
     this.unitTimers = new Map();
@@ -53,6 +61,7 @@ export class GameClient {
 
     this.ended = false;
     this.firstSnap = true;
+    this.turnSecond = null;      // whole seconds left in the turn at the last frame (countdown ticks)
     this.viewSentAt = 0;
     this.viewDirty = true;
 
@@ -79,7 +88,23 @@ export class GameClient {
   setPlayers(list) {
     this.players.clear();
     for (const p of list) this.players.set(p.id, p);
+    this.indexMarks();
     this.hud?.renderScores();
+    this.hud?.renderTech();
+  }
+
+  // Liberators' marks by city, for the map and the city panels: city -> [player ids]. Influence
+  // marks (cities about to be liberated) and smuggling marks are separate. Smuggling marks count
+  // only while their liberator is one (they stay when the player comes back, doing nothing).
+  indexMarks() {
+    const influence = new Map(), smuggle = new Map();
+    const add = (m, ci, id) => { if (!m.has(ci)) m.set(ci, []); m.get(ci).push(id); };
+    for (const p of this.players.values()) {
+      if (!p.liberator) continue;
+      for (const ci of p.influence || []) add(influence, ci, p.id);
+      for (const ci of (p.smuggle || []).slice(0, smugglingLimit(p.tech))) add(smuggle, ci, p.id);
+    }
+    this.marks = { influence, smuggle };
   }
 
   colorOf(owner) {
@@ -128,6 +153,7 @@ export class GameClient {
     if (msg.st !== undefined) this.serverTickMs = msg.st;
     this.turn = msg.turn;
     this.nextTurnAt = msg.next;
+    this.research = msg.r ? { tech: TECH_TYPES[msg.r[0]], progress: msg.r[1] } : null;   // yours, if any
     this.myQueues.clear();
     for (const [city, progress, queue, rx, ry] of msg.q) {
       this.myQueues.set(city, { progress, queue, rally: rx == null ? null : [rx, ry] });
@@ -148,7 +174,13 @@ export class GameClient {
       this.firstSnap = false;
       this.focusHome();
       this.hud.banner('Your 10 cities are scattered across Europe, marked in your colour. Press H to jump between them.', 9000);
+      this.hud.feed(describeOptions(this.options));
     }
+  }
+
+  // A player's name for the feed, "Red" or "You", written in their colour.
+  who(owner) {
+    return colorTag(this.nameOf(owner), this.colorOf(owner));
   }
 
   onEvent(msg) {
@@ -157,23 +189,73 @@ export class GameClient {
       const city = this.map.cities[msg.city];
       this.effects.flashes.push({ city: msg.city, color: this.colorOf(msg.to), t0: now });
       const cls = msg.to === this.you ? 'good' : msg.from === this.you ? 'bad' : '';
-      if (msg.to === this.you) this.hud.feed(`You captured ${city.n}${msg.from >= 0 ? ` from ${this.nameOf(msg.from)}` : ''}`, cls);
-      else if (msg.from === this.you) {
+      const from = msg.from >= 0 ? [' from ', this.who(msg.from)] : [];
+      const took = msg.liberated ? 'liberated' : 'captured';      // a liberator took it (Death: Liberator)
+      if (msg.to === this.you) {
+        this.hud.feed([this.who(this.you), ` ${took} ${city.n}`, ...from], cls);
+        // You took the city you were looking at: select it, so you can build there at once.
+        if (msg.liberated && this.inspect?.k === 'c' && this.inspect.id === msg.city) this.selectCity(msg.city);
+      } else if (msg.from === this.you) {
+        playSound('city-lost');     // wherever the city is, on screen or not
         const refund = msg.refund ? ` (+${msg.refund} gold from its queue refunded)` : '';
-        this.hud.feed(`${this.nameOf(msg.to)} captured your city ${city.n}!${refund}`, cls);
+        this.hud.feed([this.who(msg.to), ` ${took} your city ${city.n}!${refund}`], cls);
       }
-      else this.hud.feed(`${this.nameOf(msg.to)} captured ${city.n}${msg.from >= 0 ? ` from ${this.nameOf(msg.from)}` : ''}`);
+      else this.hud.feed([this.who(msg.to), ` ${took} ${city.n}`, ...from]);
+      this.regionChanged(msg);
     } else if (msg.kind === 'turn') {
-      this.hud.feed(`Turn ${msg.turn} complete — your cities paid ${msg.income} gold`, 'good');
+      const need = this.citiesToWin(msg.turn);
+      const drop = need < this.citiesToWin(msg.turn - 1) ? ` · now ${need} cities win` : '';
+      const regions = msg.regionBonus ? ` (${msg.regionBonus} of it for whole regions)` : '';
+      if (msg.liberator) {
+        const smuggled = msg.smuggled ? ` (${msg.smuggled} of it smuggled)` : '';
+        this.hud.feed(`Turn ${msg.turn} complete — +${msg.income} gold as a liberator${smuggled}${drop}`, 'good');
+      } else {
+        const away = msg.smuggledAway ? ` · smugglers took ${msg.smuggledAway}` : '';
+        this.hud.feed(`Turn ${msg.turn} complete — your cities paid ${msg.income} gold${regions}${away}${drop}`, 'good');
+      }
     } else if (msg.kind === 'eliminated') {
-      this.hud.feed(msg.player === this.you ? 'You have been eliminated' : `${this.nameOf(msg.player)} has been eliminated`, 'bad');
+      this.hud.feed(msg.player === this.you ? 'You have been eliminated' : [this.who(msg.player), ' has been eliminated'], 'bad');
+    } else if (msg.kind === 'influence') {
+      // A liberator marked a city for liberation: everyone is told.
+      const name = this.map.cities[msg.city].n, n = `(${msg.count}/${msg.limit})`;
+      if (msg.player === this.you) this.hud.feed(`You are stirring up ${name} ${n}`, 'good');
+      else if (this.cityOwner[msg.city] === this.you) this.hud.feed([this.who(msg.player), ` is stirring up your city ${name} ${n}!`], 'bad');
+      else this.hud.feed([this.who(msg.player), ` is stirring up ${name} ${n}`]);
+    } else if (msg.kind === 'researched') {
+      this.hud.feed(`Research complete: ${TECHS[msg.tech].name} ${msg.level}`, 'good');
+    } else if (msg.kind === 'liberator') {
+      // Death: Liberator. The banner and the panel explain it to the fallen player (hud.js).
+      if (msg.player === this.you) this.hud.feed('You have fallen and lost all your gold. You are now a liberator.', 'bad');
+      else this.hud.feed([this.who(msg.player), ' has fallen and becomes a liberator'], 'bad');
     } else if (msg.kind === 'disconnected') {
-      if (msg.player !== this.you) this.hud.feed(`${this.nameOf(msg.player)} lost connection — their empire stays until they return`);
+      if (msg.player !== this.you) this.hud.feed([this.who(msg.player), ' lost connection — their empire stays until they return']);
     } else if (msg.kind === 'reconnected') {
-      if (msg.player !== this.you) this.hud.feed(`${this.nameOf(msg.player)} is back`);
+      if (msg.player !== this.you) this.hud.feed([this.who(msg.player), ' is back']);
+    } else if (msg.kind === 'hpReset') {
+      this.hud.feed([this.who(msg.player), ' reset the HP of every unit and city (developer console)']);
+    } else if (msg.kind === 'goldSet') {
+      this.hud.feed([this.who(msg.player), ` set every player's gold to ${msg.gold.toLocaleString('en-US')} (developer console)`]);
     } else if (msg.kind === 'left') {
       // Sent before the updated player list, so the leaver's colour is still known here.
-      this.hud.feed(`${this.nameOf(msg.player)} left — their cities are now neutral`);
+      this.hud.feed([this.who(msg.player), ' left — their cities are now neutral']);
+    }
+  }
+
+  // A capture completed your hold on a region, or broke it: say so in the feed.
+  regionChanged(msg) {
+    const region = this.map.cities[msg.city].c;
+    const before = this.cityOwner.slice(), after = this.cityOwner.slice();
+    before[msg.city] = msg.from;
+    after[msg.city] = msg.to;
+    const had = this.regionHolder(region, before) === this.you, has = this.regionHolder(region, after) === this.you;
+    if (had === has) return;
+    const name = this.map.countries[region].n, count = this.regionCities[region].length;
+    const each = `+${ECONOMY.regionBonusPerCity} gold per turn`;
+    if (has) {
+      const all = count > 1 ? `all ${count} cities of ${name}` : `${name}, a one-city region`;
+      this.hud.feed(`You hold ${all}: ${count > 1 ? 'each pays' : 'it pays'} ${each} more`, 'good');
+    } else {
+      this.hud.feed(`You no longer hold all of ${name}: its cities lose the ${each} region bonus`, 'bad');
     }
   }
 
@@ -214,6 +296,16 @@ export class GameClient {
     this.onLeave();
   }
 
+  // Cities needed to win once `turn` turns are over (now, by default): the countdown lowers it.
+  citiesToWin(turn = this.turn) {
+    return citiesToWin(this.options, turn);
+  }
+
+  // Does the target drop by one at the end of the current turn?
+  countdownRunning() {
+    return this.citiesToWin(this.turn + 1) < this.citiesToWin(this.turn);
+  }
+
   // ---------------------------------------------------------------- frame
   frame(now) {
     const dt = Math.min(0.1, (now - this.lastFrame) / 1000);
@@ -226,6 +318,7 @@ export class GameClient {
     this.renderer.draw(now);
     const t2 = performance.now();
     this.hud.update(now);
+    this.turnCountdown(now);
     if (this.viewDirty && now - this.viewSentAt > 150) this.sendView(now);
     if (this.debug) {
       const t3 = performance.now();
@@ -351,16 +444,115 @@ export class GameClient {
   cityMaxHp(ci) { return CITY.hp + this.cityBonus(ci, 'hp'); }
   cityDamage(ci) { return CITY.damage + this.cityBonus(ci, 'damage'); }
   cityRange(ci) { return CITY.attackRange * (1 + this.cityBonus(ci, 'rangePercent') / 100); }
-  cityIncome(ci) { return ECONOMY.goldPerCityPerTurn + this.cityBonus(ci, 'goldPerTurn'); }
+  cityIncome(ci) {
+    return ECONOMY.goldPerCityPerTurn + this.cityBonus(ci, 'goldPerTurn') + (this.cityHasRegionBonus(ci) ? ECONOMY.regionBonusPerCity : 0);
+  }
+  // The player who holds every city of a region, or -1. `owners`: city owners to use instead
+  // of the current ones (a capture event arrives before the snapshot that shows it).
+  regionHolder(region, owners = this.cityOwner) {
+    return regionHolder(this.regionCities[region], (i) => owners[i]);
+  }
+  // Does the city's owner hold its whole region (so it pays ECONOMY.regionBonusPerCity more)?
+  cityHasRegionBonus(ci) {
+    const o = this.cityOwner[ci];
+    return o >= 0 && this.regionHolder(this.map.cities[ci].c) === o;
+  }
   // Units train this many times faster here (Barracks); upgrades always build at normal speed.
   cityTrainRate(ci) { return 1 + this.cityBonus(ci, 'trainSpeedPercent') / 100; }
 
-  // Gold all your cities will pay at the end of the turn (Farms included).
+  // Gold all your cities will pay at the end of the turn (Farms included). A liberator gets a fixed amount.
   myIncome() {
-    let sum = 0;
-    for (let i = 0; i < this.cityOwner.length; i++) if (this.cityOwner[i] === this.you) sum += this.cityIncome(i);
-    return sum;
+    return this.incomes().get(this.you) || 0;
   }
+
+  // Smuggling at the end of this turn, exactly as the host will count it (shared/tech.js).
+  smuggling() {
+    const smugglers = [...this.players.values()].filter((p) => p.liberator && p.smuggle?.length)
+      .map((p) => ({ id: p.id, tech: p.tech, cities: p.smuggle }));
+    return smugglingFlows(smugglers, (ci) => this.cityOwner[ci], (ci) => this.cityIncome(ci));
+  }
+
+  // Gold every player's cities pay at the end of the turn (Farms included), by player id.
+  // City owners and upgrades of the whole map are in every snapshot, so this is known for everyone.
+  incomes() {
+    const out = new Map();
+    for (let i = 0; i < this.cityOwner.length; i++) {
+      const o = this.cityOwner[i];
+      if (o >= 0) out.set(o, (out.get(o) || 0) + this.cityIncome(i));
+    }
+    const flows = this.smuggling();
+    for (const [id, gold] of flows.loss) out.set(id, (out.get(id) || 0) - gold);
+    for (const p of this.players.values()) {
+      if (p.liberator) out.set(p.id, liberatorIncome(p.tech) + (flows.gain.get(p.id) || 0));
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------- liberators (Death: Liberator)
+  // Are you a liberator, i.e. fallen in a game where the fallen take cities back?
+  isLiberator() {
+    return !this.ended && this.options.death === 'liberator' && !!this.players.get(this.you)?.liberator;
+  }
+
+  myTech() {
+    return this.players.get(this.you)?.tech || {};
+  }
+
+  // Cities you have marked for liberation, and how many you may mark before they are all liberated.
+  myInfluence() { return this.players.get(this.you)?.influence || []; }
+  influenceLimit() { return influenceLimit(this.myTech()); }
+  // Cities you smuggle from, and how many you may (Smuggling level).
+  mySmuggle() { return this.players.get(this.you)?.smuggle || []; }
+  smugglingLimit() { return smugglingLimit(this.myTech()); }
+
+  // Turns until you may mark another city (0: now): one mark per turn, and a wait after a
+  // liberation. Counted on the turn counter, like the host does.
+  influenceWait() {
+    const me = this.players.get(this.you);
+    return Math.max(0, Math.max(me?.liberateAt || 0, me?.influenceAt || 0) - (this.turn || 0));
+  }
+
+  // Cities the player holds right now (from the latest snapshot).
+  cityCountOf(owner) {
+    let n = 0;
+    for (const o of this.cityOwner) if (o === owner) n++;
+    return n;
+  }
+
+  // A liberator can't take a city from a player with LIBERATOR.protectedCities cities or fewer.
+  cityProtected(ci) {
+    const o = this.cityOwner[ci];
+    return o >= 0 && this.cityCountOf(o) <= LIBERATOR.protectedCities;
+  }
+
+  // Mark a city for liberation (without Influencer this takes it at once). The host checks that you may.
+  influence(ci) {
+    if (!this.isLiberator() || this.influenceWait() > 0 || this.cityOwner[ci] === this.you || this.cityProtected(ci)) return;
+    if (this.myInfluence().includes(ci) || this.otherMark('influence', ci) >= 0) return;
+    this.link.send({ t: 'influence', city: ci });
+  }
+
+  // Liberate every city you have marked, now.
+  liberateNow() {
+    if (this.isLiberator() && this.myInfluence().length) this.link.send({ t: 'liberate' });
+  }
+
+  // Start or stop smuggling from a city (its mark is separate from influence marks).
+  toggleSmuggling(ci) {
+    if (this.isLiberator() && this.otherMark('smuggle', ci) < 0) this.link.send({ t: 'smuggle', city: ci });
+  }
+
+  // Another liberator who already has this kind of mark ('influence' or 'smuggle') on the city, or -1.
+  // A city carries at most one mark of each kind.
+  otherMark(kind, ci) {
+    const ids = this.marks?.[kind].get(ci) || [];
+    const other = ids.find((id) => id !== this.you);
+    return other === undefined ? -1 : other;
+  }
+
+  // Technologies (Tech window).
+  startResearch(key) { this.link.send({ t: 'research', tech: key }); }
+  cancelResearch() { this.link.send({ t: 'cancelResearch' }); }
 
   // The game balance changed (already applied to the config by main.js): redraw everything
   // that shows stats, costs or build times.
@@ -416,6 +608,19 @@ export class GameClient {
     return Math.max(0, this.nextTurnAt - (now - this.offset) / 1000);
   }
 
+  // A clock tick as the countdown reaches 3, 2 and 1 seconds, the moments the top bar shows them.
+  // Only when the count goes down, so a clock correction can't tick a second twice. Nothing for
+  // a player out of the game: the turn pays them nothing.
+  turnCountdown(now) {
+    const left = this.secondsToNextTurn(now);
+    const s = left === null ? null : Math.ceil(left);
+    const prev = this.turnSecond;
+    this.turnSecond = s;
+    if (s === null || prev === null || s >= prev || s < 1 || s > TICK_SECONDS) return;
+    if (this.ended || this.players.get(this.you)?.eliminated) return;
+    playSound('tick');
+  }
+
   myCities() {
     const out = [];
     for (let i = 0; i < this.cityOwner.length; i++) if (this.cityOwner[i] === this.you) out.push(i);
@@ -449,19 +654,6 @@ export class GameClient {
     this.cam.zoom = 1.1;
     const c = this.map.cities[best];
     this.input.centerOn(c.x, c.y);
-  }
-
-  nextCity() {
-    const mine = this.myCities();
-    if (!mine.length) return;
-    // Visit cities in west-to-east order so repeated presses sweep the map.
-    mine.sort((a, b) => this.map.cities[a].x - this.map.cities[b].x);
-    this.homeIndex = (this.homeIndex + 1) % mine.length;
-    const ci = mine[this.homeIndex];
-    const c = this.map.cities[ci];
-    this.cam.zoom = Math.max(this.cam.zoom, 1.2);
-    this.input.centerOn(c.x, c.y);
-    this.selectCity(ci);
   }
 
   centerOnSelection() {
@@ -546,6 +738,14 @@ export class GameClient {
   commandStop() {
     const ids = [...this.selection];
     if (ids.length) this.link.send({ t: 'stop', ids });
+  }
+
+  // H key: the selected units stand where they are until their next move, attack or stop order.
+  commandHold() {
+    const ids = [...this.selection].filter((id) => this.unitById.get(id)?.owner === this.you);
+    if (!ids.length) return;
+    this.link.send({ t: 'hold', ids });
+    this.hud.feed(`${ids.length} unit${ids.length === 1 ? ' holds' : 's hold'} position`);
   }
 
   // Delete key: the selected units lose HP until they die. Cities are never disbanded.

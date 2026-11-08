@@ -83,6 +83,15 @@ export class Unit {
     this.unreachable = false;
   }
 
+  // H key: stand still. The unit hits whatever comes within reach but never walks, not even
+  // to chase or to return after a push. Only a new order (move, attack, stop) ends it.
+  orderHold() {
+    this.makeIdle();
+    this.order = { kind: 'hold' };
+  }
+
+  get holding() { return this.order.kind === 'hold'; }
+
   // Delete key: from now on the unit loses HP until it dies. It can't be undone.
   disband() {
     this.disbanding = true;
@@ -98,6 +107,10 @@ export class Unit {
 
     if (this.order.kind === 'move') {
       this.walkOrder(dt);
+      return;
+    }
+    if (this.order.kind === 'hold') {
+      this.holdGround(dt);
       return;
     }
 
@@ -128,6 +141,17 @@ export class Unit {
 
   walkOrder(dt) {
     if (this.travel(this.order.x, this.order.y, dt, 0, true) || this.unreachable) this.makeIdle();
+  }
+
+  // Hold: keep hitting the current target while it stays within reach, otherwise the nearest
+  // enemy within reach. Nothing out of reach is chased.
+  holdGround(dt) {
+    let t = this.target ? this.game.resolve(this.target.k, this.target.id, this.owner) : null;
+    if (!t || this.dist(t) > this.reach(t)) {
+      t = this.findInReach();
+      this.target = t ? { k: t.isCity ? 'c' : 'u', id: t.id } : null;
+    }
+    if (t) this.hit(t, dt);
   }
 
   regenerate(dt) {

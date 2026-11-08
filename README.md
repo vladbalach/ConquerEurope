@@ -1,7 +1,8 @@
 # Conquest of Europa
 
 A multiplayer, top-down real-time strategy game played in the browser on a map of Europe.
-Up to 20 players each start with 10 random cities and race to hold **120 of the 207 cities**.
+Up to 20 players each start with 10 random cities and race to hold **120 of the 208 cities** (the host can
+change the number, and by default it counts down every turn).
 
 Core design rules, such as anonymous players, are in [GAME_DESIGN.md](GAME_DESIGN.md).
 
@@ -112,10 +113,17 @@ console (F12) says which way each player connected.
   cleared, and the previous owner gets back the gold for every unit in it that was not finished.
 - **Turns and gold:** the game runs in turns of 60 seconds. At the end of every turn each city pays its owner
   10 gold, all at once. The top bar shows how many turns have passed and the countdown to the next payout.
-  Players start with 50 gold.
+  A clock ticks in the last 3 seconds of every turn.
+  Players start with 50 gold. The **Economy** page of the help (F1) explains every way to get gold.
+- **Regions:** the map is split into regions (Hungary, Wallachia, ...: the countries of `tools/cities.js`). Their
+  names are printed on the map and dark solid lines are their borders; faint lines divide the cities of one region.
+  Hold every city of a region and each of them pays **+2 gold** more per turn (`regionBonusPerCity` in
+  [shared/config.js](shared/config.js)). Lose one and the whole region loses the bonus. A one-city region counts.
+  The city panel shows how many cities of its region the owner holds, and the feed says when you complete or lose one.
 - **Production:** each city has a queue of up to 10 units. Select several cities, by frame or with Shift, and one
   key press queues a unit in each of them.
 - **Disbanding:** to get rid of units you no longer need, select them and press **Delete**.
+- **Alerts:** a sword clash sounds when someone captures one of your cities.
   - They lose 10 HP per second until they die. They don't regenerate, and it can't be undone. Until then they still
     move and fight as ordered. They show a pulsing red pool and red drops rising from them.
   - Cities can't be disbanded.
@@ -124,7 +132,42 @@ console (F12) says which way each player connected.
     gets the kill. So disbanding a dying unit in battle doesn't deny the enemy the kill.
   - The numbers are in `DISBAND` in [shared/config.js](shared/config.js).
 - **Neutral cities:** these are the cities nobody was given. They shoot at everyone.
-- **Winning:** the first player to hold 120 cities wins. The last player standing also wins if the game started with 2 or more players.
+- **Winning:** the first player to hold the target number of cities wins. The last player standing also wins if the game
+  started with 2 or more players. The host sets the target in the waiting room (**Game options**):
+  - **Cities to win:** the starting target, 120 by default (11 up to every city on the map).
+  - **Countdown:** *From start* (the default) lowers the target by one city at the end of every turn: 120 in the first
+    turn, 119 in the second, and so on. *From turn N* (10 by default) keeps it until turn N is over, then counts down
+    the same way. *No* keeps it fixed. It never drops below one city.
+  - The top bar shows your cities next to the current target (▾ while it is counting down).
+  - When the target drops to several players at once, the one with the most cities wins. If they hold exactly as many,
+    the game goes on until one of them pulls ahead.
+- **Death** (also a game option): what happens to a player who has lost every city and every unit.
+  - **Spectator:** they are out of the game and can only watch.
+  - **Liberator** (the default): they lose all their gold and become a liberator. A liberator gets 20 gold at the end of every turn and
+    can take any one city on the map, neutral or another player's: click it and press **Liberate**. A player who holds
+    5 cities or fewer is protected: none of their cities can be taken this way. The city changes
+    hands like a capture (its upgrades are lost, its previous owner gets the gold of its queue back), and the liberator
+    is back in the game. Cities can be taken this way at most once every 2 turns: a player who falls again soon after
+    waits until 2 turns have passed since their last one. Falling again always costs all gold.
+  - Liberators are never eliminated, so with this option the game is won only by holding the target number of cities
+    (or by being the only player left once everyone else has pressed Leave).
+  - The numbers are in `LIBERATOR` in [shared/config.js](shared/config.js). F1 → **Liberator** explains it in the game.
+- **Technologies:** the **Tech** button (or **T**) opens the Technologies window. Research costs gold up front and takes
+  game time; one at a time, and cancelling gives the gold back. Its first tab, **Rebellion**, exists only with
+  Death: Liberator. Rebellion technologies can be researched at any time (also before you fall) but work only while you
+  are a liberator:
+  - **Supporters** (3 levels: 100 / 180 / 260 gold, 2 min each): +20 / +40 / +60 liberator gold per turn.
+  - **Influencer** (3 levels: 100 gold, 2 min each): instead of taking one city, a liberator marks (influences) 2, 3 or 4
+    cities, one per turn. Marking the last one liberates them all at once; **Liberate now** takes the marked ones
+    earlier. Everyone sees the marks (a turning dashed ring in the liberator's colour), and only one liberator can mark a
+    city for liberation. The protection of small empires
+    is checked city by city when they are liberated. Without Influencer the limit is 1: the city is taken at once.
+  - **Smuggling** (3 levels: 30 gold, 1 min each): mark 1, 2 or 3 cities to smuggle from. At the end of every turn
+    half of each one's income goes from its owner to the liberator (neutral cities pay nothing). Only one liberator can
+    smuggle from a city. These marks are separate from influence marks (a gold coin on the map): one liberator may
+    influence a city while another smuggles from it. Click a smuggled city again to stop.
+  - A liberator who is back in the game loses all their marks, so other liberators can mark those cities.
+  - Costs and times are in `TECHS` in [shared/config.js](shared/config.js); new tabs are added in `TECH_TABS`.
 - **Leaving:** pressing Leave gives up for good, and all your cities become neutral.
 
 ### Tweaking the game
@@ -177,17 +220,18 @@ if they send the messages themselves.
 | Left click / drag | Select units (box select) or click a city. A frame with no units in it selects your cities. |
 | Shift + click / drag | Add units, or add cities, to the selection |
 | Double click | On one of your units: select all your units of that type on screen. On one of your cities: select all your cities on screen. Shift adds them |
-| Right click | Move, attack a unit or city, or set the rally point of the selected cities |
+| Right click | Move, attack a unit or city, or set the rally point of the selected cities. New units attack-move to the rally point, fighting anything they meet on the way |
+| Alt + right click | Cities selected: clear their rally points (so does a right click on one of them) |
 | Hold A + right click | Units selected: attack-move, fighting anything met on the way (also on the minimap) |
 | S | Units selected: stop |
+| H | Units selected: hold position. They never walk, not even to chase, and only fight what comes within reach. Other units can't push them aside. A move, attack or stop order ends it. A dashed gold ring marks your units on hold |
 | Delete | Units selected: disband them. They lose 10 HP per second until they die (see Rules). Cities can't be disbanded |
 | Q / W / E / R | Build infantry / archers / cavalry / knight: one in each selected city, as far as your gold reaches |
 | A / S / D / F / G | Cities selected: build Wall / Tower / Castle / Farm / Barracks in each selected city that doesn't have it yet |
 | Ctrl+1–9, 1–9 | Save / recall a control group |
-| H | Jump to your next city |
 | Hold Alt | Show the attack radius of every city. Alt + drag a frame selects only your cities, even with your units inside it |
 | Arrows, screen edge, middle drag, wheel | Move and zoom the camera. Zooming keeps the point under the cursor in place. Zoomed far out, cities are small dots in their owner's colour and country names are hidden |
-| Tab / F1 | Players / help |
+| Tab / F1 | Players / help (pages: Controls, Economy) |
 
 ## Debug mode
 
@@ -204,6 +248,8 @@ Press **~** (the key left of 1) to open the console. ↑/↓ browse history, Tab
 | `stat unitgraph` | The same times as a scrolling graph, like Unreal Engine's `stat unitgraph` |
 | `stat none` | Hides all stats |
 | `show navigation` | Toggles the navigation grid over the map, exactly as the server's pathfinding uses it: green = walkable (mainland), other colours = walkable but a separate landmass (unreachable from the mainland), orange = around a city (paths go around it), red = not walkable. Zoomed in, cell borders are drawn and the legend names the cell under the cursor. `show none` hides it |
+| `reset hp` | Gives every unit and city in the game full HP again (all players'). The order goes to the game's host, which accepts it only in debug builds, and every player sees who used it in the message feed |
+| `gold N` | Sets every player's gold to N (0 or more, e.g. `gold 1000`). Like `reset hp`, it goes to the game's host, works only in debug builds, and every player sees who used it |
 | `help`, `clear` | List commands, clear the console |
 
 What the times mean:
@@ -219,6 +265,9 @@ New commands are added in [public/js/debug/index.js](public/js/debug/index.js).
 ```
 shared/config.js        All game numbers (units, cities, combat, economy), used by server and client
 shared/balance.js       Which stats the Edit button may change, their limits, apply / reset
+shared/options.js       Game options the host sets in the waiting room: cities to win, countdown, death
+shared/regions.js       Regions: their cities, and who holds a whole region (gold bonus)
+shared/tech.js          Technologies: levels, liberator income, influence and smuggling limits, smuggled gold
 server/index.js         HTTP static server, WebSocket lobby, rejoin, admins, hand-over to the host and WebRTC signalling
 server/host-engine.js   Runs one game with a fixed-step loop: in the host's Web Worker, and in tests
 server/ice.js           STUN/TURN servers for the browser-to-browser links (Cloudflare TURN, ICE_SERVERS, RELAY_ONLY)
@@ -242,10 +291,13 @@ public/                 Browser client (vanilla JS modules, Canvas 2D, no build 
   js/balance-editor.js  Edit button table: change unit, upgrade and city stats (admins)
   js/tooltip.js         Custom tooltips for every element with a title
   js/sprites.js         Procedural cone / castle sprites
+  js/sound.js           Sound effects (Web Audio), starts on the first click or key press
   js/units/*.js         One class per unit type: icon and tooltip
   map.json              Generated map data (committed)
-tools/cities.js         The 50 countries and 207 cities (lat/lon)
+  sounds/               Sound effects made by tools/gen-sfx.js (committed)
+tools/cities.js         The 50 countries and 208 cities (lat/lon)
 tools/build-map.js      Builds public/map.json and server/data/navgrid.json from Natural Earth data
+tools/gen-sfx.js        Makes the sound effects in public/sounds/ with ElevenLabs
 ```
 
 To add a unit type:
@@ -256,11 +308,22 @@ To add a unit type:
 The game (in the host's browser) simulates at 20 Hz. Each player receives a 10 Hz snapshot with its own units plus everything near its
 viewport, and renders about 130 ms in the past so movement interpolates smoothly.
 
+### Sound effects
+
+The sounds in `public/sounds/` are made with ElevenLabs text to sound effects. Each sound's prompt is in
+`tools/gen-sfx.js`. To make a new take, set `ELEVENLABS_API_KEY` and run `npm run sfx` (all sounds) or
+`npm run sfx -- tick` (one). The script trims every take to start on its first sound, so it plays in time with the
+game. To add a sound, add it to `SOUNDS` in the script and to `FILES` in `public/js/sound.js`, then call
+`playSound(name)`.
+
 ### Rebuilding the map
 
 Edit `tools/cities.js` and run `npm run build-map`. The script projects the Natural Earth 1:50m country shapes
 (from the `world-atlas` package) to an equal-area projection centred on Europe. It then splits every landmass into
 city territories with a Voronoi diagram. Islands without a city go to the nearest city of the same country.
+Border arcs are simplified once, so neighbouring landmasses share exactly the same border points. Only two kinds of
+border are emitted (`segs`): between regions, and between cities of one region. Today's national borders are drawn
+only where they divide two cities, as one of those two kinds; the renderer draws the rest of the land outline as coast.
 It also rasterises the land into a 5 km grid for movement. Each cell remembers which landmass polygon it belongs
 to, so units cannot hop across straits narrower than a cell.
 

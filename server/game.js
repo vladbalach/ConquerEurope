@@ -4,9 +4,14 @@
 // This file and everything it imports also run in the host player's browser (served as /sim/),
 // where the game is simulated for browser-to-browser play: no Node-only modules here.
 import {
-  UNITS, CITY, CITY_UPGRADES, PRODUCTION_ITEMS, GAME, ECONOMY, DISBAND, PLAYER_COLORS, DEBUG,
+  UNITS, CITY, CITY_UPGRADES, PRODUCTION_ITEMS, GAME, ECONOMY, DISBAND, LIBERATOR, TECH_TYPES, PLAYER_COLORS, DEBUG,
 } from '../shared/config.js';
+import {
+  noTech, nextLevel, techAvailable, liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows,
+} from '../shared/tech.js';
+import { sanitizeOptions, citiesToWin } from '../shared/options.js';
 import { City, markCityObstacles } from './City.js';
+import { regionCities, regionHolder } from '../shared/regions.js';
 import { createUnit } from './units/index.js';
 
 // Secret token a player rejoins with.
@@ -22,6 +27,7 @@ const GRID_CELL = 40;              // spatial hash cell (km) for neighbour queri
 const VIEW_MARGIN = 150;           // km around a player's viewport that is included in snapshots
 const CLUSTER_RADIUS = 150;        // units this close share one path in a group move
 const COMMANDS_PER_SECOND = 20;    // per player; protects the server from command spam
+const MAX_DEBUG_GOLD = 1e9;        // developer console "gold N": the most it may set
 const r1 = (v) => Math.round(v * 10) / 10;
 
 // A player's state at the start: gold, counters, connection.
@@ -29,6 +35,12 @@ function newPlayer(id, client) {
   return {
     id, name: undefined, color: null, token: null, client, connected: true, disconnectedAt: 0,
     gold: ECONOMY.startGold, eliminated: false, cityCount: 0, unitCount: 0, view: null,
+    // Game option "Death: Liberator": fallen and taking cities back. influence: cities marked for
+    // liberation; the next mark is allowed once the turn counter reaches both liberateAt (after a
+    // liberation) and influenceAt (one mark per turn). smuggle: cities smuggled from (separate marks).
+    liberator: false, liberateAt: 0, influence: [], influenceAt: 0, smuggle: [],
+    // Technologies (shared/tech.js): levels, and the one being researched { tech, time, progress, cost }.
+    tech: noTech(), research: null,
     commandTokens: COMMANDS_PER_SECOND,
     kills: 0, losses: 0,         // gold value of enemy units destroyed / own units lost
   };
@@ -65,15 +77,18 @@ function shuffle(a) {
 }
 
 export class Game {
-  constructor({ id, title, map, nav }) {
+  constructor({ id, title, map, nav, options }) {
     this.id = id;
     this.title = title;
     this.status = 'lobby';            // lobby | running | ended
+    // Victory rules the host picks in the waiting room (shared/options.js).
+    this.options = sanitizeOptions(options, map.cities.length);
     this.players = new Map();         // slot id (0..19) -> player
     this.hostId = null;
     this.bounds = map.bounds;
     this.nav = nav;
     this.cities = map.cities.map((c, i) => new City(this, i, c));
+    this.regionCities = regionCities(map);   // region -> its city ids
     // City walls are obstacles for pathfinding (same cities in every game, so mark once).
     if (!nav.obstacle) markCityObstacles(nav, this.cities);
     this.cityGrid = new Grid();
@@ -91,6 +106,11 @@ export class Game {
     this.pendingDeaths = [];
     this.endedAt = 0;
     this.emptySince = 0;
+  }
+
+  // The player who holds every city of this region, or -1 (their cities there pay more gold).
+  regionHolder(region) {
+    return regionHolder(this.regionCities[region], (id) => this.cities[id].owner);
   }
 
   // ------------------------------------------------------------ membership
@@ -120,8 +140,8 @@ export class Game {
   // Browser-to-browser play: the host player's browser runs the game. The lobby server has
   // already shuffled the ids and dealt the colours; the roster has no nicknames, so the host
   // never learns who is who. Players start offline and come online as they connect.
-  static hosted({ id, title, map, nav, roster, hostId }) {
-    const game = new Game({ id, title, map, nav });
+  static hosted({ id, title, map, nav, roster, hostId, options }) {
+    const game = new Game({ id, title, map, nav, options });
     for (const r of roster) {
       const p = { ...newPlayer(r.id, null), color: r.color, connected: false };
       game.players.set(r.id, p);
@@ -200,6 +220,19 @@ export class Game {
     this.broadcastRoom();
   }
 
+  // The host changed the game options in the waiting room. Everyone there sees them at once.
+  setOptions(raw) {
+    if (this.status !== 'lobby' || !raw || typeof raw !== 'object') return false;
+    this.options = sanitizeOptions({ ...this.options, ...raw }, this.cities.length);
+    this.broadcastRoom();
+    return true;
+  }
+
+  // Cities needed to win right now: the countdown lowers it as turns pass.
+  citiesToWin() {
+    return citiesToWin(this.options, this.turn);
+  }
+
   // An admin moved a city on the map (Edit map): it stands at the new place in this game at once.
   moveCity(id, x, y) {
     const c = this.cities[id];
@@ -257,7 +290,7 @@ export class Game {
 
   sendStart(p) {
     if (!p.client) return;
-    p.client.send({ t: 'start', you: p.id, title: this.title, players: this.playerList() });
+    p.client.send({ t: 'start', you: p.id, title: this.title, options: this.options, players: this.playerList() });
   }
 
   // Players as game clients see them. While the game runs nobody may learn who is who
@@ -268,6 +301,8 @@ export class Game {
     return [...this.players.values()].map((p) => ({
       id: p.id, ...(secret ? {} : { name: p.name }), color: p.color, connected: p.connected,
       eliminated: p.eliminated, cities: p.cityCount, units: p.unitCount, kills: p.kills, losses: p.losses,
+      liberator: p.liberator, liberateAt: p.liberateAt, influence: p.influence, influenceAt: p.influenceAt,
+      smuggle: p.smuggle, tech: p.tech,
     }));
   }
 
@@ -283,7 +318,7 @@ export class Game {
       }));
     return {
       id: this.id, title: this.title, status: this.status, host: host ? host.name : '-',
-      max: GAME.maxPlayers, canJoin: !this.canJoin(), players,
+      max: GAME.maxPlayers, canJoin: !this.canJoin(), options: this.options, players,
     };
   }
 
@@ -294,7 +329,7 @@ export class Game {
   broadcastRoom() {
     this.broadcast({
       t: 'room', id: this.id, title: this.title, status: this.status, hostId: this.hostId,
-      players: this.playerList(),
+      options: this.options, players: this.playerList(),
     });
   }
 
@@ -353,6 +388,10 @@ export class Game {
         for (const u of this.ownedUnits(player, msg.ids)) u.makeIdle();
         return;
       }
+      case 'hold': {
+        for (const u of this.ownedUnits(player, msg.ids)) u.orderHold();
+        return;
+      }
       case 'disband': {
         // Units only: ids name units, never cities.
         for (const u of this.ownedUnits(player, msg.ids)) u.disband();
@@ -382,6 +421,35 @@ export class Game {
         if (msg.index === 0) c.progress = 0;
         return;
       }
+      case 'influence': {
+        // A liberator marks a city for liberation (game option "Death: Liberator").
+        const c = Number.isInteger(msg.city) ? this.cities[msg.city] : null;
+        if (c) this.influence(player, c);
+        return;
+      }
+      case 'liberate':
+        // Liberate every influenced city now, without waiting for the limit.
+        if (player.liberator && player.influence.length) this.liberateInfluenced(player);
+        return;
+      case 'smuggle': {
+        const c = Number.isInteger(msg.city) ? this.cities[msg.city] : null;
+        if (c) this.toggleSmuggling(player, c);
+        return;
+      }
+      case 'research':
+        this.startResearch(player, msg.tech);
+        return;
+      case 'cancelResearch':
+        this.cancelResearch(player);
+        return;
+      case 'resetHp':
+        // Developer console "reset hp" (debug builds only, like the rest of the debug tools).
+        if (DEBUG) this.resetHp(player.id);
+        return;
+      case 'setGold':
+        // Developer console "gold N" (debug builds only).
+        if (DEBUG && num(msg.gold)) this.setGold(player.id, msg.gold);
+        return;
       case 'rally': {
         for (const c of this.ownedCities(player, msg)) {
           let p = null;
@@ -394,6 +462,127 @@ export class Game {
       }
       default:
     }
+  }
+
+  // ------------------------------------------------------------ liberators
+  // Game option "Death: Liberator": a player who lost every city and unit marks ("influences")
+  // cities, one per turn, and liberates them all at once: when as many are marked as their
+  // Influencer limit allows (1 without it: the city is taken at once), or earlier on request.
+  // After a liberation the next mark waits LIBERATOR.cooldownTurns turns.
+  canInfluence(p) {
+    return this.status === 'running' && this.options.death === 'liberator' && p.liberator &&
+      this.turn >= p.liberateAt && this.turn >= p.influenceAt && p.influence.length < influenceLimit(p.tech);
+  }
+
+  // The liberator (other than `p`) who already has this kind of mark ('influence' or 'smuggle') on
+  // the city, or null. A city carries at most one mark of each kind.
+  markedBy(kind, cityId, p) {
+    for (const q of this.players.values()) if (q !== p && q[kind].includes(cityId)) return q;
+    return null;
+  }
+
+  influence(p, c) {
+    if (!this.canInfluence(p) || c.owner === p.id || p.influence.includes(c.id) || !this.liberable(c)) return;
+    if (this.markedBy('influence', c.id, p)) return;
+    p.influence.push(c.id);
+    p.influenceAt = this.turn + 1;
+    const limit = influenceLimit(p.tech);
+    // Everyone sees which cities are about to be liberated.
+    this.broadcast({ t: 'event', kind: 'influence', player: p.id, city: c.id, count: p.influence.length, limit });
+    if (p.influence.length >= limit) this.liberateInfluenced(p);
+    else this.sendScores();
+  }
+
+  // Every influenced city changes hands like a capture (upgrades lost, the previous owner gets the
+  // gold of its queue back), and the liberator is back in the game. The protection of small empires
+  // is checked city by city, so nobody is taken below LIBERATOR.protectedCities this way.
+  liberateInfluenced(p) {
+    const cities = p.influence.map((id) => this.cities[id]);
+    p.influence = [];
+    let taken = 0;
+    for (const c of cities) {
+      if (this.status !== 'running') break;
+      if (c.owner === p.id || !this.liberable(c)) continue;
+      this.captureCity(c, p.id, true);
+      taken++;
+      this.recount();           // city counts for the next protection check (and a possible win)
+    }
+    if (taken) {
+      this.revive(p);
+      p.liberateAt = this.turn + LIBERATOR.cooldownTurns;
+    }
+    this.recount();
+    this.sendScores();          // everyone sees at once that they are back
+  }
+
+  // Back in the game: no longer a liberator, and their marks are gone, so other liberators may
+  // mark those cities (a city carries one mark of each kind).
+  revive(p) {
+    p.liberator = false;
+    p.influence = [];
+    p.smuggle = [];
+  }
+
+  // Smuggling marks (separate from influence marks): click a city again to stop.
+  toggleSmuggling(p, c) {
+    if (this.status !== 'running' || this.options.death !== 'liberator' || !p.liberator) return;
+    const i = p.smuggle.indexOf(c.id);
+    if (i >= 0) p.smuggle.splice(i, 1);
+    else if (c.owner !== p.id && p.smuggle.length < smugglingLimit(p.tech) && !this.markedBy('smuggle', c.id, p)) p.smuggle.push(c.id);
+    else return;
+    this.sendScores();
+  }
+
+  // ------------------------------------------------------------ technologies
+  // Research is paid up front and runs on game time; one at a time. Rebellion technologies exist
+  // only with Death: Liberator (techAvailable).
+  startResearch(p, key) {
+    if (!TECH_TYPES.includes(key) || p.research || p.eliminated || !techAvailable(key, this.options)) return;
+    const next = nextLevel(key, p.tech[key]);
+    if (!next || p.gold < next.cost) return;
+    p.gold -= next.cost;
+    p.research = { tech: key, time: next.time, progress: 0, cost: next.cost };
+  }
+
+  cancelResearch(p) {
+    if (!p.research) return;
+    p.gold += p.research.cost;
+    p.research = null;
+  }
+
+  advanceResearch(dt) {
+    for (const p of this.players.values()) {
+      const r = p.research;
+      if (!r) continue;
+      r.progress += dt;
+      if (r.progress < r.time) continue;
+      p.tech = { ...p.tech, [r.tech]: p.tech[r.tech] + 1 };
+      p.research = null;
+      if (p.client) p.client.send({ t: 'event', kind: 'researched', tech: r.tech, level: p.tech[r.tech] });
+      this.sendScores();        // levels are public: they change what liberators can do
+    }
+  }
+
+  // Neutral cities can always be taken; another player's only while they hold more than
+  // LIBERATOR.protectedCities cities, so a small empire is not finished off this way.
+  liberable(c) {
+    const owner = this.players.get(c.owner);
+    return !owner || owner.cityCount > LIBERATOR.protectedCities;
+  }
+
+  // Every unit and city of the game back to full HP (developer console, debug builds only).
+  // Everyone is told, so nobody wonders why a siege suddenly failed.
+  resetHp(by) {
+    for (const u of this.units.values()) u.hp = u.maxHp;
+    for (const c of this.cities) c.hp = c.maxHp;
+    this.broadcast({ t: 'event', kind: 'hpReset', player: by });
+  }
+
+  // Every player's gold set to the same amount (developer console, debug builds only).
+  setGold(by, amount) {
+    const gold = Math.round(Math.min(MAX_DEBUG_GOLD, Math.max(0, amount)));
+    for (const p of this.players.values()) p.gold = gold;
+    this.broadcast({ t: 'event', kind: 'goldSet', player: by, gold });
   }
 
   // Send a group to (tx, ty) in formation. Nearby units share one path; units on
@@ -478,6 +667,7 @@ export class Game {
       p.commandTokens = Math.min(COMMANDS_PER_SECOND, p.commandTokens + COMMANDS_PER_SECOND * dt);
     }
     if (this.time >= this.nextTurnAt) this.endTurn();
+    this.advanceResearch(dt);
 
     for (const c of this.cities) {
       if (c.owner < 0 || !c.queue.length) continue;
@@ -553,19 +743,34 @@ export class Game {
     if (killer) killer.kills += value;
   }
 
-  // Every turn each city pays its owner (more with a Farm); the gold arrives all at once.
+  // Every turn each city pays its owner (more with a Farm, and more when the owner holds its
+  // whole region); the gold arrives all at once.
   endTurn() {
     this.turn++;
     this.nextTurnAt += ECONOMY.turnSeconds;
-    const income = new Map();
+    const income = new Map(), fromRegions = new Map();
+    const add = (map, id, gold) => map.set(id, (map.get(id) || 0) + gold);
     for (const c of this.cities) {
-      if (c.owner >= 0) income.set(c.owner, (income.get(c.owner) || 0) + c.goldPerTurn);
+      if (c.owner < 0) continue;
+      add(income, c.owner, c.goldPerTurn);
+      if (c.hasRegionBonus) add(fromRegions, c.owner, ECONOMY.regionBonusPerCity);
     }
+    // Smugglers (liberators with Smuggling) take a share of the income of the cities they marked.
+    const smugglers = [...this.players.values()].filter((p) => p.liberator && p.smuggle.length)
+      .map((p) => ({ id: p.id, tech: p.tech, cities: p.smuggle }));
+    const smuggled = smugglingFlows(smugglers, (ci) => this.cities[ci].owner, (ci) => this.cities[ci].goldPerTurn);
     for (const p of this.players.values()) {
       if (p.eliminated) continue;
-      const gold = income.get(p.id) || 0;
+      // A liberator has no cities: they get a fixed amount instead (more with Supporters).
+      const gain = smuggled.gain.get(p.id) || 0, loss = smuggled.loss.get(p.id) || 0;
+      const gold = p.liberator ? liberatorIncome(p.tech) + gain : (income.get(p.id) || 0) - loss;
       p.gold += gold;
-      if (p.client) p.client.send({ t: 'event', kind: 'turn', turn: this.turn, income: gold });
+      if (p.client) {
+        p.client.send({
+          t: 'event', kind: 'turn', turn: this.turn, income: gold, regionBonus: fromRegions.get(p.id) || 0,
+          ...(p.liberator ? { liberator: true } : {}), ...(gain ? { smuggled: gain } : {}), ...(loss ? { smuggledAway: loss } : {}),
+        });
+      }
     }
   }
 
@@ -573,10 +778,11 @@ export class Game {
     const [x, y] = city.spawnPoint(UNITS[type].size);
     const u = createUnit(type, this, this.nextUnitId++, city.owner, x, y);
     this.units.set(u.id, u);
+    // New units attack-move to the rally point, fighting anything they meet on the way.
     if (city.rally) {
       const jx = city.rally.x + (Math.random() - 0.5) * 24, jy = city.rally.y + (Math.random() - 0.5) * 24;
       const p = this.nav.walkable(jx, jy) ? [jx, jy] : [city.rally.x, city.rally.y];
-      u.orderMove(p[0], p[1], false);
+      u.orderMove(p[0], p[1], true);
     }
     return u;
   }
@@ -605,9 +811,9 @@ export class Game {
             nx = dx / d; ny = dy / d;
           }
           const overlap = min - d;
-          // Fighting units hold their ground; walkers flow around them.
-          const wa = a.attacking ? 0.25 : 1, wb = b.attacking ? 0.25 : 1;
-          const sa = wa / (wa + wb), sb = 1 - sa;
+          // Fighting units hold their ground and units on Hold don't budge; walkers flow around them.
+          const wa = a.holding ? 0 : a.attacking ? 0.25 : 1, wb = b.holding ? 0 : b.attacking ? 0.25 : 1;
+          const sa = wa + wb > 0 ? wa / (wa + wb) : 0.5, sb = 1 - sa;
           const ax = a.x - nx * overlap * sa, ay = a.y - ny * overlap * sa;
           const bx = b.x + nx * overlap * sb, by = b.y + ny * overlap * sb;
           const aOk = nav.canStep(a.x, a.y, ax, ay), bOk = nav.canStep(b.x, b.y, bx, by);
@@ -633,13 +839,16 @@ export class Game {
   }
 
   // The previous owner gets back the gold for every queued unit that was not finished.
-  captureCity(c, newOwner) {
+  // `liberated`: taken by a liberator rather than by force.
+  captureCity(c, newOwner, liberated = false) {
     const prev = c.owner;
     const loser = this.players.get(prev);
     const refund = loser ? c.queue.reduce((sum, item) => sum + itemDef(item).cost, 0) : 0;
     if (loser) loser.gold += refund;
     c.capture(newOwner);
-    this.broadcast({ t: 'event', kind: 'capture', city: c.id, from: prev, to: newOwner, refund });
+    this.broadcast({
+      t: 'event', kind: 'capture', city: c.id, from: prev, to: newOwner, refund, ...(liberated ? { liberated: true } : {}),
+    });
   }
 
   recount() {
@@ -655,15 +864,39 @@ export class Game {
     }
     if (this.status !== 'running') return;
 
+    // A player with no city and no unit has fallen. Depending on the game option "Death" they are
+    // out (spectator), or they lose all their gold and become a liberator, who stays in the game.
+    const liberators = this.options.death === 'liberator';
+    let fell = false;
     for (const p of this.players.values()) {
-      if (!p.eliminated && p.cityCount === 0 && p.unitCount === 0) {
+      const dead = p.cityCount === 0 && p.unitCount === 0;
+      if (liberators) {
+        if (dead && !p.liberator) {
+          p.liberator = true;
+          p.gold = 0;
+          fell = true;
+          this.broadcast({ t: 'event', kind: 'liberator', player: p.id });
+        } else if (!dead && p.liberator) {
+          this.revive(p);
+        }
+      } else if (!p.eliminated && dead) {
         p.eliminated = true;
         this.broadcast({ t: 'event', kind: 'eliminated', player: p.id });
       }
     }
+    if (fell) this.sendScores();
+    // Whoever holds the target number of cities wins. When the countdown brings the target down to
+    // several players at once, the one with the most cities wins; if they hold exactly as many,
+    // the game goes on until one of them pulls ahead.
+    const need = this.citiesToWin();
+    let best = null, tied = false;
     for (const p of this.players.values()) {
-      if (p.cityCount >= GAME.winCities) { this.end(p.id); return; }
+      if (p.cityCount < need) continue;
+      if (!best || p.cityCount > best.cityCount) { best = p; tied = false; }
+      else if (p.cityCount === best.cityCount) tied = true;
     }
+    if (best && !tied) { this.end(best.id); return; }
+    // Liberators are never eliminated: while one of them is left, the game goes on.
     const alive = [...this.players.values()].filter((p) => !p.eliminated);
     if (this.startedWith >= 2 && alive.length === 1) this.end(alive[0].id);
     else if (alive.length === 0) this.end(-1);
@@ -705,7 +938,7 @@ export class Game {
       for (const u of this.units.values()) {
         if (u.owner !== p.id && !inView(u.x, u.y)) continue;
         us.push(u.id, u.t, u.owner, r1(u.x), r1(u.y), Math.ceil(u.hp),
-          (u.attacking ? 1 : 0) | (u.wantMove > 0 ? 2 : 0) | (u.disbanding ? 4 : 0), u.engaged);
+          (u.attacking ? 1 : 0) | (u.wantMove > 0 ? 2 : 0) | (u.disbanding ? 4 : 0) | (u.holding ? 8 : 0), u.engaged);
       }
       const shots = [];
       for (const c of this.cities) if (c.target && inView(c.x, c.y)) shots.push(c.id, c.target);
@@ -720,6 +953,8 @@ export class Game {
       p.client.send({
         t: 'snap', time, u: us, c: cityArr, s: shots, d: deaths, g: Math.floor(p.gold), q,
         turn: this.turn, next: this.nextTurnAt, ...debug,
+        // Your research (private): technology id and seconds done.
+        r: p.research ? [TECH_TYPES.indexOf(p.research.tech), r1(p.research.progress)] : null,
       });
     }
     this.pendingDeaths.length = 0;

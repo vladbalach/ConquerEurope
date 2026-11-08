@@ -2,12 +2,16 @@
 //
 //  1. Project every country polygon with a Lambert azimuthal equal-area projection
 //     centred on Europe (units ~ km, y axis pointing down/south).
-//  2. Clip to the playable rectangle, simplify, drop tiny islets.
+//  2. Simplify every border arc once (so neighbouring countries keep sharing exactly the
+//     same border points), clip to the playable rectangle, drop tiny islets.
 //  3. Assign each city to the landmass (polygon) it stands on.
 //  4. Split every landmass between its cities with a Voronoi diagram, so each
 //     city owns a territory. Landmasses without a city (small islands, micro
 //     states) go to the nearest city.
-//  5. Emit the Voronoi edges inside landmasses as province lines / country borders.
+//  5. Emit the lines between city territories as `segs`: the Voronoi edges inside landmasses
+//     and the parts of today's national borders that divide two cities. Each one is a
+//     province line (two cities of one region) or a region border (two regions, or a region
+//     and neutral land). Today's borders inside one city's territory are not drawn.
 //  6. Rasterise land into server/data/navgrid.json (units can only walk on land).
 //
 // Run: npm run build-map
@@ -15,7 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { feature } from 'topojson-client';
+import { feature, transform } from 'topojson-client';
 import { COUNTRIES } from './cities.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -110,16 +114,15 @@ function dpOpen(pts, tol) {
   return pts.filter((_, i) => keep[i]);
 }
 
-function simplifyRing(pts, tol) {
-  if (pts.length < 4) return pts;
-  let far = 0, fd = 0;
-  for (let i = 1; i < pts.length; i++) {
-    const d = (pts[i][0] - pts[0][0]) ** 2 + (pts[i][1] - pts[0][1]) ** 2;
-    if (d > fd) { fd = d; far = i; }
+// A closed ring without its closing point and without repeated points.
+function openRing(pts) {
+  const out = [];
+  for (const p of pts) {
+    const q = out[out.length - 1];
+    if (!q || q[0] !== p[0] || q[1] !== p[1]) out.push(p);
   }
-  const a = dpOpen(pts.slice(0, far + 1), tol);
-  const b = dpOpen(pts.slice(far).concat([pts[0]]), tol);
-  return a.slice(0, -1).concat(b.slice(0, -1));
+  while (out.length > 1 && out[0][0] === out[out.length - 1][0] && out[0][1] === out[out.length - 1][1]) out.pop();
+  return out;
 }
 
 function inRing(r, x, y) {
@@ -246,25 +249,36 @@ if (moved) console.log(`${moved} cities placed where admins moved them (${path.r
 // ---------------------------------------------------------------- land polygons
 const topo = JSON.parse(fs.readFileSync(path.join(ROOT, 'node_modules/world-atlas/countries-50m.json'), 'utf8'));
 const fc = feature(topo, topo.objects.countries);
+// The same countries drawn from arcs that were projected and simplified one by one. A border
+// arc is shared by the two countries on either side of it, so both keep exactly the same border
+// points: their fills meet without gaps, and the border is found later by matching edges.
+const decodeArc = transform(topo.transform);
+const simpleTopo = {
+  ...topo,
+  transform: null,
+  arcs: topo.arcs.map((arc) => dpOpen(arc.map((p, k) => project(...decodeArc(p, k))), SIMPLIFY_TOL)),
+};
+const simpleFeatures = feature(simpleTopo, simpleTopo.objects.countries).features;
+const polyList = (g) => (g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : []);
 
 const polys = [];   // { f: featureIndex, rings: [[ [x,y], ...], ...], bbox, area }
 const featureNames = [];
-for (const f of fc.features) {
+for (const [fIndex, f] of fc.features.entries()) {
   if (!f.geometry) continue;
-  const g = f.geometry;
-  const gp = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
+  const gp = polyList(f.geometry);
+  const simple = polyList(simpleFeatures[fIndex].geometry);
   const fi = featureNames.length;
   let used = false;
-  for (const poly of gp) {
+  for (const [pIndex, poly] of gp.entries()) {
     if (!poly[0].some(([lon, lat]) => lon > -45 && lon < 80 && lat > 20 && lat < 85)) continue;
     const rings = [];
     const rawRings = [];   // unsimplified: neighbouring countries share exact borders, so no slivers when rasterised
     for (let k = 0; k < poly.length; k++) {
-      let pts = poly[k].map(([lon, lat]) => project(lon, lat));
-      const last = pts[pts.length - 1];
-      if (pts.length > 1 && last[0] === pts[0][0] && last[1] === pts[0][1]) pts.pop();
-      const raw = clipRingRect(pts, rect);
-      if (raw.length >= 3) pts = simplifyRing(raw, SIMPLIFY_TOL);
+      const full = poly[k].map(([lon, lat]) => project(lon, lat));
+      const last = full[full.length - 1];
+      if (full.length > 1 && last[0] === full[0][0] && last[1] === full[0][1]) full.pop();
+      const raw = clipRingRect(full, rect);
+      const pts = clipRingRect(openRing(simple[pIndex][k]), rect);
       if (raw.length < 3 || pts.length < 3 || ringArea(pts) < MIN_RING_AREA) {
         if (k === 0) break;      // outer ring gone -> drop whole polygon
         continue;
@@ -399,6 +413,7 @@ for (const p of polys) {
     owners = best >= 0 ? [best] : [];
     if (best >= 0) orphanCount++;
   }
+  p.owners = owners;
 
   const entry = { r: p.rings.map(flat), c: owners };
   if (owners.length >= 2) {
@@ -421,7 +436,7 @@ for (const p of polys) {
       for (let k = 0; k < cell.length; k++) {
         const cj = labels[k];
         if (cj < 0 || cj < ci) continue;
-        const kind = cities[cj].c === ca.c ? 0 : 1;   // 0 = province line, 1 = country border
+        const kind = borderKind(ci, cj);
         for (const s of clipSegToPoly(cell[k], cell[(k + 1) % cell.length], p.rings)) {
           segs.push(r1(s[0]), r1(s[1]), r1(s[2]), r1(s[3]), kind);
         }
@@ -429,6 +444,84 @@ for (const p of polys) {
     });
   }
   outPolys.push(entry);
+}
+
+// Line between the territories of cities a and b (-1 = neutral land): 0 = province line
+// (two cities of one region), 1 = region border, -1 = none (one city, or neutral on both sides).
+function borderKind(a, b) {
+  if (a === b) return -1;
+  if (a < 0 || b < 0) return 1;
+  return cities[a].c === cities[b].c ? 0 : 1;
+}
+
+// ---------------------------------------------------------------- borders between landmasses
+// Today's national borders are drawn only where they divide two cities' territories. They are
+// the ring edges two landmasses share (same points, see simpleTopo), compared after rounding,
+// exactly as written to map.json. Each shared edge is cut where a Voronoi edge of either side
+// crosses it, and every piece gets the line kind of the two cities it divides.
+const ownerAt = (p, x, y) => {
+  if (p.owners.length < 2) return p.owners.length ? p.owners[0] : -1;
+  let best = -1, bd = Infinity;
+  for (const ci of p.owners) {
+    const d = (cities[ci].x - x) ** 2 + (cities[ci].y - y) ** 2;
+    if (d < bd) { bd = d; best = ci; }
+  }
+  return best;
+};
+
+// Where along a->b (0..1) the point is equally far from two cities of the landmass.
+function voronoiCuts(a, b, owners, ts) {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  for (let i = 0; i < owners.length; i++) {
+    for (let j = i + 1; j < owners.length; j++) {
+      const ci = cities[owners[i]], cj = cities[owners[j]];
+      const ex = cj.x - ci.x, ey = cj.y - ci.y;
+      const slope = 2 * (dx * ex + dy * ey);
+      if (!slope) continue;
+      const t = -(2 * (a[0] * ex + a[1] * ey) + ci.x * ci.x + ci.y * ci.y - cj.x * cj.x - cj.y * cj.y) / slope;
+      if (t > 0 && t < 1) ts.push(t);
+    }
+  }
+}
+
+let landBorderEdges = 0;
+{
+  const edges = new Map();   // "x,y,x,y" (smaller point first) -> landmass of the first ring that has it
+  polys.forEach((p, pi) => {
+    for (const ring of outPolys[pi].r) {
+      const n = ring.length / 2;
+      for (let e = 0; e < n; e++) {
+        const i = 2 * e, j = 2 * ((e + 1) % n);
+        const a = [ring[i], ring[i + 1]], b = [ring[j], ring[j + 1]];
+        if (a[0] === b[0] && a[1] === b[1]) continue;
+        const swap = a[0] > b[0] || (a[0] === b[0] && a[1] > b[1]);
+        const key = swap ? `${b},${a}` : `${a},${b}`;
+        const other = edges.get(key);
+        if (other === undefined) { edges.set(key, pi); continue; }
+        if (other === pi) continue;
+        landBorderEdges++;
+        const pa = polys[other];
+        const ts = [0, 1];
+        voronoiCuts(a, b, p.owners, ts);
+        voronoiCuts(a, b, pa.owners, ts);
+        ts.sort((x, y) => x - y);
+        const dx = b[0] - a[0], dy = b[1] - a[1];
+        let from = 0, kind = null;
+        const emit = (to) => {
+          if (kind >= 0) segs.push(r1(a[0] + dx * from), r1(a[1] + dy * from), r1(a[0] + dx * to), r1(a[1] + dy * to), kind);
+        };
+        for (let k = 0; k + 1 < ts.length; k++) {
+          if (ts[k + 1] - ts[k] < 1e-9) continue;
+          const tm = (ts[k] + ts[k + 1]) / 2;
+          const x = a[0] + dx * tm, y = a[1] + dy * tm;
+          const kk = borderKind(ownerAt(p, x, y), ownerAt(pa, x, y));
+          if (kind !== null && kk !== kind) { emit(ts[k]); from = ts[k]; }
+          kind = kk;
+        }
+        emit(1);
+      }
+    }
+  });
 }
 
 // ---------------------------------------------------------------- land grid output
@@ -466,7 +559,8 @@ fs.mkdirSync(path.dirname(OUT), { recursive: true });
 fs.writeFileSync(OUT, JSON.stringify(out));
 const vertexCount = outPolys.reduce((s, p) => s + p.r.reduce((t, r) => t + r.length / 2, 0), 0);
 console.log(`map.json: ${countries.length} countries, ${cities.length} cities, ${outPolys.length} landmasses ` +
-  `(${orphanCount} orphan islands assigned), ${vertexCount} vertices, ${segs.length / 5} border segments, ` +
+  `(${orphanCount} orphan islands assigned), ${vertexCount} vertices, ${landBorderEdges} land border edges, ` +
+  `${segs.length / 5} border segments, ` +
   `${(fs.statSync(OUT).size / 1024).toFixed(0)} KB`);
 console.log(`bounds: ${JSON.stringify(out.bounds)}`);
 console.log(`navgrid.json: ${nav.w}x${nav.h} cells of ${NAV_CELL} km, ${grid.filter((v) => v).length} on land, ` +

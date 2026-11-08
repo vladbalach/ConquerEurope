@@ -1,7 +1,33 @@
 {
   "units": {
     "cavalry": {
-      "buildTime": 8
+      "buildTime": 7
+    },
+    "knight": {
+      "hp": 250
+    }
+  },
+  "upgrades": {
+    "wall": {
+      "buildTime": 10,
+      "hp": 250
+    },
+    "tower": {
+      "buildTime": 10,
+      "rangePercent": 55
+    },
+    "castle": {
+      "cost": 20,
+      "buildTime": 10,
+      "damage": 20
+    },
+    "farm": {
+      "buildTime": 20
+    },
+    "barracks": {
+      "cost": 30,
+      "buildTime": 12,
+      "trainSpeedPercent": 100
     }
   }
 }

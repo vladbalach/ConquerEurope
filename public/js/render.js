@@ -33,6 +33,50 @@ function ringArea(r) {
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
+// The lines of the map: coastlines, region borders and the borders between cities of one region.
+// tools/build-map.js gives neighbouring landmasses exactly the same border points, so a ring edge
+// that another ring also has is a land border, not coast. Land borders are drawn from map.segs
+// only, where they divide two cities ([x0, y0, x1, y1, kind], kind 1 = region border).
+export function mapLines(map) {
+  const edgeKey = (r, i, j) => (r[i] < r[j] || (r[i] === r[j] && r[i + 1] < r[j + 1])
+    ? `${r[i]},${r[i + 1]},${r[j]},${r[j + 1]}` : `${r[j]},${r[j + 1]},${r[i]},${r[i + 1]}`);
+  const uses = new Map();
+  for (const p of map.polys) {
+    for (const r of p.r) {
+      for (let i = 0; i < r.length; i += 2) {
+        const k = edgeKey(r, i, (i + 2) % r.length);
+        uses.set(k, (uses.get(k) || 0) + 1);
+      }
+    }
+  }
+  const coast = new Path2D();
+  for (const p of map.polys) {
+    for (const r of p.r) {
+      const n = r.length / 2;
+      const land = (e) => uses.get(edgeKey(r, 2 * e, 2 * ((e + 1) % n))) > 1;
+      // Walk the ring from just after a land border, so no stretch of coast is cut in two.
+      let start = -1;
+      for (let e = 0; e < n && start < 0; e++) if (land(e)) start = (e + 1) % n;
+      if (start < 0) { addRing(coast, r); continue; }
+      let open = false;
+      for (let m = 0; m < n; m++) {
+        const e = (start + m) % n, j = 2 * ((e + 1) % n);
+        if (land(e)) { open = false; continue; }
+        if (!open) { coast.moveTo(r[2 * e], r[2 * e + 1]); open = true; }
+        coast.lineTo(r[j], r[j + 1]);
+      }
+    }
+  }
+  const regions = new Path2D(), cities = new Path2D();
+  const s = map.segs;
+  for (let i = 0; i < s.length; i += 5) {
+    const path = s[i + 4] ? regions : cities;
+    path.moveTo(s[i], s[i + 1]);
+    path.lineTo(s[i + 2], s[i + 3]);
+  }
+  return { coast, regions, cities };
+}
+
 export class Renderer {
   constructor(game, canvas, minimap) {
     this.g = game;
@@ -77,14 +121,7 @@ export class Renderer {
         });
       }
     }
-    this.provinceLines = new Path2D();
-    this.countryLines = new Path2D();
-    const s = map.segs;
-    for (let i = 0; i < s.length; i += 5) {
-      const path = s[i + 4] ? this.countryLines : this.provinceLines;
-      path.moveTo(s[i], s[i + 1]);
-      path.lineTo(s[i + 2], s[i + 3]);
-    }
+    this.lines = mapLines(map);
     const L = COUNTRY_LABEL;
     this.countryLabels = map.countries.map((co, i) => ({
       text: co.n.toUpperCase(),
@@ -216,20 +253,22 @@ export class Renderer {
     }
     ctx.globalAlpha = 1;
 
+    // Only two kinds of border: between the cities of one region (faint) and between regions.
+    const lines = this.lines;
     ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
     if (detailed) {
       ctx.strokeStyle = 'rgba(70,50,30,0.28)';
       ctx.lineWidth = 0.9 / z;
-      ctx.stroke(this.provinceLines);
-      ctx.strokeStyle = 'rgba(55,32,18,0.8)';
-      ctx.lineWidth = 1.7 / z;
-      ctx.setLineDash([6 / z, 3 / z]);
-      ctx.stroke(this.countryLines);
-      ctx.setLineDash([]);
+      ctx.stroke(lines.cities);
     }
+    ctx.strokeStyle = 'rgba(55,32,18,0.85)';
+    ctx.lineWidth = (detailed ? 1.6 : 0.5) / z;
+    ctx.stroke(lines.regions);
     ctx.strokeStyle = 'rgba(45,30,18,0.85)';
     ctx.lineWidth = (detailed ? 1.3 : 0.6) / z;
-    ctx.stroke(this.outlines);
+    ctx.stroke(lines.coast);
+    ctx.lineCap = 'butt';
   }
 
   // Faint country names, fixed to the map: their size and place are in world units,
@@ -322,6 +361,42 @@ export class Renderer {
     ctx.setLineDash([]);
   }
 
+  // Liberators' marks (game option Death: Liberator), shown to everyone. A city marked for
+  // liberation gets a turning dashed ring in the liberator's colour; a city smuggled from gets a
+  // gold coin rimmed in the smuggler's colour. One ring or coin per liberator.
+  drawCityMarks(ci, sx, sy, far, size, mr, top, now) {
+    const g = this.g, m = g.marks, ctx = this.ctx;
+    if (!m) return;
+    const influence = m.influence.get(ci), smuggle = m.smuggle.get(ci);
+    if (influence) {
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([6, 4]);
+      ctx.lineDashOffset = -now / 50;
+      influence.forEach((id, k) => {
+        ctx.strokeStyle = g.colorOf(id);
+        ctx.beginPath();
+        if (far) ctx.arc(sx, sy, mr + 7 + k * 4, 0, Math.PI * 2);
+        else ctx.ellipse(sx, sy + size * 0.05, size * 0.62 + k * 5, size * 0.24 + k * 2, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      });
+      ctx.setLineDash([]);
+      ctx.lineDashOffset = 0;
+    }
+    if (smuggle) {
+      const r = far ? 4 : Math.max(4, size * 0.09);
+      smuggle.forEach((id, k) => {
+        const cx = (far ? sx + mr + 3 : sx + size * 0.36) + k * r * 2.2, cy = far ? sy - mr - 3 : top + size * 0.14;
+        ctx.fillStyle = '#e8c04a';
+        ctx.strokeStyle = g.colorOf(id);
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.strokeStyle = 'rgba(110,80,10,0.8)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2); ctx.stroke();
+      });
+    }
+  }
+
   // Close up: castles showing their upgrades, with names. Strategic view (far): small markers in
   // the owner's colour, no upgrades; name and HP bar only for a hovered or selected city.
   drawCities(now) {
@@ -384,6 +459,7 @@ export class Renderer {
         top = sy - CASTLE_ANCHOR.y * s - 2;
         ny = sy + (64 - CASTLE_ANCHOR.y) * s - 2;
       }
+      this.drawCityMarks(i, sx, sy, far, size, mr, top, now);
 
       const hp = g.cityHp[i], maxHp = g.cityMaxHp(i);
       if (selected || (!far && hp < maxHp)) {
@@ -461,6 +537,7 @@ export class Renderer {
         ctx.beginPath(); ctx.arc(sx, sy, Math.max(1.6, rpx), 0, Math.PI * 2); ctx.fill();
         continue;
       }
+      if (u.flags & 8 && u.owner === g.you) this.drawHoldMark(sx, sy, rpx);
       const s = rpx / CONE.rx;
       ctx.drawImage(unitSprite(color, u.t), sx - CONE.cx * s, sy - CONE.by * s, 64 * s, 64 * s);
       if (disbanding) this.drawDisbandMotes(sx, sy, rpx, u.id, now);
@@ -470,6 +547,17 @@ export class Renderer {
         this.bar(sx - bw / 2, sy - (CONE.by - 2) * s - bh - 2, bw, bh, u.hp / def.hp);
       }
     }
+  }
+
+  // One of your units on Hold (H key): a dashed ring at its feet, so you can tell it won't move.
+  drawHoldMark(sx, sy, rpx) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,214,110,0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.ellipse(sx, sy, rpx * 1.1 + 1, rpx * 0.55 + 1, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
   }
 
   // Disbanding unit (Delete key): a pulsing blood-red pool at its feet...

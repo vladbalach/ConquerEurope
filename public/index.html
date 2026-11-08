@@ -48,6 +48,31 @@
       <h2 id="room-title"></h2>
       <p class="muted" id="room-info"></p>
       <ul id="room-players" class="room-players"></ul>
+      <h3>Game options</h3>
+      <div id="room-options" class="room-options">
+        <label for="opt-countdown">Countdown</label>
+        <div class="row">
+          <select id="opt-countdown" title="Lower the number of cities needed to win by one at the end of every turn">
+            <option value="none">No</option>
+            <option value="start">From start</option>
+            <option value="turn">From turn</option>
+          </select>
+          <input id="opt-countdown-turn" type="number" step="1" inputmode="numeric" aria-label="Countdown starts after this turn"
+            title="The countdown starts once this turn is over">
+        </div>
+        <label for="opt-win-cities">Cities to win</label>
+        <div class="row">
+          <input id="opt-win-cities" type="number" step="1" inputmode="numeric">
+        </div>
+        <label for="opt-death">Death</label>
+        <div class="row">
+          <select id="opt-death" title="What happens to a player who loses every city and every unit">
+            <option value="spectator">Spectator</option>
+            <option value="liberator">Liberator</option>
+          </select>
+        </div>
+      </div>
+      <p id="opt-summary" class="muted small opt-summary"></p>
       <div class="row end">
         <button type="button" id="room-leave">Leave</button>
         <button type="button" id="room-start" class="primary">Start game</button>
@@ -62,15 +87,16 @@
     <div id="topbar" class="hud">
       <div class="stat" id="stat-turn"><span class="hourglass"></span><small>Turns</small><b id="hud-turn">0</b><small id="hud-turn-next"></small></div>
       <div class="stat" id="stat-gold"><span class="coin"></span><b id="hud-gold">0</b><small id="hud-income"></small></div>
-      <div class="stat" title="Cities held. 120 wins the game."><span class="tower"></span><b id="hud-cities">0</b><small>/ 120</small></div>
+      <div class="stat" id="stat-cities" title="Cities held, and how many win the game"><span class="tower"></span><b id="hud-cities">0</b><small id="hud-win"></small></div>
       <div class="stat" title="Units you command"><span class="army"></span><b id="hud-units">0</b></div>
       <div class="title" id="hud-title"></div>
       <div class="buttons">
         <button type="button" id="btn-rebuild" hidden>Rebuild navigation</button>
         <button type="button" id="btn-mapedit" hidden>Edit map</button>
         <button type="button" id="btn-edit" title="Edit the game balance (admins only)" hidden>Edit</button>
+        <button type="button" id="btn-tech" title="Technologies (T)">Tech</button>
         <button type="button" id="btn-scores" title="Players (Tab)">Players</button>
-        <button type="button" id="btn-help" title="Controls (F1)">Help</button>
+        <button type="button" id="btn-help" title="Controls and economy (F1)">Help</button>
         <button type="button" id="btn-leave" title="Leave game">Leave</button>
       </div>
     </div>
@@ -86,30 +112,43 @@
 
     <div id="scoreboard" class="overlay hud" hidden></div>
     <div id="help" class="overlay hud" hidden>
+      <div id="help-tabs" class="help-tabs" role="tablist">
+        <button type="button" role="tab" data-page="controls">Controls</button>
+        <button type="button" role="tab" data-page="economy">Economy</button>
+        <button type="button" role="tab" data-page="liberator">Liberator</button>
+      </div>
+      <section class="help-page" data-page="controls" role="tabpanel">
       <h3>Controls</h3>
       <table>
         <tr><td>Left click / drag</td><td>Select units · box-select · click a city (a frame with no units selects your cities)</td></tr>
         <tr><td>Shift + click / drag</td><td>Add units or cities to the selection</td></tr>
+        <tr><td>Unit icons in the panel</td><td>Click: select only that unit (or type) · Ctrl + click: remove it from the selection · Shift + click: mark it; when you release Shift, the marked units become the selection</td></tr>
         <tr><td>Double click</td><td>On a unit: all your units of that type on screen · on your city: all your cities on screen</td></tr>
-        <tr><td>Right click</td><td>Move · attack unit or city · set rally (city selected)</td></tr>
+        <tr><td>Right click</td><td>Move · attack unit or city · set rally (city selected; new units attack-move there)</td></tr>
+        <tr><td>Alt + right click</td><td>Cities selected: clear their rally points</td></tr>
         <tr><td>Hold A + right click</td><td>Units selected: attack-move (fight anything on the way; works on the minimap too)</td></tr>
         <tr><td>S</td><td>Units selected: stop</td></tr>
+        <tr><td>H</td><td>Units selected: hold position (fight only what is within reach; any new order ends it)</td></tr>
         <tr><td>Delete</td><td>Units selected: disband (they lose HP until they die; cities can't be disbanded)</td></tr>
         <tr><td>Q / W / E / R</td><td>Build infantry / archers / cavalry / knight in every selected city</td></tr>
         <tr><td>A / S / D / F / G</td><td>Cities selected: build Wall / Tower / Castle / Farm / Barracks in every selected city</td></tr>
         <tr><td>Ctrl + 1–9, then 1–9</td><td>Save / recall control group (press twice to jump)</td></tr>
-        <tr><td>H</td><td>Jump to your next city</td></tr>
         <tr><td>Hold Alt</td><td>Show the attack radius of every city · Alt + drag selects only your cities, not units</td></tr>
         <tr><td>Space</td><td>Center on selection</td></tr>
         <tr><td>F2</td><td>Select all your units</td></tr>
         <tr><td>Arrows · screen edge · middle drag</td><td>Scroll the map</td></tr>
         <tr><td>Mouse wheel</td><td>Zoom</td></tr>
+        <tr><td>T</td><td>Technologies (the Rebellion tab: what you can do as a liberator)</td></tr>
         <tr><td>Tab</td><td>Players · F1 this help · Esc deselect</td></tr>
       </table>
       <p class="muted small">Capture a city by bringing its HP to zero. Units walk only on land and find their own way around seas; islands such as Britain or Sicily cannot be reached by land units. Units regenerate HP after a few seconds out of combat.</p>
+      </section>
+      <section id="help-economy" class="help-page" data-page="economy" role="tabpanel" hidden></section>
+      <section id="help-liberator" class="help-page" data-page="liberator" role="tabpanel" hidden></section>
       <button type="button" id="help-close" class="primary">Got it</button>
     </div>
 
+    <div id="tech" class="overlay hud" hidden></div>
     <div id="banner" class="banner" hidden></div>
     <div id="gameover" class="overlay hud" hidden>
       <h2 id="gameover-title"></h2>

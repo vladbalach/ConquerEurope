@@ -4,10 +4,14 @@ import { GameClient } from './client.js';
 import { GAME, DEBUG } from '/shared/config.js';
 import { PROTOCOL_VERSION } from '/shared/protocol.js';
 import { applyBalance } from '/shared/balance.js';
+import { OPTION_LIMITS, sanitizeOptions, summarizeOptions, describeOptions } from '/shared/options.js';
 import { initTooltips } from './tooltip.js';
 import { HostSession, PeerSession } from './p2p.js';
+import { initSound } from './sound.js';
+import { mapLines } from './render.js';
 
 initTooltips();
+initSound();
 
 const $ = (id) => document.getElementById(id);
 const SCREENS = ['screen-name', 'screen-lobby', 'screen-room', 'screen-game'];
@@ -111,10 +115,15 @@ function drawBackdrop() {
       ctx.restore();
     }
     ctx.globalAlpha = 1;
-    ctx.strokeStyle = 'rgba(40,25,15,0.8)';
-    ctx.lineWidth = 1 / s;
-    ctx.stroke(path);
   }
+  // Coasts and region borders only, like the game map.
+  const lines = mapLines(map);
+  ctx.strokeStyle = 'rgba(40,25,15,0.8)';
+  ctx.lineWidth = 1 / s;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.stroke(lines.regions);
+  ctx.stroke(lines.coast);
 }
 window.addEventListener('resize', drawBackdrop);
 
@@ -148,7 +157,8 @@ function renderGames(games, lobbyNames = []) {
     const info = elem('div');
     info.append(elem('div', 'name', g.title));
     const count = Array.isArray(g.players) ? g.players.length : g.players;
-    info.append(elem('div', 'meta', `Host: ${g.host} · ${count}/${g.max} players`));
+    info.append(elem('div', 'meta', `Host: ${g.host} · ${count}/${g.max} players` +
+      (g.options ? ` · ${summarizeOptions(g.options)}` : '')));
 
     const chips = elem('div', 'players');
     for (const p of Array.isArray(g.players) ? g.players : []) {
@@ -213,8 +223,48 @@ function renderRoom() {
     }
     ul.append(li);
   }
+  renderOptions(room.options, isHost);
   $('room-start').hidden = !isHost;
 }
+
+// ------------------------------------------------------------------ game options (waiting room)
+// The host picks them; everyone else sees them read-only. The server keeps the real values and
+// sends them with every `room` message.
+const OPTION_INPUTS = ['opt-countdown', 'opt-countdown-turn', 'opt-win-cities', 'opt-death'];
+const cityCount = () => (map ? map.cities.length : Infinity);
+
+// `force`: also overwrite the field the player is typing in (they just committed a value).
+function renderOptions(options, isHost, force = false) {
+  const o = sanitizeOptions(options, cityCount());
+  const set = (el, v) => { if (force || document.activeElement !== el) el.value = String(v); };
+  const turn = $('opt-countdown-turn'), win = $('opt-win-cities');
+  turn.min = OPTION_LIMITS.countdownTurn.min;
+  turn.max = OPTION_LIMITS.countdownTurn.max;
+  win.min = OPTION_LIMITS.winCities.min;
+  if (map) win.max = map.cities.length;
+  win.title = `Cities a player must hold to win (${win.min}–${map ? map.cities.length : '…'})`;
+  set($('opt-countdown'), o.countdown);
+  set(turn, o.countdownTurn);
+  set(win, o.winCities);
+  set($('opt-death'), o.death);
+  turn.hidden = o.countdown !== 'turn';
+  for (const id of OPTION_INPUTS) $(id).disabled = !isHost;
+  $('opt-summary').textContent = describeOptions(o);
+}
+
+function sendOptions() {
+  if (!room || !joined || room.hostId !== joined.playerId || room.status !== 'lobby') return;
+  const o = sanitizeOptions({
+    countdown: $('opt-countdown').value,
+    countdownTurn: $('opt-countdown-turn').value,
+    winCities: $('opt-win-cities').value,
+    death: $('opt-death').value,
+  }, cityCount());
+  room.options = o;                    // show it at once; the server's copy follows in `room`
+  renderOptions(o, true, true);
+  net.send({ t: 'setOptions', options: o });
+}
+for (const id of OPTION_INPUTS) $(id).addEventListener('change', sendOptions);
 
 // Leaving on purpose gives up your empire, so the rejoin token is forgotten too.
 function leaveGame() {
@@ -335,7 +385,7 @@ const GAME_MESSAGES = {
     if (game) game.destroy();
     show('screen-game');
     game = new GameClient({
-      map, net, link, gameId: joined.gameId, you: msg.you, title: msg.title, players: msg.players,
+      map, net, link, gameId: joined.gameId, you: msg.you, title: msg.title, options: msg.options, players: msg.players,
       onLeave: leaveGame, debug, admin: isAdmin, mapState,
     });
     if (session && session.relay) game.hud.feed('No direct connection to the host: your game goes through the server.');
@@ -351,7 +401,7 @@ const GAME_MESSAGES = {
 net.on('host', (msg) => {
   endSession();
   session = new HostSession({
-    net, gameId: msg.gameId, you: msg.you, title: msg.title, roster: msg.roster, ice: msg.ice,
+    net, gameId: msg.gameId, you: msg.you, title: msg.title, options: msg.options, roster: msg.roster, ice: msg.ice,
     balance: balanceValues, onMessage: onGameMessage, onError: (text) => toast(text),
   });
 });
@@ -369,7 +419,11 @@ net.on('connectHost', (msg) => {
   // Until the host's game arrives, the waiting room says what is happening.
   const status = (text) => {
     if (game) game.hud.feed(text);
-    else { $('room-info').textContent = text; $('room-start').hidden = true; }
+    else {
+      $('room-info').textContent = text;
+      $('room-start').hidden = true;
+      for (const id of OPTION_INPUTS) $(id).disabled = true;
+    }
   };
   status('The game has started: connecting to the host…');
   session = new PeerSession({
@@ -472,7 +526,7 @@ async function boot() {
   // Debug tools are only downloaded and started in debug builds.
   if (DEBUG) {
     try {
-      debug = (await import('./debug/index.js')).createDebug();
+      debug = (await import('./debug/index.js')).createDebug({ getGame: () => game });
     } catch (e) {
       console.error('Debug tools failed to load', e);
     }

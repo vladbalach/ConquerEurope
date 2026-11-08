@@ -56,7 +56,7 @@ export const COUNTRIES = [
   { name: 'Moldavia', cities: [['Iași', 47.16, 27.59], ['Suceava', 47.65, 26.26], ['Chișinău', 47.01, 28.86]] },
 
   { name: 'Ruthenia', cities: [['Lviv', 49.84, 24.03], ['Vinnytsia', 49.23, 28.47], ['Kyiv', 50.45, 30.52], ['Chernihiv', 51.49, 31.29]] },
-  { name: 'Zaporozhia', cities: [['Poltava', 49.59, 34.55], ['Kharkiv', 49.99, 36.23], ['Dnipro', 48.46, 35.05], ['Odesa', 46.48, 30.72]] },
+  { name: 'Zaporozhia', cities: [['Poltava', 49.59, 34.55], ['Kharkiv', 49.99, 36.23], ['Dnipro', 48.46, 35.05], ['Odesa', 46.48, 30.72], ['Simferopol', 44.95, 34.10]] },
   { name: 'Muscovy', cities: [['Moscow', 55.76, 37.62], ['Smolensk', 54.78, 32.05], ['Tula', 54.19, 37.62], ['Yaroslavl', 57.63, 39.87], ['Nizhny Novgorod', 56.33, 44.00], ['Voronezh', 51.66, 39.20]] },
   { name: 'Novgorod', cities: [['Saint Petersburg', 59.94, 30.31], ['Novgorod', 58.52, 31.27], ['Petrozavodsk', 61.79, 34.35], ['Arkhangelsk', 64.54, 40.54], ['Murmansk', 68.97, 33.07]] },
   { name: 'Golden Horde', cities: [['Kazan', 55.79, 49.11], ['Samara', 53.20, 50.15], ['Saratov', 51.53, 46.03], ['Volgograd', 48.71, 44.51], ['Astrakhan', 46.35, 48.04], ['Rostov', 47.24, 39.72]] },

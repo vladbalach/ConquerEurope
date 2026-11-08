@@ -37,7 +37,8 @@ class Candidates {
 // ------------------------------------------------------------------ host
 export class HostSession {
   // net: the lobby connection. roster: [{ id, color }]. balance: current balance values.
-  constructor({ net, gameId, you, title, roster, ice, balance, onMessage, onError }) {
+  // options: the game options the host picked in the waiting room.
+  constructor({ net, gameId, you, title, options, roster, ice, balance, onMessage, onError }) {
     this.isHost = true;
     this.net = net;
     this.gameId = gameId;
@@ -50,7 +51,7 @@ export class HostSession {
     this.worker = new Worker(new URL('./host-worker.js', import.meta.url), { type: 'module' });
     this.worker.onmessage = (e) => this.fromWorker(e.data);
     this.worker.onerror = (e) => this.onError(`The game could not run: ${e.message || 'worker error'}`);
-    this.worker.postMessage({ type: 'init', gameId, title, roster, hostId: you, balance });
+    this.worker.postMessage({ type: 'init', gameId, title, options, roster, hostId: you, balance });
     // This page's own orders go straight to the worker.
     this.link = { send: (msg) => this.worker.postMessage({ type: 'msg', from: you, msg }) };
   }

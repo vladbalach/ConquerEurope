@@ -32,8 +32,13 @@ export class City {
   get maxHp() { return CITY.hp + this.bonus('hp'); }
   get damage() { return CITY.damage + this.bonus('damage'); }
   get range() { return CITY.attackRange * (1 + this.bonus('rangePercent') / 100); }
-  // Gold this city pays its owner at the end of every turn (a Farm adds to it).
-  get goldPerTurn() { return ECONOMY.goldPerCityPerTurn + this.bonus('goldPerTurn'); }
+  // Gold this city pays its owner at the end of every turn. A Farm adds to it, and so does
+  // holding every city of its region (see hasRegionBonus).
+  get goldPerTurn() {
+    return ECONOMY.goldPerCityPerTurn + this.bonus('goldPerTurn') + (this.hasRegionBonus ? ECONOMY.regionBonusPerCity : 0);
+  }
+  // Does its owner hold every city of its region?
+  get hasRegionBonus() { return this.owner >= 0 && this.game.regionHolder(this.country) === this.owner; }
   // How fast units are trained here: 1 normally, 1.4 with Barracks. Upgrades always build at 1.
   get trainRate() { return 1 + this.bonus('trainSpeedPercent') / 100; }
 

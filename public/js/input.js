@@ -158,7 +158,7 @@ export class Input {
       return;
     }
     if (e.button === 2) {
-      this.rightClick(sx, sy);
+      this.rightClick(sx, sy, e.altKey);
       return;
     }
     if (e.button !== 0) return;
@@ -321,7 +321,7 @@ export class Input {
 
   // Right-click with units: attack the enemy under the cursor, otherwise move there.
   // Holding A turns the move into an attack-move (fight anything met on the way).
-  rightClick(sx, sy) {
+  rightClick(sx, sy, alt) {
     const g = this.g;
     const [wx, wy] = g.renderer.s2w(sx, sy);
     if (g.selection.size) {
@@ -336,14 +336,15 @@ export class Input {
       g.commandMove(wx, wy, this.attackKey);
       return;
     }
-    // Cities selected: right-click sets their rally point; right-clicking one of them clears it.
+    // Cities selected: right-click sets their rally point; Alt + right-click anywhere, or a
+    // right-click on one of them, clears it.
     const cities = [...g.selectedCities].filter((ci) => g.cityOwner[ci] === g.you);
     if (!cities.length) return;
     const onCity = cities.some((ci) => {
       const c = g.map.cities[ci];
       return Math.hypot(wx - c.x, wy - c.y) < CITY.size * 1.5;
     });
-    if (onCity) g.setRally(cities, null, null);
+    if (alt || onCity) g.setRally(cities, null, null);
     else g.setRally(cities, wx, wy);
   }
 
@@ -421,7 +422,8 @@ export class Input {
       case 'KeyA': this.setAttackKey(true); break;
       case 'KeyS': g.commandStop(); break;
       case 'Delete': g.commandDisband(); break;
-      case 'KeyH': g.nextCity(); break;
+      case 'KeyH': g.commandHold(); break;
+      case 'KeyT': g.hud.toggleTech(); break;
       case 'Space': e.preventDefault(); g.centerOnSelection(); break;
       default:
     }

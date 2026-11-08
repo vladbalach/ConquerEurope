@@ -14,15 +14,16 @@ import { applyBalance } from '../shared/balance.js';
 const DT = 1 / GAME.tickRate;
 
 export class HostEngine {
-  // roster: [{ id, color }] from the lobby server (no nicknames). send(to, msg): deliver to a
-  // player. onEnded(winner): the game is over, so the page can tell the lobby server.
-  constructor({ gameId, title, map, navData, balance, roster, hostId, send, onEnded }) {
+  // roster: [{ id, color }] from the lobby server (no nicknames). options: the host's game options
+  // (shared/options.js). send(to, msg): deliver to a player. onEnded(winner): the game is over, so
+  // the page can tell the lobby server.
+  constructor({ gameId, title, map, navData, balance, roster, hostId, options, send, onEnded }) {
     if (balance) applyBalance(balance);
     this.map = map;
     this.nav = new NavGrid(navData);
     this.send = send;
     this.onEnded = onEnded || (() => {});
-    this.game = Game.hosted({ id: gameId, title, map, nav: this.nav, roster, hostId });
+    this.game = Game.hosted({ id: gameId, title, map, nav: this.nav, roster, hostId, options });
     this.reportedEnd = false;
     this.timer = 0;
   }

@@ -40,14 +40,18 @@ test('a Farm adds 5 gold per turn to its city, paid at the end of the turn', () 
   assert.equal(a.gold, 1000 - farm.cost, 'a farm costs 50');
   run(farm.buildTime + 0.1);
   assert.ok(paris.upgrades.has('farm'));
-  assert.equal(paris.goldPerTurn, ECONOMY.goldPerCityPerTurn + farm.goldPerTurn);
+  // A holds the whole west of the map, so all of France: the region bonus comes on top.
+  assert.ok(paris.hasRegionBonus);
+  assert.equal(paris.goldPerTurn, ECONOMY.goldPerCityPerTurn + farm.goldPerTurn + ECONOMY.regionBonusPerCity);
 
-  const cities = game.cities.filter((c) => c.owner === a.id).length;
+  const mine = game.cities.filter((c) => c.owner === a.id);
+  const inWholeRegions = mine.filter((c) => game.cities.every((o) => o.country !== c.country || o.owner === a.id)).length;
   const before = a.gold;
   game.nextTurnAt = game.time;          // end the turn now
   run(0.05);
-  assert.equal(a.gold - before, cities * ECONOMY.goldPerCityPerTurn + farm.goldPerTurn,
-    'every city pays 10, the farmed one 5 more');
+  assert.equal(a.gold - before,
+    mine.length * ECONOMY.goldPerCityPerTurn + farm.goldPerTurn + inWholeRegions * ECONOMY.regionBonusPerCity,
+    'every city pays 10, the farmed one 5 more, the cities of whole regions 2 more');
 
   // Captured: the farm is gone and the city pays its new owner only the base amount.
   game.captureCity(paris, b.id);

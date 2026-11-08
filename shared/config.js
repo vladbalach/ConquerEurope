@@ -136,15 +136,63 @@ export const ECONOMY = {
   startGold: 50,
   turnSeconds: 60,            // length of one turn; gold is paid once at the end of every turn
   goldPerCityPerTurn: 10,     // gold each city you hold pays per turn
+  regionBonusPerCity: 2,      // hold every city of a region: each of them pays this much more per turn
   maxQueue: 10,               // production queue length per city
   maxUnitsPerPlayer: 1000,
 };
+
+// ------------------------------------------------------------------ liberators
+//  Game option "Death: Liberator" (shared/options.js). A player who loses every city and every unit
+//  loses all their gold and becomes a liberator: they get gold every turn, and may take any one city
+//  on the map (neutral or another player's), at most once every few turns. With a city they are
+//  back in the game; if they fall again, it starts over.
+export const LIBERATOR = {
+  goldPerTurn: 20,            // paid to a liberator at the end of every turn
+  cooldownTurns: 2,           // turns between two cities taken this way
+  protectedCities: 5,         // a player holding this many cities or fewer can't have one taken this way
+};
+
+// ------------------------------------------------------------------ technologies
+//  Researched by a player in the Tech window (T): the gold is paid when research starts, and it
+//  takes `time` seconds of game time. One research at a time; cancelling gives the gold back.
+//  levels: cost and research time of every level, in order (so the number of levels is the maximum).
+//
+//  Tab 'rebellion' exists only with the game option Death: Liberator. Its technologies can be
+//  researched at any time, but work only while the player is a liberator (see LIBERATOR).
+//    supporters  +goldPerTurnPerLevel liberator gold per turn for every level
+//    influencer  a liberator marks ("influences") cities, one per turn, and liberates them all at once:
+//                when as many are marked as the limit, or earlier on request. The limit is 1 without
+//                the technology (the city is taken at once) and +citiesPerLevel per level.
+//    smuggling   a liberator marks citiesPerLevel more cities per level; at the end of every turn
+//                `share` of each one's income goes from its owner to the liberator. These marks are
+//                separate from influence marks.
+const levels = (n, cost, time) => Array.from({ length: n }, (_, i) => ({ cost: Array.isArray(cost) ? cost[i] : cost, time }));
+export const TECHS = {
+  supporters: {
+    tab: 'rebellion', name: 'Supporters', goldPerTurnPerLevel: 20,
+    levels: levels(3, [100, 180, 260], 120),
+  },
+  influencer: {
+    tab: 'rebellion', name: 'Influencer', citiesPerLevel: 1,
+    levels: levels(3, 100, 120),
+  },
+  smuggling: {
+    tab: 'rebellion', name: 'Smuggling', citiesPerLevel: 1, share: 0.5,
+    levels: levels(3, 30, 60),
+  },
+};
+// Order matters: it is the technology id used on the network.
+export const TECH_TYPES = ['supporters', 'influencer', 'smuggling'];
+// Tabs of the Tech window. `death`: the tab exists only with this game option.
+export const TECH_TABS = [
+  { id: 'rebellion', name: 'Rebellion', death: 'liberator' },
+];
 
 // ------------------------------------------------------------------ game
 export const GAME = {
   maxPlayers: 20,
   startCities: 10,            // random cities every player starts with
-  winCities: 120,             // cities needed to win
+  winCities: 120,             // cities needed to win: the default; the host can change it (shared/options.js)
   formationSpacing: 17,       // distance between units in a group move
   tickRate: 20,               // simulation ticks per second
   snapshotEvery: 2,           // send a network snapshot every N ticks

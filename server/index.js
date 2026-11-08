@@ -64,6 +64,7 @@ const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
   '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+  '.wav': 'audio/wav', '.mp3': 'audio/mpeg',
 };
 
 const server = http.createServer((req, res) => {
@@ -234,7 +235,7 @@ async function handOver(g) {
     if (!p.client) continue;
     if (p.id === g.hostId) {
       p.client.hosting = g.id;
-      p.client.send({ t: 'host', gameId: g.id, you: p.id, title: g.title, roster, ice });
+      p.client.send({ t: 'host', gameId: g.id, you: p.id, title: g.title, options: g.options, roster, ice });
     } else {
       p.client.send({ t: 'connectHost', gameId: g.id, you: p.id, ice });
     }
@@ -341,6 +342,12 @@ function handle(client, msg) {
         handOver(g);                   // the host's browser runs the game from here on
         lobbyDirty = true;
       }
+      return;
+    }
+    case 'setOptions': {
+      // Game options (cities to win, countdown): only the host, only in the waiting room.
+      const g = client.game;
+      if (g && client.player && g.hostId === client.player.id && g.setOptions(msg.options)) lobbyDirty = true;
       return;
     }
     case 'signal': {
