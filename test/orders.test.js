@@ -60,6 +60,28 @@ test('walking units cannot push a unit on hold aside', () => {
   assert.ok(walkers.every((w) => w.x < x), 'the others went around it');
 });
 
+// Clicking the same spot again and again must not hold the units up: every new order sets off
+// on the next tick, not once the last route search is REPLAN_INTERVAL old.
+test('repeated move orders do not stall the units', () => {
+  const { game, a, city, spawn, run } = setup();
+  const lyon = city('Lyon');
+  const x = lyon.x - 60, y = lyon.y;
+  const units = [spawn(a.id, 'infantry', x, y), spawn(a.id, 'infantry', x, y + 8), spawn(a.id, 'archer', x + 8, y + 4)];
+  const ids = units.map((u) => u.id);
+  const tx = x - 80;
+  let stalled = 0;
+  for (let i = 0; i < 20; i++) {          // a click every 0.1 s for 2 s
+    game.handleCommand(a, { t: 'move', ids, x: tx, y });
+    const before = units.map((u) => u.x);
+    run(0.05);
+    stalled += units.filter((u, k) => u.x === before[k]).length;
+    run(0.05);
+  }
+  assert.equal(stalled, 0, `units stood still on ${stalled} ticks right after an order`);
+  const speed = units[0].stats.moveSpeed;
+  assert.ok(x - units[0].x > speed * 2 * 0.8, `kept walking (moved ${(x - units[0].x).toFixed(1)} of ${speed * 2})`);
+});
+
 test('a move order ends hold', () => {
   const { game, a, city, spawn, run } = setup();
   const lyon = city('Lyon');

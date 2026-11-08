@@ -1,7 +1,7 @@
-// Procedurally drawn, cached sprites: unit cones with type icons, and castles.
-// Sprites are 64x64 logical px, rendered at 2x for crisp scaling.
+// Procedurally drawn, cached sprites: unit cones with type icons, ships, castles and the anchor
+// badge of coastal cities. Sprites are 64x64 logical px, rendered at 2x for crisp scaling.
 import { UNIT_CLASSES } from './units/index.js';
-import { UPGRADE_TYPES } from '/shared/config.js';
+import { UPGRADE_TYPES, UNIT_TYPES } from '/shared/config.js';
 
 const RES = 2;
 const SIZE = 64;
@@ -50,10 +50,17 @@ export function drawIcon(ctx, type, cx, cy, size) {
 }
 
 // ------------------------------------------------------------------ unit cone
+// A unit's sprite: a cone, or a boat for ships. Both map the unit's position to CONE's base
+// centre (the waterline of a boat) and are about as wide as CONE.rx * 2 at the same size.
 export function unitSprite(color, type) {
   const key = color + type;
   let c = unitCache.get(key);
   if (c) return c;
+  if (UNIT_CLASSES[type].naval) {
+    c = shipSprite(color, type);
+    unitCache.set(key, c);
+    return c;
+  }
   let ctx;
   [c, ctx] = makeCanvas();
   const { cx, by, rx, ry, apex } = CONE;
@@ -102,11 +109,114 @@ export function unitSprite(color, type) {
   return c;
 }
 
+// ------------------------------------------------------------------ ship
+// A boat seen from the side, bow to the right: hull in the owner's colour, a cream sail carrying the
+// ship type's emblem (like the icon over a unit's cone). The renderer mirrors it when it sails left.
+function shipSprite(color, type) {
+  const [c, ctx] = makeCanvas();
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  // Shadow on the water and a short wake behind the stern.
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath(); ctx.ellipse(34, 48, 25, 5.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(225,242,255,0.6)';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(1, 45); ctx.quadraticCurveTo(5, 47.5, 10, 46.5);
+  ctx.moveTo(3, 50); ctx.quadraticCurveTo(8, 51.5, 14, 50);
+  ctx.stroke();
+
+  // Mast and sail.
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(32, 36); ctx.lineTo(32, 5); ctx.stroke();
+  const sail = new Path2D();
+  sail.moveTo(18, 9); sail.lineTo(46, 9);
+  sail.quadraticCurveTo(50, 20, 46, 32);
+  sail.lineTo(18, 32);
+  sail.quadraticCurveTo(22, 20, 18, 9);
+  sail.closePath();
+  const cloth = ctx.createLinearGradient(18, 0, 48, 0);
+  cloth.addColorStop(0, '#fbf4e2'); cloth.addColorStop(1, '#d9cdb0');
+  ctx.fillStyle = cloth;
+  ctx.fill(sail);
+  ctx.lineWidth = 1.4;
+  ctx.stroke(sail);
+  ctx.lineWidth = 2.2;
+  ctx.beginPath(); ctx.moveTo(16, 9); ctx.lineTo(48, 9); ctx.stroke();       // yard
+  const pennant = new Path2D();
+  pennant.moveTo(32.5, 4); pennant.lineTo(42, 6.5); pennant.lineTo(32.5, 9); pennant.closePath();
+  ctx.fillStyle = color;
+  ctx.fill(pennant);
+  ctx.lineWidth = 1;
+  ctx.stroke(pennant);
+
+  // Hull.
+  const hull = new Path2D();
+  hull.moveTo(9, 35); hull.lineTo(50, 35); hull.lineTo(59, 30.5);
+  hull.quadraticCurveTo(56, 44, 46, 48.5);
+  hull.lineTo(17, 48.5);
+  hull.quadraticCurveTo(10, 46, 9, 35);
+  hull.closePath();
+  const wood = ctx.createLinearGradient(0, 31, 0, 49);
+  wood.addColorStop(0, lighten(color, 0.4)); wood.addColorStop(0.45, color); wood.addColorStop(1, darken(color, 0.5));
+  ctx.fillStyle = wood;
+  ctx.fill(hull);
+  ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(12, 42.5); ctx.lineTo(54, 41.5); ctx.stroke();  // a plank line
+  ctx.strokeStyle = lighten(color, 0.6);
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(11, 37.5); ctx.lineTo(50, 37.5); ctx.lineTo(56.5, 34); ctx.stroke();   // rail
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.6;
+  ctx.stroke(hull);
+
+  drawIcon(ctx, type, 32, 21, 24);
+  return c;
+}
+
+// ------------------------------------------------------------------ anchor badge
+// The mark of a coastal city (it can build ships): a white anchor on a sea-blue disc.
+let anchorCanvas = null;
+export function anchorBadge() {
+  if (anchorCanvas) return anchorCanvas;
+  const [c, ctx] = makeCanvas();
+  ctx.fillStyle = '#1d4a72';
+  ctx.strokeStyle = '#e8f3fb';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(32, 32, 29, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(32, 32, 30.8, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 4.5;
+  ctx.beginPath();
+  ctx.arc(32, 15, 4.5, 0, Math.PI * 2);                         // ring
+  ctx.moveTo(32, 19.5); ctx.lineTo(32, 51);                     // shank
+  ctx.moveTo(22, 26); ctx.lineTo(42, 26);                       // stock
+  ctx.moveTo(14, 37); ctx.quadraticCurveTo(17, 51, 32, 51);     // arms
+  ctx.quadraticCurveTo(47, 51, 50, 37);
+  ctx.stroke();
+  ctx.fillStyle = '#ffffff';
+  for (const dir of [-1, 1]) {                                  // flukes
+    ctx.beginPath();
+    ctx.moveTo(32 + dir * 21, 33); ctx.lineTo(32 + dir * 14, 40); ctx.lineTo(32 + dir * 21, 42);
+    ctx.closePath(); ctx.fill();
+  }
+  anchorCanvas = c;
+  return c;
+}
+
 // ------------------------------------------------------------------ castle
 const STONE = '#c4bba5';
 const STONE_DARK = '#8f8774';
 const GOLD = '#e2b93b';
 const WALL_FLAG = 1 << UPGRADE_TYPES.indexOf('wall');
+const WALL2_FLAG = 1 << UPGRADE_TYPES.indexOf('wall2');
 const TOWER_FLAG = 1 << UPGRADE_TYPES.indexOf('tower');
 const CASTLE_FLAG = 1 << UPGRADE_TYPES.indexOf('castle');
 const FARM_FLAG = 1 << UPGRADE_TYPES.indexOf('farm');
@@ -200,21 +310,37 @@ function drawBanner(ctx, color, x = 12, top = 6) {
 }
 
 // Stone curtain wall ringing the castle: the back half is drawn behind it, the front half in front.
-function drawRingWall(ctx, front) {
+// `strong` (Wall II): a thicker wall with round-topped turrets along its front.
+function drawRingWall(ctx, front, strong = false) {
   ctx.save();
   ctx.beginPath();
   ctx.ellipse(32, 50, 29, 9, 0, front ? 0 : Math.PI, front ? Math.PI : Math.PI * 2);
   ctx.lineCap = 'butt';
-  ctx.strokeStyle = INK; ctx.lineWidth = 7.5; ctx.stroke();
-  ctx.strokeStyle = front ? STONE : STONE_DARK; ctx.lineWidth = 5; ctx.stroke();
+  ctx.strokeStyle = INK; ctx.lineWidth = strong ? 9.5 : 7.5; ctx.stroke();
+  ctx.strokeStyle = front ? STONE : STONE_DARK; ctx.lineWidth = strong ? 7 : 5; ctx.stroke();
   if (front) {
     ctx.fillStyle = STONE;
     ctx.strokeStyle = INK;
     ctx.lineWidth = 1;
+    const lift = strong ? 6 : 5;
     for (let a = 0.22; a < Math.PI - 0.15; a += 0.36) {
-      const x = 32 + Math.cos(a) * 29, y = 50 + Math.sin(a) * 9 - 5;
+      const x = 32 + Math.cos(a) * 29, y = 50 + Math.sin(a) * 9 - lift;
       ctx.fillRect(x - 1.7, y - 2.4, 3.4, 2.8);
       ctx.strokeRect(x - 1.7, y - 2.4, 3.4, 2.8);
+    }
+    if (strong) {
+      // Turrets at both ends of the front and two in between, clear of the gate.
+      ctx.lineWidth = 1.2;
+      for (const a of [0.12, 0.95, Math.PI - 0.95, Math.PI - 0.12]) {
+        const x = 32 + Math.cos(a) * 29, y = 50 + Math.sin(a) * 9 + 3;
+        const t = new Path2D();
+        t.moveTo(x - 3.2, y); t.lineTo(x - 3.2, y - 11);
+        t.lineTo(x - 3.2, y - 13); t.lineTo(x - 1.6, y - 13); t.lineTo(x - 1.6, y - 11.5);
+        t.lineTo(x + 1.6, y - 11.5); t.lineTo(x + 1.6, y - 13); t.lineTo(x + 3.2, y - 13);
+        t.lineTo(x + 3.2, y); t.closePath();
+        ctx.fillStyle = STONE; ctx.fill(t); ctx.stroke(t);
+        ctx.fillStyle = INK; ctx.fillRect(x - 0.6, y - 8.5, 1.2, 3);   // arrow slit
+      }
     }
   }
   ctx.restore();
@@ -250,8 +376,9 @@ export function castleSprite(color, flags = 0) {
   ctx.lineWidth = 1.8;
 
   ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  ctx.beginPath(); ctx.ellipse(34, 52, flags & WALL_FLAG ? 31 : 27, flags & WALL_FLAG ? 10 : 7, 0, 0, Math.PI * 2); ctx.fill();
-  if (flags & WALL_FLAG) drawRingWall(ctx, false);
+  const walled = flags & (WALL_FLAG | WALL2_FLAG), strong = !!(flags & WALL2_FLAG);
+  ctx.beginPath(); ctx.ellipse(34, 52, walled ? 31 : 27, walled ? 10 : 7, 0, 0, Math.PI * 2); ctx.fill();
+  if (walled) drawRingWall(ctx, false, strong);
   ctx.strokeStyle = INK;
   ctx.lineWidth = 1.8;
 
@@ -292,7 +419,7 @@ export function castleSprite(color, flags = 0) {
 
   if (great) drawBanner(ctx, color);
   if (flags & TOWER_FLAG) drawTower(ctx, color);
-  if (flags & WALL_FLAG) drawRingWall(ctx, true);
+  if (walled) drawRingWall(ctx, true, strong);
   if (flags & FARM_FLAG) drawField(ctx);
   if (flags & BARRACKS_FLAG) drawBarracks(ctx, color);
 
@@ -307,7 +434,7 @@ export function upgradeIconURL(key, color) {
   if (u) return u;
   const [c, ctx] = makeCanvas();
   ctx.lineJoin = 'round';
-  if (key === 'wall') {
+  if (key === 'wall' || key === 'wall2') {
     const p = new Path2D();
     p.moveTo(6, 54); p.lineTo(6, 26);
     for (const x of [6, 17, 28, 39, 50]) { p.lineTo(x, 26); p.lineTo(x, 18); p.lineTo(x + 8, 18); p.lineTo(x + 8, 26); }
@@ -324,6 +451,20 @@ export function upgradeIconURL(key, color) {
     }
     ctx.strokeStyle = INK; ctx.lineWidth = 2.2;
     ctx.stroke(p);
+    if (key === 'wall2') {
+      // Wall II: two taller towers flank the wall.
+      for (const x0 of [2, 48]) {
+        const t = new Path2D();
+        t.moveTo(x0, 58); t.lineTo(x0, 14);
+        for (const x of [x0, x0 + 5.5, x0 + 11]) { t.lineTo(x, 14); t.lineTo(x, 7); t.lineTo(x + 3, 7); t.lineTo(x + 3, 14); }
+        t.lineTo(x0 + 14, 14); t.lineTo(x0 + 14, 58); t.closePath();
+        ctx.fillStyle = STONE_DARK; ctx.fill(t);
+        ctx.strokeStyle = INK; ctx.lineWidth = 2.2; ctx.stroke(t);
+        ctx.fillStyle = INK;
+        ctx.fillRect(x0 + 6, 22, 2.4, 8);
+        ctx.fillRect(x0 + 6, 38, 2.4, 8);
+      }
+    }
   } else if (key === 'farm') {
     // A barn in the owner's colour behind a big wheat field.
     const barn = new Path2D();
@@ -379,5 +520,95 @@ export function unitIconURL(color, type) {
     u = unitSprite(color, type).toDataURL();
     urlCache.set(key, u);
   }
+  return u;
+}
+
+// Data URL of a unit type's emblem alone: the marker drawn over its cone (or on a ship's sail),
+// without the cone. The selection panel's unit icons, where many small cones are hard to tell apart.
+export function unitEmblemURL(type) {
+  const key = `emblem|${type}`;
+  let u = urlCache.get(key);
+  if (!u) {
+    const [c, ctx] = makeCanvas();
+    drawIcon(ctx, type, SIZE / 2, SIZE / 2, 56);
+    u = c.toDataURL();
+    urlCache.set(key, u);
+  }
+  return u;
+}
+
+// ------------------------------------------------------------------ technology icons
+const NEUTRAL_GREY = '#8c8c8c';      // the castles in technology icons
+
+// A gold coin rimmed in `rim` (the smuggling mark on the map looks the same).
+function drawCoin(ctx, x, y, r, rim) {
+  ctx.fillStyle = '#e8c04a';
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.arc(x, y, r + 1.5, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = rim;
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(110,80,10,0.8)';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.arc(x, y, r * 0.55, 0, Math.PI * 2); ctx.stroke();
+}
+
+// A person: round head over rounded shoulders, in `color` with a dark outline.
+function drawPerson(ctx, x, y, s, color) {
+  const p = new Path2D();
+  p.arc(x, y, 6 * s, 0, Math.PI * 2);
+  p.moveTo(x - 11 * s, y + 25 * s);
+  p.lineTo(x - 11 * s, y + 17 * s);
+  p.quadraticCurveTo(x - 11 * s, y + 8 * s, x, y + 8 * s);
+  p.quadraticCurveTo(x + 11 * s, y + 8 * s, x + 11 * s, y + 17 * s);
+  p.lineTo(x + 11 * s, y + 25 * s);
+  p.closePath();
+  const grad = ctx.createLinearGradient(x - 11 * s, 0, x + 11 * s, 0);
+  grad.addColorStop(0, lighten(color, 0.4)); grad.addColorStop(1, darken(color, 0.25));
+  ctx.fillStyle = grad;
+  ctx.fill(p);
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.6;
+  ctx.stroke(p);
+}
+
+// The picture of a technology in the Tech window (data URL), in the player's colour:
+//   seafaring   the transport it unlocks
+//   supporters  a crowd behind a gold coin (liberator gold every turn)
+//   influencer  a castle in the dashed ring that marks a city about to be liberated
+//   smuggling   gold flowing from a castle to a coin rimmed in your colour (the smuggling mark)
+export function techIconURL(key, color) {
+  if (key === 'seafaring') return unitIconURL(color, UNIT_TYPES.indexOf('transport'));
+  const cacheKey = `tech|${key}|${color}`;
+  let u = urlCache.get(cacheKey);
+  if (u) return u;
+  const [c, ctx] = makeCanvas();
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  if (key === 'supporters') {
+    drawPerson(ctx, 14, 20, 0.95, color);
+    drawPerson(ctx, 50, 20, 0.95, color);
+    drawPerson(ctx, 32, 14, 1.2, color);
+    drawCoin(ctx, 46, 49, 10, color);
+  } else if (key === 'influencer') {
+    const ring = () => { ctx.beginPath(); ctx.ellipse(32, 47, 28, 11, 0, 0, Math.PI * 2); ctx.stroke(); };
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = INK; ctx.lineWidth = 5; ring();
+    ctx.strokeStyle = color; ctx.lineWidth = 3; ring();
+    ctx.setLineDash([]);
+    ctx.drawImage(castleSprite(NEUTRAL_GREY), 9, 5, 46, 46);
+  } else {
+    ctx.drawImage(castleSprite(NEUTRAL_GREY), 0, 4, 34, 34);
+    ctx.strokeStyle = INK; ctx.lineWidth = 5;
+    const arrow = () => { ctx.beginPath(); ctx.moveTo(22, 40); ctx.quadraticCurveTo(26, 56, 38, 52); ctx.stroke(); };
+    arrow();
+    ctx.strokeStyle = '#e8c04a'; ctx.lineWidth = 3; arrow();
+    ctx.fillStyle = '#e8c04a'; ctx.strokeStyle = INK; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(42, 50); ctx.lineTo(35, 46); ctx.lineTo(36, 57); ctx.closePath(); ctx.fill(); ctx.stroke();
+    drawCoin(ctx, 47, 30, 12, color);
+  }
+  u = c.toDataURL();
+  urlCache.set(cacheKey, u);
   return u;
 }

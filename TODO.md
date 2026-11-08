@@ -5,7 +5,7 @@
 Not now. The server will change dramatically for this, possibly a rewrite in C++.
 
 Where we are today:
-- Units are capped at `ECONOMY.maxUnitsPerPlayer` = 1000 per player (up to 20,000 in a full 20-player game, so the cap no longer protects the server).
+- Units are capped at `ECONOMY.maxUnitsPerPlayer` = 500 per player (up to 10,000 in a full 20-player game, so the cap no longer protects the server).
 - Everything runs on one thread.
 - A* across Europe takes 6–35 ms per search (up to ~85 ms).
 - Background re-plans are limited to 8 searches per tick.
@@ -48,4 +48,5 @@ Where we are today:
 
   See [GAME_DESIGN.md](GAME_DESIGN.md) for the rule and the places the current build has to change.
 - [ ] Moving units should not push standing units aside. The moving unit should find a way around them.
-- [ ] Naval units. Islands (Britain, Ireland, Sicily, Sardinia, Zealand, Crete, Cyprus, Iceland) are unreachable by land units for now.
+- [x] Naval units: transports carry land units across the sea to islands and other coasts (README, Navy).
+- [ ] Warships, and ships that fight each other.

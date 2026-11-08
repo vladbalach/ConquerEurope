@@ -155,6 +155,14 @@ function distToRing(ring, p) {
   return Math.sqrt(best);
 }
 
+// Width of the sea between two rings (0 if they touch or overlap).
+function ringGap(a, b) {
+  let best = Infinity;
+  for (const p of a) best = Math.min(best, distToRing(b, p));
+  for (const p of b) best = Math.min(best, distToRing(a, p));
+  return best;
+}
+
 // Clip a convex polygon by the half plane nx*x + ny*y <= c, tracking which
 // neighbour produced each edge (labels[k] = label of edge poly[k] -> poly[k+1]).
 function clipHalfPlane(poly, labels, nx, ny, c, newLabel) {
@@ -395,14 +403,25 @@ let orphanCount = 0;
 for (const p of polys) {
   let owners = p.cities;
   if (!owners.length) {
-    // Orphan landmass: same-country island -> nearest city of that country,
-    // tiny foreign state -> nearest city nearby, otherwise neutral scenery.
-    let best = -1, bd = ORPHAN_SAME_FEATURE_DIST;
-    cities.forEach((c, ci) => {
-      if (c.f !== p.f) return;
-      const d = distToRing(p.rings[0], [c.x, c.y]);
-      if (d < bd) { bd = d; best = ci; }
-    });
+    // Orphan landmass: same-country island -> the nearest landmass of that country with a city
+    // (within ORPHAN_SAME_FEATURE_DIST), and its nearest city: an island goes with the coast it
+    // lies off, not with a farther island whose city happens to be a little closer (Orkney
+    // stays with Scotland, not Shetland). Tiny foreign state -> nearest city nearby, otherwise
+    // neutral scenery.
+    let best = -1, bestGap = Infinity, bd = Infinity;
+    for (const q of polys) {
+      if (q.f !== p.f || !q.cities.length) continue;
+      const far = ORPHAN_SAME_FEATURE_DIST;
+      if (q.bbox.x0 - p.bbox.x1 > far || p.bbox.x0 - q.bbox.x1 > far || q.bbox.y0 - p.bbox.y1 > far || p.bbox.y0 - q.bbox.y1 > far) continue;
+      let gap = null;
+      for (const ci of q.cities) {
+        const c = cities[ci];
+        const d = distToRing(p.rings[0], [c.x, c.y]);
+        if (d >= far) continue;
+        if (gap === null) gap = ringGap(p.rings[0], q.rings[0]);
+        if (gap < bestGap || (gap === bestGap && d < bd)) { bestGap = gap; bd = d; best = ci; }
+      }
+    }
     if (best < 0 && p.area < ORPHAN_FOREIGN_MAX_AREA) {
       bd = ORPHAN_FOREIGN_DIST;
       cities.forEach((c, ci) => {

@@ -142,6 +142,8 @@ export class HostSession {
   // Live changes from the lobby server, for the game running here.
   balance(values) { this.worker.postMessage({ type: 'balance', values }); }
   cityMoved(msg) { this.worker.postMessage({ type: 'cityMoved', city: msg.city, x: msg.x, y: msg.y }); }
+  cityCoast(msg) { this.worker.postMessage({ type: 'cityCoast', city: msg.city, coastal: msg.coastal }); }
+  beachEdit(msg) { this.worker.postMessage({ type: 'beachEdit', cells: msg.cells, on: msg.on }); }
   mapRebuilt() { this.worker.postMessage({ type: 'mapRebuilt' }); }
 
   destroy() {

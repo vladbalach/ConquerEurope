@@ -16,6 +16,7 @@ export const COUNTRIES = [
 
   { name: 'England', cities: [['London', 51.51, -0.13], ['Bristol', 51.45, -2.59], ['Birmingham', 52.49, -1.89], ['York', 53.96, -1.08], ['Manchester', 53.48, -2.24], ['Norwich', 52.63, 1.30], ['Newcastle', 54.98, -1.61], ['Plymouth', 50.38, -4.14]] },
   { name: 'Scotland', cities: [['Edinburgh', 55.95, -3.19], ['Glasgow', 55.86, -4.25], ['Aberdeen', 57.15, -2.09], ['Inverness', 57.48, -4.22]] },
+  { name: 'Shetland', cities: [['Lerwick', 60.15, -1.15]] },
   { name: 'Ireland', cities: [['Dublin', 53.35, -6.26], ['Cork', 51.90, -8.47], ['Galway', 53.27, -9.05], ['Belfast', 54.60, -5.93]] },
   { name: 'Iceland', cities: [['Reykjavík', 64.15, -21.94], ['Akureyri', 65.68, -18.09]] },
 
@@ -28,10 +29,13 @@ export const COUNTRIES = [
   { name: 'Switzerland', cities: [['Zürich', 47.37, 8.54], ['Bern', 46.95, 7.45], ['Geneva', 46.20, 6.14]] },
   { name: 'Austria', cities: [['Vienna', 48.21, 16.37], ['Salzburg', 47.81, 13.04], ['Innsbruck', 47.27, 11.39], ['Graz', 47.07, 15.44], ['Ljubljana', 46.06, 14.51]] },
 
-  { name: 'Savoy', cities: [['Turin', 45.07, 7.69], ['Milan', 45.46, 9.19], ['Genoa', 44.41, 8.93], ['Cagliari', 39.22, 9.12]] },
+  { name: 'Savoy', cities: [['Turin', 45.07, 7.69], ['Milan', 45.46, 9.19], ['Genoa', 44.41, 8.93]] },
+  { name: 'Sardinia', cities: [['Cagliari', 39.22, 9.12], ['Sassari', 40.73, 8.56]] },
   { name: 'Venice', cities: [['Venice', 45.44, 12.32], ['Verona', 45.44, 10.99]] },
   { name: 'Papal States', cities: [['Rome', 41.90, 12.50], ['Bologna', 44.49, 11.34], ['Florence', 43.77, 11.26], ['Ancona', 43.62, 13.52]] },
-  { name: 'Naples', cities: [['Naples', 40.85, 14.27], ['Bari', 41.12, 16.87], ['Reggio', 38.11, 15.65], ['Palermo', 38.12, 13.36], ['Catania', 37.50, 15.09], ['Valletta', 35.90, 14.51]] },
+  { name: 'Naples', cities: [['Naples', 40.85, 14.27], ['Bari', 41.12, 16.87], ['Reggio', 38.11, 15.65]] },
+  { name: 'Sicily', cities: [['Palermo', 38.12, 13.36], ['Catania', 37.50, 15.09]] },
+  { name: 'Malta', cities: [['Valletta', 35.90, 14.51]] },
 
   { name: 'Denmark', cities: [['Copenhagen', 55.68, 12.57], ['Aarhus', 56.16, 10.20], ['Aalborg', 57.05, 9.92]] },
   { name: 'Norway', cities: [['Oslo', 59.91, 10.75], ['Bergen', 60.39, 5.32], ['Trondheim', 63.43, 10.40], ['Bodø', 67.28, 14.40], ['Tromsø', 69.65, 18.96]] },

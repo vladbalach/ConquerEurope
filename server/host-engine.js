@@ -73,6 +73,25 @@ export class HostEngine {
     const c = this.map.cities[id];
     if (c) { c.x = x; c.y = y; }
     this.game.moveCity(id, x, y);
+    this.game.sendPorts();              // the city may have become coastal, or stopped being so
+  }
+
+  // An admin made a city coastal (true), inland (false), or set it back to automatic (null).
+  setCoastal(id, coastal) {
+    const c = this.map.cities[id];
+    if (!c) return;
+    if (typeof coastal === 'boolean') c.coastal = coastal;
+    else delete c.coastal;
+    this.game.setPortOverride(id, coastal);
+    this.game.sendPorts();
+  }
+
+  // An admin painted these coast cells as beaches (on) or cliffs: the same here, and every player
+  // gets the new beaches with the ports.
+  editBeaches(cells, on) {
+    if (!Array.isArray(cells)) return;
+    this.nav.editBeaches(cells.filter(Number.isInteger), !!on);
+    this.game.sendPorts();
   }
 
   // The map was rebuilt: new territories, land grid and the areas paths avoid around cities.
@@ -80,11 +99,14 @@ export class HostEngine {
     for (const key of Object.keys(this.map)) delete this.map[key];
     Object.assign(this.map, map);
     Object.assign(this.nav, new NavGrid(navData));
-    markCityObstacles(this.nav, this.map.cities);
+    markCityObstacles(this.nav, this.map.cities, this.map);
     this.map.cities.forEach((c, i) => {
       const gc = this.game.cities[i];
       if (gc && (gc.x !== c.x || gc.y !== c.y)) this.game.moveCity(i, c.x, c.y);
+      if (gc) gc.portOverride = typeof c.coastal === 'boolean' ? c.coastal : null;
     });
+    this.game.updatePorts();            // the seas and coasts come from the new land grid
+    this.game.sendPorts(true);          // with the shore: the land grid is new
   }
 
   // ---------------------------------------------------------------- loop

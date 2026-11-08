@@ -1,7 +1,9 @@
 // A city: shoots the nearest enemy unit in range, regenerates, produces units and
 // upgrades, and changes hands when its HP drops to zero. Stats come from CITY and
-// CITY_UPGRADES in shared/config.js.
-import { CITY, CITY_UPGRADES, UPGRADE_TYPES, ECONOMY } from '../shared/config.js';
+// CITY_UPGRADES in shared/config.js. A coastal city (the sea within NAVAL.portRange) has a
+// port, where the ships it builds are launched.
+import { CITY, CITY_UPGRADES, UPGRADE_TYPES, ECONOMY, NAVAL, UNITS } from '../shared/config.js';
+import { nextGrade } from '../shared/upgrades.js';
 
 export class City {
   constructor(game, id, data) {
@@ -15,13 +17,31 @@ export class City {
     this.hp = CITY.hp;
     this.queue = [];        // production: unit types and upgrade names
     this.progress = 0;
-    this.rally = null;
+    this.rally = null;           // { x, y } on land: where new units go
+    this.seaRally = null;        // { x, y } on the sea: where new ships go (coastal cities)
     this.target = 0;
     this.upgrades = new Set();   // built upgrades, e.g. 'wall', 'tower'
+    this.port = null;            // { x, y, sea }: the nearest sea point, for coastal cities
+    // Set by an admin in Edit map (map.json `coastal`): true or false, null = from the distance to the sea.
+    this.portOverride = typeof data.coastal === 'boolean' ? data.coastal : null;
   }
 
   get isCity() { return true; }
   get r() { return CITY.size; }
+
+  // Coastal or not, from where the city stands now (after an admin moved it, too): the sea within
+  // NAVAL.portRange, unless an admin made it inland, or coastal with the sea a little farther.
+  updatePort() {
+    const nav = this.game.nav;
+    const range = this.portOverride === false ? 0 : this.portOverride ? NAVAL.editPortRange : NAVAL.portRange;
+    const p = range ? nav.nearestSea(this.x, this.y, range) : null;
+    this.port = p ? { x: p[0], y: p[1], sea: nav.seaAt(p[0], p[1]) } : null;
+  }
+
+  // Can this unit type be built here? Ships only in coastal cities.
+  canBuild(type) {
+    return !UNITS[type]?.naval || !!this.port;
+  }
 
   bonus(stat) {
     let sum = 0;
@@ -49,9 +69,10 @@ export class City {
     return flags;
   }
 
-  // Can this upgrade still be ordered here (not built and not already queued)?
-  canQueueUpgrade(key) {
-    return !!CITY_UPGRADES[key] && !this.upgrades.has(key) && !this.queue.includes(key);
+  // The grade of this upgrade an order queues here: the lowest one not built and not already
+  // queued ('wall2' once a Wall I is built or on its way), or null when every grade is.
+  nextUpgrade(key) {
+    return nextGrade(key, (k) => this.upgrades.has(k) || this.queue.includes(k));
   }
 
   // An upgrade finished building: the city gets its bonus straight away.
@@ -97,6 +118,7 @@ export class City {
     this.queue = [];
     this.progress = 0;
     this.rally = null;
+    this.seaRally = null;
     this.target = 0;
   }
 
@@ -112,9 +134,24 @@ export class City {
     }
     return nav.nearestWalkable(this.x, this.y, 60) || [this.x, this.y];
   }
+
+  // A spot on the water of the port for a new ship, a little apart from the ships already there.
+  launchPoint() {
+    const nav = this.game.nav, p = this.port;
+    for (let k = 0; k < 8; k++) {
+      const ang = Math.random() * Math.PI * 2, d = 4 + Math.random() * 10;
+      const x = p.x + Math.cos(ang) * d, y = p.y + Math.sin(ang) * d;
+      if (nav.seaAt(x, y) === p.sea) return [x, y];
+    }
+    return [p.x, p.y];
+  }
 }
 
-// Areas around cities that paths go around (the same for every game).
-export function markCityObstacles(nav, cities) {
+// Areas around cities that paths go around (the same for every game): their walls on land, and
+// the water within their range at sea, which ships avoid where they can.
+// `map`: the map as drawn (only its shore can be beach) with the beaches painted in Edit map (beachEdits).
+export function markCityObstacles(nav, cities, map = null) {
   nav.markObstacles(cities.map((c) => ({ x: c.x, y: c.y, r: CITY.size + 2 })));
+  nav.markDanger(cities.map((c) => ({ x: c.x, y: c.y, r: CITY.attackRange + 10 })));
+  nav.markBeaches(cities.map((c) => [c.x, c.y]), map?.beachEdits, map);   // where ships use the coast: beaches, harbours
 }

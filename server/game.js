@@ -4,12 +4,13 @@
 // This file and everything it imports also run in the host player's browser (served as /sim/),
 // where the game is simulated for browser-to-browser play: no Node-only modules here.
 import {
-  UNITS, CITY, CITY_UPGRADES, PRODUCTION_ITEMS, GAME, ECONOMY, DISBAND, LIBERATOR, TECH_TYPES, PLAYER_COLORS, DEBUG,
+  UNITS, CITY, CITY_UPGRADES, PRODUCTION_ITEMS, GAME, ECONOMY, DISBAND, LIBERATOR, TECH_TYPES, PLAYER_COLORS, DEBUG, NAVAL,
 } from '../shared/config.js';
 import {
-  noTech, nextLevel, techAvailable, liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows,
+  noTech, nextLevel, techAvailable, liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring,
 } from '../shared/tech.js';
 import { sanitizeOptions, citiesToWin } from '../shared/options.js';
+import { higherGrades } from '../shared/upgrades.js';
 import { City, markCityObstacles } from './City.js';
 import { regionCities, regionHolder } from '../shared/regions.js';
 import { createUnit } from './units/index.js';
@@ -28,6 +29,10 @@ const VIEW_MARGIN = 150;           // km around a player's viewport that is incl
 const CLUSTER_RADIUS = 150;        // units this close share one path in a group move
 const COMMANDS_PER_SECOND = 20;    // per player; protects the server from command spam
 const MAX_DEBUG_GOLD = 1e9;        // developer console "gold N": the most it may set
+const SHIP_SPACING = 26;           // distance between ships in a group move
+const LANDING_STEP = 8;             // km between the places tried when units step ashore
+const LANDING_RETRY = 0.5;          // seconds between two tries to land the units still on board
+const DOCK_MARGIN = 2;              // km of water left between two docked ships
 const r1 = (v) => Math.round(v * 10) / 10;
 
 // A player's state at the start: gold, counters, connection.
@@ -90,11 +95,14 @@ export class Game {
     this.cities = map.cities.map((c, i) => new City(this, i, c));
     this.regionCities = regionCities(map);   // region -> its city ids
     // City walls are obstacles for pathfinding (same cities in every game, so mark once).
-    if (!nav.obstacle) markCityObstacles(nav, this.cities);
+    if (!nav.obstacle) markCityObstacles(nav, this.cities, map);
     this.cityGrid = new Grid();
     for (const c of this.cities) this.cityGrid.insert(c);
+    this.updatePorts();
     this.units = new Map();
     this.unitGrid = new Grid();
+    this.boarding = [];               // [unit, ship] close enough to go on board this tick
+    this.unloading = [];              // transports at their landing place this tick
     this.nextUnitId = 1;
     this.time = 0;
     this.tickCount = 0;
@@ -208,7 +216,7 @@ export class Game {
     if (this.status !== 'lobby') {
       for (const c of this.cities) {
         if (c.owner !== id) continue;
-        c.owner = -1; c.queue = []; c.progress = 0; c.rally = null;
+        c.owner = -1; c.queue = []; c.progress = 0; c.rally = null; c.seaRally = null;
       }
       for (const [uid, u] of this.units) if (u.owner === id) this.units.delete(uid);
       this.broadcast({ t: 'event', kind: 'left', player: id });
@@ -234,13 +242,51 @@ export class Game {
   }
 
   // An admin moved a city on the map (Edit map): it stands at the new place in this game at once.
+  // It may have become coastal, or stopped being so (the host then sends everyone the ports).
   moveCity(id, x, y) {
     const c = this.cities[id];
     if (!c) return;
     c.x = x;
     c.y = y;
+    this.refreshPort(c);
     this.cityGrid = new Grid();
     for (const city of this.cities) this.cityGrid.insert(city);
+  }
+
+  // ------------------------------------------------------------ ports
+  // Coastal cities (the sea within NAVAL.portRange) build ships, which are launched at the port.
+  updatePorts() {
+    for (const c of this.cities) this.refreshPort(c);
+  }
+
+  // An admin made a city coastal (true), inland (false), or set it back to automatic (null).
+  setPortOverride(id, value) {
+    const c = this.cities[id];
+    if (!c) return;
+    c.portOverride = typeof value === 'boolean' ? value : null;
+    this.refreshPort(c);
+  }
+
+  // A city that is no longer coastal can't launch the ships in its queue: they are cancelled and
+  // their gold goes back to the owner.
+  refreshPort(c) {
+    c.updatePort();
+    if (c.seaRally && (!c.port || this.nav.seaAt(c.seaRally.x, c.seaRally.y) !== c.port.sea)) c.seaRally = null;
+    if (c.port || !c.queue.some((item) => UNITS[item]?.naval)) return;
+    const owner = this.players.get(c.owner);
+    if (UNITS[c.queue[0]]?.naval) c.progress = 0;
+    for (const item of c.queue) if (UNITS[item]?.naval && owner) owner.gold += UNITS[item].cost;
+    c.queue = c.queue.filter((item) => !UNITS[item]?.naval);
+  }
+
+  // For the browsers: [city id, port x, port y] of every coastal city.
+  portList() {
+    return this.cities.filter((c) => c.port).map((c) => [c.id, r1(c.port.x), r1(c.port.y)]);
+  }
+
+  // `shore`: with the shore cells too (after a map rebuild); every player got them at the start.
+  sendPorts(shore = false) {
+    this.broadcast({ t: 'ports', ports: this.portList(), beaches: this.nav.beachData(shore) });
   }
 
   giveStartingCities(player) {
@@ -290,7 +336,10 @@ export class Game {
 
   sendStart(p) {
     if (!p.client) return;
-    p.client.send({ t: 'start', you: p.id, title: this.title, options: this.options, players: this.playerList() });
+    p.client.send({
+      t: 'start', you: p.id, title: this.title, options: this.options, players: this.playerList(), ports: this.portList(),
+      beaches: this.nav.beachData(true),        // where ships can take units on board and land them
+    });
   }
 
   // Players as game clients see them. While the game runs nobody may learn who is who
@@ -374,14 +423,48 @@ export class Game {
       case 'move': {
         if (!num(msg.x) || !num(msg.y)) return;
         const units = this.ownedUnits(player, msg.ids);
-        if (units.length) this.orderGroupMove(units, this.clampX(msg.x), this.clampY(msg.y), !!msg.amove);
+        const x = this.clampX(msg.x), y = this.clampY(msg.y);
+        const land = units.filter((u) => !u.naval), ships = units.filter((u) => u.naval);
+        // A right-click on land with transports carrying units: they land them there, as Unload does.
+        // The others (and with Shift) sail to the nearest water.
+        const landing = !msg.queue && !this.nav.seaAt(x, y) && hasSeafaring(player.tech)
+          ? ships.filter((s) => s.cargo.length) : [];
+        const sailing = landing.length ? ships.filter((s) => !landing.includes(s)) : ships;
+        // `queue` (Shift): after the orders the units already have, not instead of them.
+        if (land.length) this.orderGroupMove(land, x, y, !!msg.amove, !!msg.queue);
+        if (landing.length) this.orderUnload(player, landing, x, y, null, true);   // they attack-move there
+        if (sailing.length) this.orderSail(sailing, x, y, !!msg.queue);
+        return;
+      }
+      case 'board': {
+        // Right-click on your transport with units selected: they come on board. `keep`: the same
+        // selection already sent units to transports, and those stay with theirs. Needs Seafaring.
+        if (!hasSeafaring(player.tech)) return;
+        if (Number.isInteger(msg.ship)) this.orderBoard(player, msg.ship, msg.ids, !!msg.keep);
+        return;
+      }
+      case 'unload': {
+        // Your transports land their units on the coast nearest to (x, y), or to the city. Needs Seafaring.
+        if (!hasSeafaring(player.tech)) return;
+        const city = Number.isInteger(msg.city) && this.cities[msg.city] ? this.cities[msg.city] : null;
+        if (!city && (!num(msg.x) || !num(msg.y))) return;
+        const ships = this.ownedUnits(player, msg.ids).filter((u) => u.naval && u.cargo.length);
+        const x = city ? city.x : this.clampX(msg.x), y = city ? city.y : this.clampY(msg.y);
+        if (ships.length) this.orderUnload(player, ships, x, y, city);
         return;
       }
       case 'attack': {
         const k = msg.k === 'c' ? 'c' : 'u';
         const units = this.ownedUnits(player, msg.ids);
-        if (!units.length || !this.resolve(k, msg.id, player.id)) return;
-        for (const u of units) u.orderAttack(k, msg.id);
+        const target = this.resolve(k, msg.id, player.id);
+        if (!units.length || !target) return;
+        for (const u of units) {
+          if (msg.queue && !u.naval) u.queueOrder({ kind: 'attack', tk: k, tid: msg.id });
+          else u.orderAttack(k, msg.id);
+        }
+        // Transports carrying units, right-click on an enemy city: they land them to attack it.
+        const landing = k === 'c' && !msg.queue && hasSeafaring(player.tech) ? units.filter((u) => u.naval && u.cargo.length) : [];
+        if (landing.length) this.orderUnload(player, landing, target.x, target.y, target);
         return;
       }
       case 'stop': {
@@ -398,26 +481,36 @@ export class Game {
         return;
       }
       case 'build': {
-        // One unit or upgrade in each listed city, in order, for as long as the gold lasts.
-        // An upgrade is skipped in cities that already have it or have it queued.
+        // One unit or upgrade in each listed city, in order, as far as the gold reaches. An upgrade
+        // queues its next grade in each city (Wall I, or Wall II where Wall I is built or queued),
+        // and is skipped where every grade is; a ship is skipped in cities that are not coastal.
+        // Ships need the Seafaring technology.
         const item = msg.item;
-        const def = itemDef(item);
-        if (!def) return;
+        if (!itemDef(item) || (UNITS[item]?.naval && !hasSeafaring(player.tech))) return;
         for (const c of this.ownedCities(player, msg)) {
-          if (player.gold < def.cost) break;
           if (c.queue.length >= ECONOMY.maxQueue) continue;
-          if (CITY_UPGRADES[item] && !c.canQueueUpgrade(item)) continue;
-          player.gold -= def.cost;
-          c.queue.push(item);
+          const key = CITY_UPGRADES[item] ? c.nextUpgrade(item) : item;
+          if (!key || !c.canBuild(key)) continue;
+          const { cost } = itemDef(key);
+          if (player.gold < cost) continue;   // grades differ in cost: a cheaper one may still fit
+          player.gold -= cost;
+          c.queue.push(key);
         }
         return;
       }
       case 'cancel': {
+        // Cancelling an upgrade also cancels its higher grades in the queue: they need it.
         const c = this.cities[msg.city];
         if (!c || c.owner !== player.id || !Number.isInteger(msg.index)) return;
         if (msg.index < 0 || msg.index >= c.queue.length) return;
         const [item] = c.queue.splice(msg.index, 1);
         player.gold += itemDef(item).cost;
+        for (const key of higherGrades(item)) {
+          const i = c.queue.indexOf(key);   // always after `item`: it was queued later
+          if (i < 0) continue;
+          c.queue.splice(i, 1);
+          player.gold += itemDef(key).cost;
+        }
         if (msg.index === 0) c.progress = 0;
         return;
       }
@@ -451,13 +544,29 @@ export class Game {
         if (DEBUG && num(msg.gold)) this.setGold(player.id, msg.gold);
         return;
       case 'rally': {
-        for (const c of this.ownedCities(player, msg)) {
-          let p = null;
-          if (num(msg.x) && num(msg.y)) {
-            p = this.nav.nearestWalkable(this.clampX(msg.x), this.clampY(msg.y), 150, this.nav.landmass(c.x, c.y));
-          }
-          c.rally = p ? { x: p[0], y: p[1] } : null;
+        // Right-click with cities selected. On land: the rally point of the units they train. On the
+        // sea: the rally point of their ships (coastal cities on that sea). No position: clear both.
+        const cities = this.ownedCities(player, msg);
+        if (!num(msg.x) || !num(msg.y)) {
+          for (const c of cities) { c.rally = null; c.seaRally = null; }
+          return;
         }
+        const x = this.clampX(msg.x), y = this.clampY(msg.y);
+        const sea = this.nav.seaAt(x, y);
+        if (!sea) {
+          for (const c of cities) {
+            const p = this.nav.nearestWalkable(x, y, 150, this.nav.landmass(c.x, c.y));
+            c.rally = p ? { x: p[0], y: p[1] } : null;
+          }
+          return;
+        }
+        let set = 0;
+        for (const c of cities) {
+          if (!c.port || c.port.sea !== sea) continue;
+          c.seaRally = { x, y };
+          set++;
+        }
+        if (!set && cities.length) this.tell(player, { kind: 'rally', reason: cities.some((c) => c.port) ? 'otherSea' : 'inland' });
         return;
       }
       default:
@@ -573,7 +682,10 @@ export class Game {
   // Every unit and city of the game back to full HP (developer console, debug builds only).
   // Everyone is told, so nobody wonders why a siege suddenly failed.
   resetHp(by) {
-    for (const u of this.units.values()) u.hp = u.maxHp;
+    for (const u of this.units.values()) {
+      u.hp = u.maxHp;
+      if (u.naval) for (const c of u.cargo) c.hp = c.maxHp;
+    }
     for (const c of this.cities) c.hp = c.maxHp;
     this.broadcast({ t: 'event', kind: 'hpReset', player: by });
   }
@@ -587,7 +699,13 @@ export class Game {
 
   // Send a group to (tx, ty) in formation. Nearby units share one path; units on
   // another landmass than the destination cannot get there and ignore the order.
-  orderGroupMove(units, tx, ty, amove) {
+  // With `queue` (Shift), units busy with an order go there once it is done (queueGroupMove).
+  orderGroupMove(units, tx, ty, amove, queue = false) {
+    if (queue) {
+      const later = units.filter((u) => u.busy);
+      if (later.length) this.queueGroupMove(later, tx, ty, amove);
+      units = units.filter((u) => !u.busy);
+    }
     const nav = this.nav;
     const left = new Set(units);
     for (const seed of units) {
@@ -618,21 +736,275 @@ export class Game {
     }
   }
 
-  // Rows perpendicular to the travel direction; melee in front, archers behind.
-  formation(units, tx, ty) {
+  // Shift + move for units busy with other orders. Each gets its slot of the formation around
+  // (tx, ty) as seen from where its orders end (Unit.planEnd), on the landmass it will be on then,
+  // and goes there when those orders are done. Each plans its own route when it sets off.
+  queueGroupMove(units, tx, ty, amove) {
+    const nav = this.nav;
+    const ends = new Map(units.map((u) => [u, u.planEnd()]));
+    const slots = this.formation(units, tx, ty, GAME.formationSpacing, (u) => ends.get(u));
+    const dests = new Map();          // landmass -> nearest walkable spot to (tx, ty) on it
+    for (const u of units) {
+      const [ex, ey] = ends.get(u);
+      const land = nav.landmass(ex, ey) || nav.landmass(u.x, u.y);
+      if (!dests.has(land)) dests.set(land, nav.nearestWalkable(tx, ty, 200, land));
+      const dest = dests.get(land);
+      if (!dest) continue;            // no way there from where it will be
+      let [sx, sy] = slots.get(u);
+      if (nav.landmass(sx, sy) !== land) [sx, sy] = nav.nearestWalkable(sx, sy, 60, land) || dest;
+      u.queueOrder({ kind: amove ? 'amove' : 'move', x: sx, y: sy });
+    }
+  }
+
+  // Ships sail to (tx, ty) in formation, each on the sea it is on: to the nearest water of that
+  // sea when (tx, ty) is on land. Each ship plans its own route. With `queue` (Shift), ships busy
+  // sailing or landing units go there afterwards, from where that leaves them.
+  orderSail(ships, tx, ty, queue = false) {
+    const nav = this.nav, bySea = new Map();
+    const from = (s) => (queue && s.busy ? s.planEnd() : [s.x, s.y]);
+    for (const s of ships) {
+      const [x, y] = from(s);
+      const sea = nav.seaAt(x, y) || nav.seaAt(s.x, s.y);
+      if (!bySea.has(sea)) bySea.set(sea, []);
+      bySea.get(sea).push(s);
+    }
+    for (const [sea, group] of bySea) {
+      const dest = sea ? nav.nearestSea(tx, ty, 300, sea) : null;
+      if (!dest) continue;
+      const slots = this.formation(group, dest[0], dest[1], SHIP_SPACING, from);
+      for (const s of group) {
+        let [sx, sy] = slots.get(s);
+        if (nav.seaAt(sx, sy) !== sea) [sx, sy] = nav.nearestSea(sx, sy, 60, sea) || dest;
+        if (queue) s.queueOrder({ kind: 'move', x: sx, y: sy });
+        else s.orderMove(sx, sy, false);
+      }
+    }
+  }
+
+  // Tell one player why an order did not work (or how it went): an event only they get.
+  tell(player, msg) {
+    if (player.client) player.client.send({ t: 'event', ...msg });
+  }
+
+  // Units the player sent to this transport that have not come on board yet.
+  boardersOf(ship) {
+    const out = [];
+    for (const u of this.units.values()) {
+      if (u.owner === ship.owner && u.order.kind === 'board' && u.order.ship === ship.id) out.push(u);
+    }
+    return out;
+  }
+
+  // Right-click on your transport with units selected, wherever it is. The units pick the free beach
+  // nearest to them (to the middle of the group) and gather on the shore there, and the transport sails
+  // to it, however far (refused only when its sea has no beach of their land). A transport already
+  // waiting at a dock for units of that land keeps it: new ones join them there. Only as many units as
+  // still fit are sent, the closest first; the others keep their orders.
+  // Several transports clicked in a row with the same selection share the units out: with `keep`,
+  // units already on their way to a transport stay with it and only the others are sent. Without it
+  // (a new selection) any selected unit may be sent, leaving the transport it was going to.
+  orderBoard(player, shipId, ids, keep = false) {
+    const ship = this.units.get(shipId);
+    if (!ship || ship.owner !== player.id || !ship.naval || !ship.capacity) return;
+    const nav = this.nav;
+    const selected = this.ownedUnits(player, ids).filter((u) => !u.naval && !u.disbanding);
+    const units = keep ? selected.filter((u) => u.order.kind !== 'board') : selected;
+    if (!units.length) {
+      if (selected.length) this.tell(player, { kind: 'board', ship: shipId, count: 0, reason: 'assigned' });
+      return;
+    }
+    // Units may stand on several landmasses: use the one most of them are on (that the transport's sea
+    // has a beach of), then the beach nearest to them.
+    const sea = nav.seaAt(ship.x, ship.y);
+    const byLand = new Map();
+    for (const u of units) {
+      const land = nav.landmass(u.x, u.y);
+      if (!land) continue;
+      if (!byLand.has(land)) byLand.set(land, []);
+      byLand.get(land).push(u);
+    }
+    // A dock no other ship uses, as close to the units as possible; or the one this transport is
+    // already waiting at for units of that land.
+    let best = null;
+    const claims = this.dockClaims(new Set([ship]));
+    const docked = ship.order.kind === 'dock' && ship.gather;
+    for (const [land, list] of byLand) {
+      if (best && list.length < best.list.length) continue;
+      let coast = null;
+      if (docked && ship.gather.land === land) {
+        coast = { land: [ship.gather.x, ship.gather.y], water: [ship.order.x, ship.order.y], d: 0 };
+      } else if (sea) {
+        const cx = list.reduce((s, u) => s + u.x, 0) / list.length, cy = list.reduce((s, u) => s + u.y, 0) / list.length;
+        coast = this.freeCoast(cx, cy, land, sea, ship.r, claims);
+      }
+      if (coast && (!best || list.length > best.list.length || coast.d < best.coast.d)) best = { land, list, coast };
+    }
+    if (!best) { this.tell(player, { kind: 'board', ship: shipId, count: 0, reason: 'far' }); return; }
+
+    // Free slots: what is on board and the units still on their way from that shore count.
+    const sending = new Set(best.list);
+    const waiting = this.boardersOf(ship).filter((u) => !sending.has(u) && u.order.land === best.land);
+    const free = ship.capacity - ship.cargo.length - waiting.length;
+    if (free <= 0) { this.tell(player, { kind: 'board', ship: shipId, count: 0, reason: 'full' }); return; }
+
+    const [gx, gy] = best.coast.land;
+    const go = best.list
+      .sort((p, q) => Math.hypot(p.x - gx, p.y - gy) - Math.hypot(q.x - gx, q.y - gy))
+      .slice(0, free);
+    if (!(docked && ship.gather.land === best.land)) {
+      ship.orderDock(best.coast.water[0], best.coast.water[1], { x: gx, y: gy, land: best.land });
+    }
+    for (const u of go) u.orderBoard(ship.id, best.land);
+    this.tell(player, { kind: 'board', ship: shipId, count: go.length, skipped: units.length - go.length });
+  }
+
+  // Unload: every transport sails to a free dock on the coast nearest to (x, y) that it can reach on
+  // its sea, lands its units there and sends them on: to attack `city` when it is an enemy's,
+  // otherwise to (x, y). The transports nearest to the place get the docks nearest to it; each keeps
+  // clear of the docks of the others, so they don't jam. `amove` (right-click on land): the units
+  // attack-move to (x, y), fighting anything they meet on the way.
+  orderUnload(player, ships, x, y, city, amove = false) {
+    const nav = this.nav;
+    const spot = nav.nearestWalkable(x, y, 200);
+    const land = spot ? nav.landmass(spot[0], spot[1]) : 0;
+    const claims = this.dockClaims(new Set(ships));
+    const byDistance = [...ships].sort((p, q) => (land ? Math.hypot(p.x - spot[0], p.y - spot[1]) - Math.hypot(q.x - spot[0], q.y - spot[1]) : 0));
+    let failed = 0;
+    for (const s of byDistance) {
+      const sea = nav.seaAt(s.x, s.y);
+      const coast = land && sea ? this.freeCoast(spot[0], spot[1], land, sea, s.r, claims) : null;
+      if (!coast) { failed++; continue; }
+      claims.push([coast.water[0], coast.water[1], s.r]);
+      s.orderUnload({
+        x: coast.water[0], y: coast.water[1], lx: coast.land[0], ly: coast.land[1], land,
+        tx: spot[0], ty: spot[1], city: city && city.owner !== player.id ? city.id : -1, amove,
+      });
+    }
+    if (failed) this.tell(player, { kind: 'unload', failed, reason: land ? 'sea' : 'land' });
+  }
+
+  // Water other ships use, [x, y, r] each: the docks of those taking units on board or landing them,
+  // and where idle ships lie. Ships in `except` are left out (they are getting new orders).
+  dockClaims(except) {
+    const out = [];
+    for (const u of this.units.values()) {
+      if (!u.naval || except.has(u)) continue;
+      const k = u.order.kind;
+      if (k === 'dock' || k === 'unload') out.push([u.order.x, u.order.y, u.r]);
+      else if (k === 'idle') out.push([u.x, u.y, u.r]);
+    }
+    return out;
+  }
+
+  // The coast nearest to (x, y) (of `land` on `sea`, within maxDist) whose dock leaves room for a ship of
+  // radius r next to every claim. When none is free, the nearest one anyway: the ship waits its turn there.
+  freeCoast(x, y, land, sea, r, claims, maxDist = Infinity) {
+    const free = (wx, wy) => claims.every(([cx, cy, cr]) => Math.hypot(cx - wx, cy - wy) >= cr + r + DOCK_MARGIN);
+    return this.nav.coastNear(x, y, land, sea, maxDist, free) || this.nav.coastNear(x, y, land, sea, maxDist);
+  }
+
+  // After this tick's moves: units next to their transport go on board, and transports at their
+  // landing place put everyone ashore.
+  boardAndLand() {
+    for (const [u, ship] of this.boarding) {
+      if (!this.units.has(u.id) || u.hp <= 0 || ship.hp <= 0 || !this.units.has(ship.id)) continue;
+      if (ship.cargo.length >= ship.capacity) { u.makeIdle(); continue; }
+      this.units.delete(u.id);
+      u.makeIdle();
+      ship.cargo.push(u);
+    }
+    this.boarding.length = 0;
+    const taken = [];                 // ground taken by units landed this tick (not in the grid yet)
+    for (const ship of this.unloading) {
+      if (ship.hp > 0 && this.units.has(ship.id)) this.landUnits(ship, taken);
+    }
+    this.unloading.length = 0;
+  }
+
+  // Units on board step ashore around the coast cell, each only where there is room for it: on that
+  // landmass, within NAVAL.boardRadius of the coast cell, clear of other units and of city walls.
+  // The ones that don't fit stay on board and the transport tries again every LANDING_RETRY seconds
+  // (the player is told once); with everyone ashore it carries on with what Shift queued for it.
+  // The ones ashore walk on to the target, or attack the city.
+  landUnits(ship, taken) {
+    const o = ship.order;
+    if (this.time < (o.retryAt || 0)) return;
+    const landed = [];
+    for (const u of ship.cargo) {
+      const spot = this.landingSpot(o, u.r, taken);
+      if (!spot) continue;
+      taken.push({ x: spot[0], y: spot[1], r: u.r });
+      landed.push([u, spot]);
+    }
+    const left = ship.cargo.length - landed.length;
+    if (left) {
+      o.retryAt = this.time + LANDING_RETRY;
+      if (!o.crowded) {
+        o.crowded = true;
+        const p = this.players.get(ship.owner);
+        if (p) this.tell(p, { kind: 'unload', reason: 'crowded', left });
+      }
+    }
+    if (!landed.length) return;
+    const units = landed.map(([u]) => u);
+    ship.cargo = ship.cargo.filter((u) => !units.includes(u));
+    for (const [u, [x, y]] of landed) {
+      u.x = x; u.y = y;
+      u.px = x; u.py = y;
+      u.makeIdle();
+      this.units.set(u.id, u);
+    }
+    if (!ship.cargo.length) ship.done();     // sails on if Shift queued more for it
+    if (o.city >= 0 && this.resolve('c', o.city, ship.owner)) {
+      for (const u of units) u.orderAttack('c', o.city);
+    } else {
+      this.orderGroupMove(units, o.tx, o.ty, !!o.amove);
+    }
+  }
+
+  // Free ground for a unit of radius r near the coast cell of an unload order, nearest first, or null.
+  landingSpot(o, r, taken) {
+    for (let ring = 0; ring * LANDING_STEP <= NAVAL.boardRadius; ring++) {
+      const n = ring ? ring * 6 : 1;
+      for (let k = 0; k < n; k++) {
+        const a = (k / n) * Math.PI * 2 + ring * 0.5;
+        const x = o.lx + Math.cos(a) * ring * LANDING_STEP, y = o.ly + Math.sin(a) * ring * LANDING_STEP;
+        if (this.nav.landmass(x, y) === o.land && this.roomAt(x, y, r, taken)) return [x, y];
+      }
+    }
+    return null;
+  }
+
+  // Room for a unit of radius r at (x, y): no unit on land, city wall or spot in `taken` overlaps it.
+  roomAt(x, y, r, taken) {
+    let free = true;
+    this.unitGrid.forEachNear(x, y, r + 12, (u) => {
+      if (free && !u.naval && this.units.has(u.id) && Math.hypot(u.x - x, u.y - y) < u.r + r) free = false;
+    });
+    if (free) {
+      this.cityGrid.forEachNear(x, y, CITY.size + r, (c) => {
+        if (Math.hypot(c.x - x, c.y - y) < c.r + r) free = false;
+      });
+    }
+    return free && taken.every((t) => Math.hypot(t.x - x, t.y - y) >= t.r + r);
+  }
+
+  // Rows perpendicular to the travel direction; melee in front, archers behind. `at(u)` is where
+  // a unit sets off from: where it stands, or for a queued order where its earlier orders end.
+  formation(units, tx, ty, spacing = GAME.formationSpacing, at = (u) => [u.x, u.y]) {
     const slots = new Map();
     if (units.length === 1) { slots.set(units[0], [tx, ty]); return slots; }
+    const pos = new Map(units.map((u) => [u, at(u)]));
     let cx = 0, cy = 0;
-    for (const u of units) { cx += u.x; cy += u.y; }
+    for (const [x, y] of pos.values()) { cx += x; cy += y; }
     cx /= units.length; cy /= units.length;
     let dx = tx - cx, dy = ty - cy;
     const len = Math.hypot(dx, dy);
     if (len < 1) { dx = 0; dy = -1; } else { dx /= len; dy /= len; }
     const px = -dy, py = dx;
-    const spacing = GAME.formationSpacing;
     const cols = Math.max(1, Math.round(Math.sqrt(units.length * 2)));
-    const fwd = (u) => (u.x - cx) * dx + (u.y - cy) * dy;
-    const side = (u) => (u.x - cx) * px + (u.y - cy) * py;
+    const fwd = (u) => (pos.get(u)[0] - cx) * dx + (pos.get(u)[1] - cy) * dy;
+    const side = (u) => (pos.get(u)[0] - cx) * px + (pos.get(u)[1] - cy) * py;
     const melee = units.filter((u) => !u.isRanged).sort((a, b) => fwd(b) - fwd(a));
     const ranged = units.filter((u) => u.isRanged).sort((a, b) => fwd(b) - fwd(a));
     const ordered = melee.concat(ranged);
@@ -675,8 +1047,8 @@ export class Game {
       const item = c.queue[0];
       const upgrade = CITY_UPGRADES[item];
       if (!p || (!upgrade && p.unitCount >= ECONOMY.maxUnitsPerPlayer)) continue;   // unit limit pauses units only
-      // Progress counts base build seconds; Barracks make units (not upgrades) advance faster.
-      c.progress += upgrade ? dt : dt * c.trainRate;
+      // Progress counts base build seconds; Barracks make units (not upgrades or ships) advance faster.
+      c.progress += upgrade || UNITS[item].naval ? dt : dt * c.trainRate;
       if (c.progress >= itemDef(item).buildTime) {
         c.queue.shift();
         c.progress = 0;
@@ -697,6 +1069,7 @@ export class Game {
       u.py = u.y;
       u.update(dt);
     }
+    this.boardAndLand();
 
     this.resolveCollisions();
 
@@ -717,6 +1090,17 @@ export class Game {
       this.units.delete(id);
       this.pendingDeaths.push(u);
       this.recordDeath(u);
+      // A sunk transport takes everyone on board down with it; whoever sank it gets the kills.
+      if (u.naval) {
+        for (const c of u.cargo) {
+          c.hp = 0;
+          c.disbanding = u.disbanding;
+          c.lastHitOwner = u.lastHitOwner;
+          c.lastPlayerHit = u.lastPlayerHit;
+          this.recordDeath(c);
+        }
+        u.cargo = [];
+      }
     }
 
     for (const u of this.units.values()) u.regenerate(dt);
@@ -775,11 +1159,17 @@ export class Game {
   }
 
   spawnUnit(city, type) {
-    const [x, y] = city.spawnPoint(UNITS[type].size);
+    const naval = UNITS[type].naval;
+    const [x, y] = naval ? city.launchPoint() : city.spawnPoint(UNITS[type].size);
     const u = createUnit(type, this, this.nextUnitId++, city.owner, x, y);
     this.units.set(u.id, u);
-    // New units attack-move to the rally point, fighting anything they meet on the way.
-    if (city.rally) {
+    // New units attack-move to the rally point, fighting anything they meet on the way. New ships
+    // sail to the city's rally point at sea, or stay in the port.
+    if (naval) {
+      if (city.seaRally) {
+        this.orderSail([u], city.seaRally.x + (Math.random() - 0.5) * 30, city.seaRally.y + (Math.random() - 0.5) * 30);
+      }
+    } else if (city.rally) {
       const jx = city.rally.x + (Math.random() - 0.5) * 24, jy = city.rally.y + (Math.random() - 0.5) * 24;
       const p = this.nav.walkable(jx, jy) ? [jx, jy] : [city.rally.x, city.rally.y];
       u.orderMove(p[0], p[1], true);
@@ -787,18 +1177,20 @@ export class Game {
     return u;
   }
 
-  // Units are circles that never overlap, and nobody is ever pushed into the water.
+  // Units are circles that never overlap, nobody is ever pushed into the water, and no ship is
+  // pushed onto land. Ships only bump into ships, land units only into land units and cities.
   resolveCollisions() {
     const nav = this.nav;
+    const canGo = (u, x, y) => (u.naval ? nav.canSail(u.x, u.y, x, y) : nav.canStep(u.x, u.y, x, y));
     const tryMove = (u, x, y) => {
-      if (!nav.canStep(u.x, u.y, x, y)) return false;
+      if (!canGo(u, x, y)) return false;
       u.x = x; u.y = y;
       return true;
     };
     for (let iter = 0; iter < 2; iter++) {
       for (const a of this.units.values()) {
         this.unitGrid.forEachNear(a.x, a.y, a.r + 12, (b) => {
-          if (b.id <= a.id) return;
+          if (b.id <= a.id || a.naval !== b.naval || !this.units.has(b.id)) return;
           const dx = b.x - a.x, dy = b.y - a.y;
           const min = a.r + b.r;
           const d2 = dx * dx + dy * dy;
@@ -816,7 +1208,7 @@ export class Game {
           const sa = wa + wb > 0 ? wa / (wa + wb) : 0.5, sb = 1 - sa;
           const ax = a.x - nx * overlap * sa, ay = a.y - ny * overlap * sa;
           const bx = b.x + nx * overlap * sb, by = b.y + ny * overlap * sb;
-          const aOk = nav.canStep(a.x, a.y, ax, ay), bOk = nav.canStep(b.x, b.y, bx, by);
+          const aOk = canGo(a, ax, ay), bOk = canGo(b, bx, by);
           if (aOk && bOk) {
             a.x = ax; a.y = ay; b.x = bx; b.y = by;
           } else if (bOk) {
@@ -825,7 +1217,7 @@ export class Game {
             if (!tryMove(a, a.x - nx * overlap, a.y - ny * overlap)) tryMove(a, ax, ay);
           }
         });
-        this.cityGrid.forEachNear(a.x, a.y, CITY.size + a.r, (c) => {
+        if (!a.naval) this.cityGrid.forEachNear(a.x, a.y, CITY.size + a.r, (c) => {
           const dx = a.x - c.x, dy = a.y - c.y;
           const min = c.r + a.r;
           const d = Math.hypot(dx, dy);
@@ -860,7 +1252,7 @@ export class Game {
     }
     for (const u of this.units.values()) {
       const p = this.players.get(u.owner);
-      if (p) p.unitCount++;
+      if (p) p.unitCount += 1 + (u.naval ? u.cargo.length : 0);     // units on board count too
     }
     if (this.status !== 'running') return;
 
@@ -934,11 +1326,27 @@ export class Game {
       if (!p.client) continue;
       const v = p.view;
       const inView = (x, y) => v && x > v.x0 - VIEW_MARGIN && x < v.x1 + VIEW_MARGIN && y > v.y0 - VIEW_MARGIN && y < v.y1 + VIEW_MARGIN;
-      const us = [];
+      const us = [], cargo = [], plans = [], docks = [];
       for (const u of this.units.values()) {
         if (u.owner !== p.id && !inView(u.x, u.y)) continue;
-        us.push(u.id, u.t, u.owner, r1(u.x), r1(u.y), Math.ceil(u.hp),
-          (u.attacking ? 1 : 0) | (u.wantMove > 0 ? 2 : 0) | (u.disbanding ? 4 : 0) | (u.holding ? 8 : 0), u.engaged);
+        // Your own units with orders queued (Shift): where they go, one point per order, for the map.
+        if (u.owner === p.id && u.queue.length) plans.push([u.id, ...u.planPoints()]);
+        // Flags: 1 attacking, 2 moving, 4 disbanding, 8 on hold; ships: how many units are on board,
+        // from bit 5 (32) up.
+        let flags = (u.attacking ? 1 : 0) | (u.wantMove > 0 ? 2 : 0) | (u.disbanding ? 4 : 0) | (u.holding ? 8 : 0);
+        if (u.naval) {
+          flags |= u.cargo.length << 5;
+          // Your own transports: who is on board (type and HP), for the panel.
+          if (u.owner === p.id && u.cargo.length) cargo.push([u.id, u.cargo.flatMap((c) => [c.t, Math.ceil(c.hp)])]);
+          // Your own ships taking units on board (0) or landing them (1): their dock and the shore
+          // point next to it, so you see where each will be.
+          const k = u.order.kind;
+          if (u.owner === p.id && (k === 'dock' || k === 'unload')) {
+            const shore = k === 'dock' ? u.gather : { x: u.order.lx, y: u.order.ly };
+            if (shore) docks.push(u.id, r1(u.order.x), r1(u.order.y), r1(shore.x), r1(shore.y), k === 'dock' ? 0 : 1);
+          }
+        }
+        us.push(u.id, u.t, u.owner, r1(u.x), r1(u.y), Math.ceil(u.hp), flags, u.engaged);
       }
       const shots = [];
       for (const c of this.cities) if (c.target && inView(c.x, c.y)) shots.push(c.id, c.target);
@@ -946,12 +1354,13 @@ export class Game {
       for (const u of this.pendingDeaths) if (inView(u.x, u.y)) deaths.push(r1(u.x), r1(u.y), u.owner, u.t);
       const q = [];
       for (const c of this.cities) {
-        if (c.owner !== p.id || (!c.queue.length && !c.rally)) continue;
+        if (c.owner !== p.id || (!c.queue.length && !c.rally && !c.seaRally)) continue;
         q.push([c.id, r1(c.progress), c.queue.map((item) => PRODUCTION_ITEMS.indexOf(item)),
-          c.rally ? r1(c.rally.x) : null, c.rally ? r1(c.rally.y) : null]);
+          c.rally ? r1(c.rally.x) : null, c.rally ? r1(c.rally.y) : null,
+          c.seaRally ? r1(c.seaRally.x) : null, c.seaRally ? r1(c.seaRally.y) : null]);
       }
       p.client.send({
-        t: 'snap', time, u: us, c: cityArr, s: shots, d: deaths, g: Math.floor(p.gold), q,
+        t: 'snap', time, u: us, c: cityArr, s: shots, d: deaths, g: Math.floor(p.gold), q, b: cargo, w: plans, k: docks,
         turn: this.turn, next: this.nextTurnAt, ...debug,
         // Your research (private): technology id and seconds done.
         r: p.research ? [TECH_TYPES.indexOf(p.research.tech), r1(p.research.progress)] : null,

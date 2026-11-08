@@ -91,6 +91,8 @@
       <div class="stat" title="Units you command"><span class="army"></span><b id="hud-units">0</b></div>
       <div class="title" id="hud-title"></div>
       <div class="buttons">
+        <button type="button" id="btn-beach-add" hidden title="Drag along the coast to make it beach: ships take units on board and land them there">Paint beach</button>
+        <button type="button" id="btn-beach-del" hidden title="Drag along the coast to make it cliffs: no boarding or landing there">Erase beach</button>
         <button type="button" id="btn-rebuild" hidden>Rebuild navigation</button>
         <button type="button" id="btn-mapedit" hidden>Edit map</button>
         <button type="button" id="btn-edit" title="Edit the game balance (admins only)" hidden>Edit</button>
@@ -124,24 +126,29 @@
         <tr><td>Shift + click / drag</td><td>Add units or cities to the selection</td></tr>
         <tr><td>Unit icons in the panel</td><td>Click: select only that unit (or type) · Ctrl + click: remove it from the selection · Shift + click: mark it; when you release Shift, the marked units become the selection</td></tr>
         <tr><td>Double click</td><td>On a unit: all your units of that type on screen · on your city: all your cities on screen</td></tr>
-        <tr><td>Right click</td><td>Move · attack unit or city · set rally (city selected; new units attack-move there)</td></tr>
-        <tr><td>Alt + right click</td><td>Cities selected: clear their rally points</td></tr>
+        <tr><td>Right click</td><td>Move · attack unit or city · set rally (cities selected: on land for new units, which attack-move there; on water for new ships of coastal cities)</td></tr>
+        <tr><td>Alt + right click</td><td>Cities selected: clear their rally points (both)</td></tr>
         <tr><td>Hold A + right click</td><td>Units selected: attack-move (fight anything on the way; works on the minimap too)</td></tr>
+        <tr><td>Shift + right click</td><td>Units selected: queue the move or attack after their current orders; they carry them out one after another. Without Shift, an order replaces the queue</td></tr>
         <tr><td>S</td><td>Units selected: stop</td></tr>
         <tr><td>H</td><td>Units selected: hold position (fight only what is within reach; any new order ends it)</td></tr>
         <tr><td>Delete</td><td>Units selected: disband (they lose HP until they die; cities can't be disbanded)</td></tr>
-        <tr><td>Q / W / E / R</td><td>Build infantry / archers / cavalry / knight in every selected city</td></tr>
-        <tr><td>A / S / D / F / G</td><td>Cities selected: build Wall / Tower / Castle / Farm / Barracks in every selected city</td></tr>
+        <tr><td>Q / W / E / R / B</td><td>Build infantry / archers / cavalry / knight / transport in every selected city (ships only in coastal cities, marked with an anchor)</td></tr>
+        <tr><td>Right click your transport</td><td>Units selected: they go on board. The transport must be near a coast; it sails to their shore and they gather there (8 places, only the units that fit go). Your transports light up while units are selected. Right-click more transports with the same selection to share it out; select the units again to send them to another transport instead</td></tr>
+        <tr><td>Ctrl + B · Shift + B</td><td>Units selected: remove the ships from the selection · keep only the ships</td></tr>
+        <tr><td>Ctrl + F · Shift + F</td><td>Units selected: remove the full transports from the selection · keep only the full transports</td></tr>
+        <tr><td>U</td><td>Transports selected: unload. Click any land or city: the transport sails to the nearest coast, lands everyone and they march there (they attack an enemy city). Right click or Esc cancels. Quicker: right-click land or an enemy city with the loaded transports selected</td></tr>
+        <tr><td>A / S / D / F / G</td><td>Cities selected: build Wall / Tower / Castle / Farm / Barracks in every selected city. A again: Wall II</td></tr>
         <tr><td>Ctrl + 1–9, then 1–9</td><td>Save / recall control group (press twice to jump)</td></tr>
         <tr><td>Hold Alt</td><td>Show the attack radius of every city · Alt + drag selects only your cities, not units</td></tr>
         <tr><td>Space</td><td>Center on selection</td></tr>
         <tr><td>F2</td><td>Select all your units</td></tr>
         <tr><td>Arrows · screen edge · middle drag</td><td>Scroll the map</td></tr>
         <tr><td>Mouse wheel</td><td>Zoom</td></tr>
-        <tr><td>T</td><td>Technologies (the Rebellion tab: what you can do as a liberator)</td></tr>
+        <tr><td>T</td><td>Technologies: Sea (Seafaring: ships, boarding and landing) and Rebellion (what you can do as a liberator)</td></tr>
         <tr><td>Tab</td><td>Players · F1 this help · Esc deselect</td></tr>
       </table>
-      <p class="muted small">Capture a city by bringing its HP to zero. Units walk only on land and find their own way around seas; islands such as Britain or Sicily cannot be reached by land units. Units regenerate HP after a few seconds out of combat.</p>
+      <p class="muted small">Capture a city by bringing its HP to zero. Units walk only on land and find their own way around seas; to reach islands such as Britain or Sicily, carry them over in transports. Ships sail only on the sea and are built in coastal cities; they take units on board and land them only on beaches, the sandy stretches of coast (the rest is cliffs). Units regenerate HP after a few seconds out of combat.</p>
       </section>
       <section id="help-economy" class="help-page" data-page="economy" role="tabpanel" hidden></section>
       <section id="help-liberator" class="help-page" data-page="liberator" role="tabpanel" hidden></section>

@@ -380,13 +380,14 @@ const GAME_MESSAGES = {
     if (game && game.gameId === joined.gameId && game.you === msg.you) {
       game.link = link;                // reconnected to the host
       game.setPlayers(msg.players);
+      game.onPorts(msg);
       return;
     }
     if (game) game.destroy();
     show('screen-game');
     game = new GameClient({
       map, net, link, gameId: joined.gameId, you: msg.you, title: msg.title, options: msg.options, players: msg.players,
-      onLeave: leaveGame, debug, admin: isAdmin, mapState,
+      ports: msg.ports, beaches: msg.beaches, onLeave: leaveGame, debug, admin: isAdmin, mapState,
     });
     if (session && session.relay) game.hud.feed('No direct connection to the host: your game goes through the server.');
   },
@@ -394,6 +395,7 @@ const GAME_MESSAGES = {
   snap(msg) { if (game) game.onSnap(msg); },
   event(msg) { if (game) game.onEvent(msg); },
   score(msg) { if (game) game.setPlayers(msg.players); },
+  ports(msg) { if (game) game.onPorts(msg); },
   gameover(msg) { if (game) game.onGameOver(msg); },
 };
 
@@ -472,6 +474,21 @@ net.on('cityMoved', (msg) => {
   c.y = msg.y;
   if (session && session.isHost) session.cityMoved(msg);
   if (game) game.onCityMoved(msg);
+});
+// A city made coastal (true) or inland (false) by an admin, or back to automatic (null). The game's
+// host recomputes the ports and sends them to everyone.
+net.on('cityCoast', (msg) => {
+  const c = map && map.cities[msg.city];
+  if (!c) return;
+  if (typeof msg.coastal === 'boolean') c.coastal = msg.coastal;
+  else delete c.coastal;
+  if (session && session.isHost) session.cityCoast(msg);
+  if (game) game.onCityCoast(msg);
+});
+// Coast cells an admin painted as beaches or cliffs. The game's host applies them and sends every
+// player the new beaches.
+net.on('beachEdit', (msg) => {
+  if (session && session.isHost) session.beachEdit(msg);
 });
 net.on('mapRebuilt', async () => {
   if (!map) return;

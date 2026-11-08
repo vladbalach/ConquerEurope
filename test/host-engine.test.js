@@ -83,3 +83,16 @@ test('leaving gives up the empire; the end of the game is reported to the page',
   assert.deepEqual(ended, [1]);
   assert.ok(inbox.get(1).some((m) => m.t === 'gameover' && m.winner === 1));
 });
+
+test('an admin makes a city inland or coastal: the host sends everyone the new ports', () => {
+  const { engine, game, inbox } = setupEngine();
+  engine.connect(0);
+  const lisbon = game.cities.find((c) => c.name === 'Lisbon');
+  const ports = () => inbox.get(0).filter((m) => m.t === 'ports').at(-1).ports.map(([id]) => id);
+  assert.ok(inbox.get(0).find((m) => m.t === 'start').ports.some(([id]) => id === lisbon.id), 'coastal at the start');
+  engine.setCoastal(lisbon.id, false);
+  assert.ok(!ports().includes(lisbon.id), 'inland now');
+  assert.equal(engine.map.cities[lisbon.id].coastal, false);
+  engine.setCoastal(lisbon.id, null);
+  assert.ok(ports().includes(lisbon.id), 'and coastal again');
+});

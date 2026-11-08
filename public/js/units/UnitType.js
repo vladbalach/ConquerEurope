@@ -10,6 +10,7 @@ export class UnitType {
 
   static get stats() { return UNITS[this.type]; }
   static get isRanged() { return this.stats.attackRange > 0; }
+  static get naval() { return !!this.stats.naval; }
 
   // Tooltip text, built from the config so it never goes stale.
   static describe() {

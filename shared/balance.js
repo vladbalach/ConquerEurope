@@ -17,6 +17,7 @@ const UNIT_FIELDS = [
   { key: 'cost', label: 'Cost', min: 0, max: 100000 },
   { key: 'buildTime', label: 'Build s', min: 0.1, max: 3600 },
   { key: 'archerDamageReduction', label: 'Archer block', min: 0, max: 1, only: true, hint: 'share of archer damage blocked, 0–1' },
+  { key: 'capacity', label: 'Capacity', min: 0, max: 100, only: true, hint: 'units a transport carries' },
 ];
 
 const UPGRADE_FIELDS = [

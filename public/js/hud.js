@@ -1,10 +1,11 @@
 // DOM HUD: resource bar, selection panel (city production / units / info), feed, overlays.
 import {
   UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES, PRODUCTION_ITEMS, ECONOMY, DISBAND, LIBERATOR, TECHS, TECH_TYPES,
-  TECH_TABS, PLAYER_COLOR_NAMES,
+  TECH_TABS, PLAYER_COLOR_NAMES, NAVAL,
 } from '/shared/config.js';
 import { nextLevel, liberatorIncome, influenceLimit } from '/shared/tech.js';
-import { unitIconURL, upgradeIconURL } from './sprites.js';
+import { upgradeGrades, higherGrades, topGrades } from '/shared/upgrades.js';
+import { unitIconURL, unitEmblemURL, upgradeIconURL, techIconURL } from './sprites.js';
 import { UNIT_CLASSES } from './units/index.js';
 import { BalanceEditor } from './balance-editor.js';
 
@@ -76,11 +77,14 @@ export class Hud {
       [$('btn-mapedit'), 'click', () => {
         this.g.setMapEdit(!this.g.mapEdit);
         if (this.g.mapEdit) {
-          this.banner('Map editing: drag any city to move it. Moves are saved for every game. ' +
-            'Press Rebuild navigation to update territories and paths.', 8000);
+          this.banner('Map editing: drag any city to move it, or click it to make it coastal or inland. Paint beach / ' +
+            'Erase beach: drag along the coast. Changes are saved for every game. Press Rebuild navigation to update ' +
+            'territories and paths.', 9000);
         }
       }],
       [$('btn-rebuild'), 'click', () => this.g.rebuildMap()],
+      [$('btn-beach-add'), 'click', () => this.g.setBeachBrush('add')],
+      [$('btn-beach-del'), 'click', () => this.g.setBeachBrush('del')],
       [$('btn-scores'), 'click', () => this.showScores($('scoreboard').hidden)],
       [$('btn-tech'), 'click', () => this.toggleTech()],
       [$('btn-help'), 'click', () => this.toggleHelp()],
@@ -131,6 +135,11 @@ export class Hud {
     rebuild.textContent = st.busy ? 'Rebuilding…' : st.pending ? `Rebuild navigation (${st.pending})` : 'Rebuild navigation';
     rebuild.title = 'Rebuild territories, borders and pathfinding from where the cities stand now' +
       (st.pending ? ` (${st.pending} moved since the last rebuild)` : '');
+    // The beach brush (Edit map only): paint beaches or erase them by dragging along the coast.
+    for (const [id, mode] of [['btn-beach-add', 'add'], ['btn-beach-del', 'del']]) {
+      $(id).hidden = !g.admin || !g.mapEdit;
+      $(id).classList.toggle('active', g.beachBrush === mode);
+    }
     $('view').classList.toggle('map-editing', g.mapEdit);
   }
 
@@ -262,9 +271,11 @@ export class Hud {
   }
 
   // ---------------------------------------------------------------- Tech window (T)
-  toggleTech(force) {
+  // `tab`: open on this tab (e.g. 'sea' from a ship's locked build button).
+  toggleTech(force, tab) {
     const box = $('tech');
     box.hidden = force === undefined ? !box.hidden : !force;
+    if (tab) this.techTab = tab;
     this.techKey = null;
     this.renderTech();
   }
@@ -298,6 +309,9 @@ export class Hud {
         body.append(el('p', { class: 'muted small' }, 'Rebellion technologies work only while you are a liberator ' +
           '(after losing every city and unit). You can research them at any time, also before you fall. ' +
           'One research at a time; cancel it to get its gold back. F1 → Liberator explains it all.'));
+      } else if (tab.id === 'sea') {
+        body.append(el('p', { class: 'muted small' }, 'Ships and the sea. Sea technologies work as soon as they are ' +
+          'researched. One research at a time; cancel it to get its gold back.'));
       }
       for (const k of TECH_TYPES.filter((t) => TECHS[t].tab === tab.id)) body.append(this.techCard(k));
     }
@@ -309,6 +323,12 @@ export class Hud {
   techEffect(key, level) {
     const T = TECHS, max = T[key].levels.length;
     const then = (now, next) => (level < max ? `Now ${now}; next level ${next}.` : `Now ${now}.`);
+    if (key === 'seafaring') {
+      const t = UNITS.transport;
+      return `Coastal cities (marked with an anchor) build transports (B, ${t.cost} gold): ships that carry ` +
+        `${t.capacity} units across the sea. Right-click your transport with units selected to take them on board, ` +
+        'and Unload (U) to land them on another coast, islands included.';
+    }
     if (key === 'supporters') {
       return `As a liberator you get ${T.supporters.goldPerTurnPerLevel} more gold per turn for each level. ` +
         then(`${liberatorIncome({ supporters: level })} gold per turn`, `${liberatorIncome({ supporters: level + 1 })}`);
@@ -323,19 +343,32 @@ export class Hud {
       then(`${level * T.smuggling.citiesPerLevel} ${level === 1 ? 'city' : 'cities'}`, `${(level + 1) * T.smuggling.citiesPerLevel}`);
   }
 
+  // What a technology is for, in a few words (the card's second line, under its name).
+  techSummary(key) {
+    const T = TECHS;
+    if (key === 'seafaring') return 'Build ships and carry your units across the sea';
+    if (key === 'supporters') return `+${T.supporters.goldPerTurnPerLevel} gold per turn as a liberator, for each level`;
+    if (key === 'influencer') return 'Liberate several cities at once';
+    return `Take ${Math.round(T.smuggling.share * 100)}% of the income of the cities you mark`;
+  }
+
+  // A technology: its picture, name and level, what it is for, the details, and research.
   techCard(key) {
     const g = this.g, def = TECHS[key], level = g.myTech()[key] || 0, max = def.levels.length;
     const next = nextLevel(key, level), r = g.research;
     const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-    const card = el('div', { class: 'tech-card' },
+    const body = el('div', { class: 'tech-body' },
       el('div', { class: 'tech-head' },
         el('b', {}, def.name),
-        el('span', { class: 'pips', title: `Level ${level} of ${max}` }, ...def.levels.map((_, i) => el('i', { class: i < level ? 'on' : '' }))),
-        el('span', { class: 'muted small' }, `Level ${level}/${max}`)),
+        max > 1 ? el('span', { class: 'pips', title: `Level ${level} of ${max}` }, ...def.levels.map((_, i) => el('i', { class: i < level ? 'on' : '' }))) : null,
+        max > 1 ? el('span', { class: 'muted small' }, `Level ${level}/${max}`) : null),
+      el('div', { class: 'tech-summary' }, this.techSummary(key)),
       el('div', { class: 'tech-text' }, this.techEffect(key, level)));
+    const card = el('div', { class: `tech-card${next ? '' : ' done'}` },
+      el('img', { class: 'tech-icon', src: techIconURL(key, g.colorOf(g.you)), alt: '' }), body);
     if (r && r.tech === key && next) {
       const fill = el('i'), left = el('span', { class: 'muted small' });
-      card.append(el('div', { class: 'tech-actions' },
+      body.append(el('div', { class: 'tech-actions' },
         el('div', { class: 'tech-progress' }, fill), left,
         el('button', { type: 'button', title: `Stop and get ${next.cost} gold back`, onclick: () => this.g.cancelResearch() }, 'Cancel')));
       this.techDyn.push({ kind: 'progress', fill, left, time: next.time, fmt });
@@ -343,11 +376,11 @@ export class Hud {
       const btn = el('button', {
         type: 'button', class: 'primary',
         onclick: (e) => { e.currentTarget.disabled = true; this.g.startResearch(key); },
-      }, `Research level ${next.level}`);
-      card.append(el('div', { class: 'tech-actions' }, btn, el('span', { class: 'muted small' }, `${next.cost} gold · ${fmt(next.time)}`)));
+      }, max > 1 ? `Research level ${next.level}` : 'Research');
+      body.append(el('div', { class: 'tech-actions' }, btn, el('span', { class: 'tech-price' }, `${next.cost} gold · ${fmt(next.time)}`)));
       this.techDyn.push({ kind: 'button', btn, cost: next.cost });
     } else {
-      card.append(el('div', { class: 'tech-actions muted small' }, 'Fully researched'));
+      body.append(el('div', { class: 'tech-actions tech-done' }, max > 1 ? '✓ Fully researched' : '✓ Researched'));
     }
     return card;
   }
@@ -526,7 +559,9 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     if (g.selectedCity >= 0) {
       const ci = g.selectedCity;
       const q = g.myQueues.get(ci);
-      return { key: `city:${ci}:${q ? q.queue.join(',') : ''}:${g.cityUpgrades[ci]}`, kind: 'city', id: ci, ids: [ci], q };
+      return {
+        key: `city:${ci}:${q ? q.queue.join(',') : ''}:${g.cityUpgrades[ci]}:${this.coastKey(ci)}`, kind: 'city', id: ci, ids: [ci], q,
+      };
     }
     if (g.selection.size) {
       const ids = this.sortedSelection();
@@ -536,7 +571,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       const { k, id } = g.inspect;
       // A liberator's buttons change with their marks, limits and the turns they still have to wait.
       const lib = g.isLiberator() && k === 'c' ? this.liberatorKey(id) : '';
-      if (k === 'c') return { key: `ic:${id}:${g.cityOwner[id]}:${g.cityUpgrades[id]}:${lib}`, kind: 'icity', id };
+      if (k === 'c') return { key: `ic:${id}:${g.cityOwner[id]}:${g.cityUpgrades[id]}:${lib}:${this.coastKey(id)}`, kind: 'icity', id };
       const u = g.unitById.get(id);
       if (u) return { key: `iu:${id}`, kind: 'iunit', u };
     }
@@ -594,6 +629,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       this.panel.textContent = '';
       // With nothing selected the panel shows a tip; once the tip is closed, the panel only appears for a selection.
       this.panel.hidden = st.kind === 'none' && this.hintClosed;
+      this.panel.classList.toggle('units', st.kind === 'units');   // compact, with a height limit
       if (st.kind === 'city') this.buildCityPanel(st);
       else if (st.kind === 'cities') this.buildCitiesPanel(st);
       else if (st.kind === 'units') {
@@ -648,7 +684,8 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     );
     const hpFill = el('i');
     const hpText = el('b');
-    const built = UPGRADE_TYPES.filter((key) => g.hasUpgrade(ci, key)).map((key) => CITY_UPGRADES[key].name);
+    // Only the top grade built: "Wall II", not "Wall I, Wall II".
+    const built = topGrades(UPGRADE_TYPES.filter((key) => g.hasUpgrade(ci, key))).map((key) => CITY_UPGRADES[key].name);
     this.panel.append(el('div', { class: 'hpbar' }, hpFill));
     this.panel.append(el('div', { class: 'stats' },
       el('span', {}, 'HP ', hpText),
@@ -659,13 +696,35 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       this.regionStat(ci),
       g.cityTrainRate(ci) > 1
         ? el('span', {}, 'Training ', el('b', {}, `+${Math.round((g.cityTrainRate(ci) - 1) * 100)}%`)) : null,
+      g.isCoastal(ci)
+        ? el('span', { title: 'A coastal city: it builds ships, launched at its pier' }, 'Port ', el('b', {}, '⚓ ships')) : null,
       el('span', {}, 'Upgrades ', el('b', {}, built.length ? built.join(', ') : 'none'))));
     this.dyn.cityHp = { fill: hpFill, text: hpText, ci };
+    if (g.mapEdit) this.panel.append(this.coastEditRow(ci));
     // Liberators' marks on this city (kept current in refreshDynamic).
     const marks = el('div', { class: 'city-marks' });
     marks.hidden = true;
     this.panel.append(marks);
     this.dyn.cityMarks = { el: marks, ci, key: null };
+  }
+
+  // What a city panel shows about the coast in Edit map: rebuilt when it changes.
+  coastKey(ci) {
+    const g = this.g;
+    return g.mapEdit ? `e${g.isCoastal(ci) ? 1 : 0}${g.map.cities[ci].coastal ?? ''}` : '';
+  }
+
+  // Edit map (admins): make the city coastal or inland, whatever its distance to the sea.
+  coastEditRow(ci) {
+    const g = this.g, c = g.map.cities[ci], on = g.isCoastal(ci);
+    const why = typeof c.coastal === 'boolean' ? 'set in Edit map'
+      : `from its distance to the sea: ${on ? 'within' : 'more than'} ${NAVAL.portRange} km`;
+    const text = on
+      ? `Coastal (${why}): it builds ships, launched at its pier. Make inland: no ships, and the ships in its queue are refunded.`
+      : `Inland (${why}). Make coastal: it builds ships (the sea must be within ${NAVAL.editPortRange} km).`;
+    return el('div', { class: 'liberate' },
+      el('button', { type: 'button', title: text, onclick: () => g.setCoastal(ci, !on) }, on ? 'Make inland' : 'Make coastal'),
+      el('span', { class: 'muted small' }, text));
   }
 
   // How much of the city's region its owner holds: all of it makes each of them pay more gold.
@@ -680,9 +739,15 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     const whose = owner === g.you ? 'You hold' : `${g.nameOf(owner)} holds`;
     const bonus = `+${ECONOMY.regionBonusPerCity} gold per turn from each`;
     const all = held === ids.length;
+    // The cities still to take, each with whoever holds it now.
+    const missing = ids.filter((i) => g.cityOwner[i] !== owner).map((i) => {
+      const o = g.cityOwner[i];
+      return `${g.map.cities[i].n} (${o === g.you ? 'yours' : g.nameOf(o)})`;
+    });
     const title = all
       ? `${whose} every city of ${name}: ${bonus}.`
-      : `${whose} ${held} of the ${ids.length} cities of ${name}. Holding all of them gives ${bonus}.`;
+      : `${whose} ${held} of the ${ids.length} cities of ${name}. Holding all of them gives ${bonus}.\n` +
+        `Still to take: ${missing.join(', ')}.`;
     return el('span', { title }, 'Region ', el('b', {}, `${held}/${ids.length}${all ? ' ✓' : ''}`));
   }
 
@@ -697,11 +762,53 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     return parts.join(', ');
   }
 
-  // Unit cost and build time in the selected cities. Barracks shorten the time, so with
-  // several cities selected it can be a range.
+  // Cost and build time of the upgrades an order queues: a range when the selected cities get
+  // different grades (Wall I in some, Wall II in others).
+  upgradeCostText(defs, many) {
+    const range = (values, unit) => {
+      const lo = Math.min(...values), hi = Math.max(...values);
+      return lo === hi ? `${lo}${unit}` : `${lo}–${hi}${unit}`;
+    };
+    return `${range(defs.map((d) => d.cost), '')} gold${many ? ' each' : ''} · ${range(defs.map((d) => d.buildTime), 's')}`;
+  }
+
+  // Tooltip of an upgrade button. An upgrade with grades lists them: each order queues the next one.
+  upgradeTitle(key) {
+    const grades = upgradeGrades(key);
+    const def = CITY_UPGRADES[key];
+    if (grades.length === 1) {
+      return `${def.name}: ${this.upgradeEffect(def)} for the city. Built once per city; destroyed if the city is captured.`;
+    }
+    const lines = grades.map((k) => {
+      const d = CITY_UPGRADES[k];
+      return `${d.name}: ${this.upgradeEffect(d)} for the city (${d.cost} gold, ${d.buildTime}s)`;
+    });
+    const names = grades.map((k) => CITY_UPGRADES[k].name);
+    const times = grades.length === 2 ? 'twice' : `${grades.length} times`;
+    return `${lines.join('\n')}\nEach order queues the next grade: ${def.hotkey ? `press ${def.hotkey}` : 'click'} ${times} ` +
+      `for ${names.join(', then ')}. Each grade is built once per city; all are destroyed if the city is captured.`;
+  }
+
+  // Unit cost and build time in the selected cities. Barracks shorten the time (not for ships), so
+  // with several cities selected it can be a range. Ships: only the coastal ones count.
+  // Why a ship's build button is locked: Seafaring is missing, or still being researched.
+  seafaringLock() {
+    const r = this.g.research, name = TECHS.seafaring.name;
+    if (r && r.tech === 'seafaring') {
+      const s = Math.max(0, Math.ceil(TECHS.seafaring.levels[0].time - r.progress));
+      return `Researching ${name}: ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} left`;
+    }
+    return `Needs ${name}: click to research it`;
+  }
+
   unitCostText(def, ids) {
+    if (def.naval) {
+      if (!this.g.hasSeafaring()) return `🔒 ${TECHS.seafaring.name}`;
+      ids = ids.filter((ci) => this.g.isCoastal(ci));
+      if (!ids.length) return 'coastal cities only';
+    }
     const fmt = (s) => `${Math.round(s * 10) / 10}s`;
-    const times = ids.map((ci) => def.buildTime / this.g.cityTrainRate(ci));
+    const times = ids.map((ci) => def.buildTime / (def.naval ? 1 : this.g.cityTrainRate(ci)));
     const lo = Math.min(...times), hi = Math.max(...times);
     const time = hi - lo < 0.05 ? fmt(lo) : `${fmt(lo)}–${fmt(hi)}`;
     return `${def.cost} gold${ids.length > 1 ? ' each' : ''} · ${time}`;
@@ -718,42 +825,50 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     const g = this.g;
     const myColor = g.colorOf(g.you);
     const many = st.ids.length > 1;
-    const each = many ? ' each' : '';
     const buttons = [];
 
-    // City upgrades: once per city, destroyed when the city is captured.
+    // City upgrades: once per city, destroyed when the city is captured. An upgrade with grades
+    // (Wall I, Wall II) has one button for all of them: it shows and orders the next grade
+    // (kept current in refreshDynamic).
     this.upgradeBox.append(el('h5', {}, 'Upgrades', el('small', {}, 'once per city')));
     for (const key of UPGRADE_TYPES) {
       const def = CITY_UPGRADES[key];
-      const effect = this.upgradeEffect(def);
-      const cost = `${def.cost} gold${each} · ${def.buildTime}s`;
-      const state = el('span', { class: 'cost' }, cost);
+      if (def.requires) continue;
+      const name = el('span', {}, def.name);
+      const img = el('img', { src: upgradeIconURL(key, myColor), alt: '' });
+      const state = el('span', { class: 'cost' }, this.upgradeCostText([def], many));
+      const eff = el('span', { class: 'eff' }, this.upgradeEffect(def));
       const btn = el('button', {
-        type: 'button', class: 'build-btn',
-        title: `${def.name}: ${effect} for the city. Built once per city; destroyed if the city is captured.`,
+        type: 'button', class: 'build-btn', title: this.upgradeTitle(key),
         onclick: () => g.build(key),
       },
-      el('img', { src: upgradeIconURL(key, myColor), alt: '' }),
-      el('span', { class: 'nm' }, def.name, def.hotkey ? el('kbd', {}, def.hotkey) : null), state,
-      el('span', { class: 'eff' }, effect));
+      img, el('span', { class: 'nm' }, name, def.hotkey ? el('kbd', {}, def.hotkey) : null), state, eff);
       this.upgradeBox.append(btn);
-      buttons.push({ btn, def, item: key, state, cost });
+      buttons.push({ btn, def, item: key, state, eff, name, img, shown: key, color: myColor });
     }
 
     this.unitBox.append(el('h5', {}, 'Units', many ? el('small', {}, 'one in every city') : null));
     UNIT_TYPES.forEach((type, t) => {
       const def = UNITS[type];
+      // Ships only where they can be built: at least one of the selected cities is coastal.
+      if (def.naval && !st.ids.some((ci) => g.isCoastal(ci))) return;
       const range = def.attackRange ? `range ${def.attackRange}` : 'melee';
       const state = el('span', { class: 'cost' }, this.unitCostText(def, st.ids));   // kept current in refreshDynamic
+      const about = def.naval
+        ? `${def.hp} HP · carries ${def.capacity} units · ${many ? 'in coastal cities' : 'ship'}`
+        : `${def.hp} HP · ${def.damage} dmg/s · ${range}`;
+      const eff = el('span', { class: 'eff' }, about);
+      // A ship without Seafaring is locked (see refreshDynamic): a click opens the Sea technologies instead.
       const btn = el('button', {
-        type: 'button', class: 'build-btn', title: UNIT_CLASSES[t].describe(), onclick: () => g.build(type),
+        type: 'button', class: 'build-btn', title: UNIT_CLASSES[t].describe(),
+        onclick: () => (def.naval && !g.hasSeafaring() ? this.toggleTech(true, 'sea') : g.build(type)),
       },
       el('img', { src: unitIconURL(myColor, t), alt: '' }),
       el('span', { class: 'nm' }, def.name, el('kbd', {}, def.hotkey)),
       state,
-      el('span', { class: 'eff' }, `${def.hp} HP · ${def.damage} dmg/s · ${range}`));
+      eff);
       this.unitBox.append(btn);
-      buttons.push({ btn, def, item: type, state });
+      buttons.push({ btn, def, item: type, state, eff, about, title: UNIT_CLASSES[t].describe() });
     });
     this.colButtons = buttons;
   }
@@ -768,7 +883,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     this.panel.append(el('div', { class: 'stats city-list', title: names.join(', ') }, names.join(' · ')));
     this.panel.append(el('div', { class: 'queue' },
       el('span', { class: 'label' }, 'Each order goes to every selected city, as far as your gold reaches.'),
-      el('span', { class: 'label', style: 'margin-left:auto' }, 'Right-click map: rally point · Alt + right-click: clear')));
+      el('span', { class: 'label', style: 'margin-left:auto' }, 'Right-click land: rally point · water: rally point for ships · Alt + right-click: clear')));
   }
 
   buildCityPanel(st) {
@@ -785,13 +900,17 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       const icon = UNITS[item] ? unitIconURL(myColor, UNIT_TYPES.indexOf(item)) : upgradeIconURL(item, myColor);
       const prog = idx === 0 ? el('span', { class: 'prog' }) : null;
       if (prog) this.dyn.queueProg = { el: prog, def };
+      // Cancelling a grade cancels the higher grades queued after it too (Wall II needs Wall I).
+      const along = higherGrades(item).filter((k) => items.includes(PRODUCTION_ITEMS.indexOf(k)))
+        .map((k) => CITY_UPGRADES[k].name);
       queue.append(el('button', {
-        type: 'button', class: 'qitem', title: `${def.name} — click to cancel (refund)`,
+        type: 'button', class: 'qitem',
+        title: `${def.name} — click to cancel${along.length ? ` it and the ${along.join(', ')} after it` : ''} (refund)`,
         onclick: () => g.cancel(ci, idx),
       }, el('img', { src: icon, alt: '' }), prog));
     });
     if (!items.length) queue.append(el('span', { class: 'label' }, '— empty'));
-    queue.append(el('span', { class: 'label', style: 'margin-left:auto' }, 'Right-click map: rally point · Alt + right-click: clear'));
+    queue.append(el('span', { class: 'label', style: 'margin-left:auto' }, 'Right-click land: rally point · water: rally point for ships · Alt + right-click: clear'));
     this.panel.append(queue);
   }
 
@@ -954,7 +1073,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
           class: 'unit-group',
           title: `${UNIT_CLASSES[t].describe()}\nClick: select only ${def.name.toLowerCase()} · ` +
             'Ctrl + click: remove them · Shift + click: mark them, released Shift selects the marked units',
-        }, ids, el('img', { src: unitIconURL(myColor, t), alt: '' }), el('b', {}, String(ids.length)), el('span', {}, def.name));
+        }, ids, el('img', { src: unitEmblemURL(t), alt: '' }), el('b', {}, String(ids.length)), el('span', {}, def.name));
         groups.append(chip);
         chips.push({ chip, ids });
       }
@@ -965,13 +1084,16 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     const byId = new Map();
     for (const [t, ids] of byType) {
       const def = UNITS[UNIT_TYPES[t]];
-      const img = unitIconURL(myColor, t);
+      const img = unitEmblemURL(t);         // just the emblem: easier to read than a grid of small cones
       for (const id of ids) {
         const fill = el('i');
+        // A transport's tile shows how many units are on board (kept current in refreshUnitTiles).
+        const count = def.capacity ? el('b', { class: 'tile-count' }) : null;
+        if (count) count.hidden = true;
         const tile = this.unitPickButton({ class: 'unit-tile' }, [id],
-          el('img', { src: img, alt: def.name }), el('span', { class: 'uhp' }, fill));
+          el('img', { src: img, alt: def.name }), el('span', { class: 'uhp' }, fill), count);
         box.append(tile);
-        byId.set(id, { tile, fill, def, key: '' });
+        byId.set(id, { tile, fill, count, def, key: '' });
       }
     }
     this.panel.append(box);
@@ -984,8 +1106,87 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     note.hidden = true;
     this.panel.append(note);
     this.dyn.groupDisband = note;
-    this.panel.append(el('div', { class: 'stats' }, 'Icon: click selects only it · Ctrl + click removes · Shift + click marks, release Shift to select the marked · ' +
-      'Right-click: move / attack · A + right-click: attack-move · S: stop · H: hold · Delete: disband · Ctrl+1–9: save group'));
+    const ships = st.ids.filter((id) => {
+      const u = g.unitById.get(id);
+      return u && u.owner === g.you && UNITS[UNIT_TYPES[u.t]].capacity;
+    });
+    if (ships.length) this.buildCargo(ships, myColor);
+    const help = el('div', { class: 'stats unit-help' }, 'Icon: click selects only it · Ctrl + click removes · Shift + click marks, release Shift to select the marked · ' +
+      'Right-click: move / attack · A + right-click: attack-move · Shift + right-click: queue orders · S: stop · H: hold · Delete: disband · Ctrl+1–9: save group · ' +
+      'Right-click your transport near a coast: go on board · Right-click land with units on board, or U: unload · Ctrl + B: drop ships · Shift + B: only ships · Ctrl + F: drop full transports · Shift + F: only full ones');
+    this.panel.append(help);
+    // Many units: the panel has a height limit, and the icons need the room more than the help
+    // line does. If keeping it would make them scroll, it goes.
+    if (box.scrollHeight > box.clientHeight + 1) help.remove();
+  }
+
+  // Your selected transports and the Unload button (U), which asks where to land them. With one
+  // transport selected, a place per unit it carries shows who is on board; with several, their
+  // tiles only show how many.
+  buildCargo(ships, myColor) {
+    const g = this.g;
+    const box = el('div', { class: 'cargo' });
+    const rows = [];
+    for (const id of ships.length === 1 ? ships : []) {
+      const u = g.unitById.get(id);
+      const row = el('div', { class: 'cargo-row' }, el('img', { class: 'cargo-ship', src: unitIconURL(myColor, u.t), alt: '' }));
+      const slots = [];
+      for (let k = 0; k < UNITS[UNIT_TYPES[u.t]].capacity; k++) {
+        const img = el('img', { alt: '' });
+        const fill = el('i');
+        const slot = el('span', { class: 'cargo-slot empty', title: 'Empty place' }, img, el('span', { class: 'uhp' }, fill));
+        row.append(slot);
+        slots.push({ slot, img, fill });
+      }
+      box.append(row);
+      rows.push({ id, slots, key: null });
+    }
+    const unload = el('button', {
+      type: 'button', class: 'primary', title: 'Pick any land or city: the transports land their units on the nearest coast and send them there',
+      onclick: () => g.startUnload(),
+    }, 'Unload', el('kbd', {}, 'U'));
+    const note = el('span', { class: 'muted small' });
+    box.append(el('div', { class: 'cargo-actions' }, unload, note));
+    this.panel.append(box);
+    this.dyn.cargo = { rows, unload, note, ships };
+  }
+
+  refreshCargo(cg) {
+    const g = this.g;
+    for (const row of cg.rows) {
+      const list = g.cargoOf(row.id);
+      const key = list.map((c) => `${c.t}:${c.hp}`).join(',');
+      if (key === row.key) continue;
+      row.key = key;
+      row.slots.forEach((s, k) => {
+        const c = list[k];
+        s.slot.classList.toggle('empty', !c);
+        if (!c) {
+          s.img.removeAttribute('src');
+          s.fill.style.width = '0';
+          s.slot.title = 'Empty place';
+          return;
+        }
+        const def = UNITS[UNIT_TYPES[c.t]];
+        const src = unitEmblemURL(c.t);
+        if (s.img.getAttribute('src') !== src) s.img.src = src;
+        const frac = Math.max(0, Math.min(1, c.hp / def.hp));
+        s.fill.style.width = `${frac * 100}%`;
+        s.fill.style.background = frac > 0.6 ? '#5ccf54' : frac > 0.3 ? '#e8c440' : '#e0503a';
+        s.slot.title = `${def.name}: ${c.hp} / ${def.hp} HP, on board`;
+      });
+    }
+    let aboard = 0, room = 0;
+    for (const id of cg.ships) {
+      const u = g.unitById.get(id);
+      if (!u) continue;
+      aboard += u.flags >> 5;
+      room += UNITS[UNIT_TYPES[u.t]].capacity;
+    }
+    cg.unload.disabled = !aboard;
+    const text = aboard ? `${aboard} of ${room} places taken. Unload, then click land or a city.`
+      : 'Empty. Select units and right-click the transport while it is near a coast.';
+    if (cg.note.textContent !== text) cg.note.textContent = text;
   }
 
   buildUnitInfo(u) {
@@ -1000,8 +1201,9 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     this.panel.append(el('div', { class: 'hpbar' }, hpFill));
     this.panel.append(el('div', { class: 'stats' },
       el('span', {}, 'HP ', hpText),
-      el('span', {}, 'Damage ', el('b', {}, `${def.damage}/s`)),
-      el('span', {}, 'Range ', el('b', {}, def.attackRange ? String(def.attackRange) : 'melee')),
+      def.naval ? el('span', {}, 'On board ', el('b', {}, `${u.flags >> 5} / ${def.capacity}`))
+        : el('span', {}, 'Damage ', el('b', {}, `${def.damage}/s`)),
+      def.naval ? null : el('span', {}, 'Range ', el('b', {}, def.attackRange ? String(def.attackRange) : 'melee')),
       el('span', {}, 'Speed ', el('b', {}, String(def.moveSpeed)))));
     const note = el('div', { class: 'disband-note' }, `Disbanding: loses ${DISBAND.hpPerSecond} HP per second until it dies`);
     note.hidden = true;
@@ -1019,7 +1221,8 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       const picked = this.picks.has(id);
       if (picked) marked++;
       const disbanding = !!(u.flags & 4);
-      const key = `${u.hp}|${picked}|${disbanding}`;
+      const aboard = s.count ? u.flags >> 5 : 0;
+      const key = `${u.hp}|${picked}|${disbanding}|${aboard}`;
       if (key === s.key) continue;
       s.key = key;
       const frac = Math.max(0, Math.min(1, u.hp / s.def.hp));
@@ -1027,7 +1230,12 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       s.fill.style.background = frac > 0.6 ? '#5ccf54' : frac > 0.3 ? '#e8c440' : '#e0503a';   // as the bars on the map
       s.tile.classList.toggle('picked', picked);
       s.tile.classList.toggle('disbanding', disbanding);
-      s.tile.title = `${s.def.name}: ${Math.ceil(u.hp)} / ${s.def.hp} HP${disbanding ? ', disbanding' : ''}\n` +
+      if (s.count) {
+        s.count.textContent = String(aboard);
+        s.count.hidden = !aboard;
+      }
+      const load = s.count ? `, ${aboard} of ${s.def.capacity} on board` : '';
+      s.tile.title = `${s.def.name}: ${Math.ceil(u.hp)} / ${s.def.hp} HP${load}${disbanding ? ', disbanding' : ''}\n` +
         'Click: select only this unit · Ctrl + click: remove it · Shift + click: mark it, released Shift selects the marked units';
     }
     for (const { chip, ids } of tl.chips) chip.classList.toggle('picked', ids.every((id) => this.picks.has(id)));
@@ -1047,28 +1255,52 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     if (this.colButtons && st.ids) {
       // Usable while there is gold for one and at least one selected city can still take it.
       const full = (ci) => (g.myQueues.get(ci)?.queue.length || 0) >= ECONOMY.maxQueue;
-      for (const { btn, def, item, state, cost } of this.colButtons) {
+      for (const b of this.colButtons) {
+        const { btn, def, item, state, eff, about, title } = b;
         if (!CITY_UPGRADES[item]) {
-          btn.disabled = g.gold < def.cost || st.ids.every(full);
-          const text = this.unitCostText(def, st.ids);       // shorter once a Barracks is built
+          const ids = def.naval ? st.ids.filter((ci) => g.isCoastal(ci)) : st.ids;   // ships: coastal cities
+          // Ships without Seafaring: not greyed out but locked, saying why; a click opens the Sea tab.
+          const locked = !!def.naval && !g.hasSeafaring();
+          btn.classList.toggle('locked', locked);
+          btn.disabled = !locked && (g.gold < def.cost || !ids.length || ids.every(full));
+          const text = locked ? `🔒 ${TECHS.seafaring.name}` : this.unitCostText(def, st.ids);   // shorter once a Barracks is built
           if (state.textContent !== text) state.textContent = text;
+          const line = locked ? this.seafaringLock() : about;
+          if (eff.textContent !== line) eff.textContent = line;
+          const tip = locked ? `${def.name}: ships need the ${TECHS.seafaring.name} technology ` +
+            `(${TECHS.seafaring.levels[0].cost} gold, ${TECHS.seafaring.levels[0].time} s). Click to open Technologies on the Sea tab.` : title;
+          if (btn.title !== tip) btn.title = tip;
           continue;
         }
-        const has = (ci) => g.hasUpgrade(ci, item);
-        const queued = (ci) => g.upgradeQueued(ci, item);
-        btn.disabled = g.gold < def.cost || st.ids.every((ci) => full(ci) || has(ci) || queued(ci));
-        if (st.ids.length === 1) {
-          const ci = st.ids[0];
-          const text = has(ci) ? 'built' : queued(ci) ? 'in queue' : cost;
-          if (state.textContent !== text) state.textContent = text;
-          btn.classList.toggle('built', has(ci));
+        // An upgrade: what an order queues in each city, its next grade (null: every grade is built
+        // or queued). The button shows the lowest of them, or the top grade once all are ordered.
+        const next = st.ids.map((ci) => g.nextUpgrade(ci, item));
+        const grades = upgradeGrades(item);
+        const shown = grades.find((k) => next.includes(k)) || grades.at(-1);
+        const sd = CITY_UPGRADES[shown];
+        if (b.shown !== shown) {
+          b.shown = shown;
+          b.name.textContent = sd.name;
+          b.img.src = upgradeIconURL(shown, b.color);
         }
+        const effect = this.upgradeEffect(sd);
+        if (eff.textContent !== effect) eff.textContent = effect;
+        // Usable while one of the cities can take a grade and there is gold for the cheapest of them.
+        const open = next.map((k, i) => (k && !full(st.ids[i]) ? CITY_UPGRADES[k] : null)).filter(Boolean);
+        btn.disabled = !open.length || g.gold < Math.min(...open.map((d) => d.cost));
+        let text = this.upgradeCostText(open.length ? open : [sd], st.ids.length > 1);
+        const all = st.ids.length === 1 && !next[0];
+        const built = all && g.hasUpgrade(st.ids[0], shown);
+        if (all) text = built ? 'built' : 'in queue';
+        if (state.textContent !== text) state.textContent = text;
+        btn.classList.toggle('built', built);
       }
     }
     if (d.queueProg && st.q) {
       d.queueProg.el.style.width = `${Math.min(1, st.q.progress / d.queueProg.def.buildTime) * 100}%`;
     }
     if (d.unitTiles) this.refreshUnitTiles(d.unitTiles);
+    if (d.cargo) this.refreshCargo(d.cargo);
     if (d.groupHp) {
       let hp = 0, max = 0, disbanding = 0;
       for (const id of g.selection) {

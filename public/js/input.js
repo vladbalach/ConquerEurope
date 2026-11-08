@@ -2,6 +2,9 @@
 import { UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES } from '/shared/config.js';
 
 const DRAG_THRESHOLD = 5;
+const BRUSH_PX = 16;             // Edit map: radius of the beach brush on screen...
+const BRUSH_MIN_KM = 8;          // ...but never less: the grid's shore cells lie up to ~7 km off the drawn coast
+const BRUSH_SEND_MS = 250;       // how often a beach brush stroke is sent while painting
 const EDGE = 8;
 const PAN_SPEED = 900;           // screen px per second
 const MAX_ZOOM = 7;
@@ -16,7 +19,9 @@ export class Input {
     this.keys = new Set();
     this.attackKey = false;      // A held: right-click becomes attack-move
     this.showRanges = false;     // Alt held: draw every city's attack radius
+    this.targetMode = null;      // 'unload': the next left click picks where transports land their units
     this.hoverCity = -1;
+    this.hoverShip = -1;         // your transport under the cursor while land units are selected
     this.cityDrag = null;        // Edit map: the city being dragged to a new place
     this.edgeMargin = { l: 0, r: 0, t: 0, b: 0 };   // how far (px) the view may reach past each map edge
     this.lastGroup = { n: -1, t: 0 };
@@ -36,7 +41,11 @@ export class Input {
       this.mouse.inside = true;
     });
     on(this.canvas, 'wheel', (e) => this.onWheel(e), { passive: false });
-    on(this.canvas, 'contextmenu', (e) => e.preventDefault());
+    // No browser menu on a right click anywhere in the game (map, panels, top bar, overlays), only in
+    // text fields (balance editor, debug console), where copy and paste are useful.
+    on(document, 'contextmenu', (e) => {
+      if (!(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) e.preventDefault();
+    });
     on(this.canvas, 'dblclick', (e) => this.onDblClick(e));
     on(window, 'keydown', (e) => this.onKeyDown(e));
     on(window, 'keyup', (e) => this.onKeyUp(e));
@@ -50,7 +59,6 @@ export class Input {
 
     const mini = document.getElementById('minimap');
     on(mini, 'mousedown', (e) => this.onMiniDown(e));
-    on(mini, 'contextmenu', (e) => e.preventDefault());
   }
 
   destroy() {
@@ -129,11 +137,46 @@ export class Input {
       if (ownOnly && u.owner !== g.you) continue;
       const [ux, uy] = r.w2s(u.dx, u.dy);
       const rad = UNITS[UNIT_TYPES[u.t]].size * z;
-      // Cone body sits above the base centre; accept clicks on the whole silhouette.
-      const d = Math.hypot(sx - ux, (sy - (uy - rad * 0.5)) * 0.8);
-      if (d <= Math.max(rad * 1.2, 6) && d < bd) { bd = d; best = u; }
+      // Cone body sits above the base centre, and a boat's sail higher still; accept clicks on the
+      // whole silhouette.
+      const naval = g.isNaval(u.t);
+      const d = Math.hypot(sx - ux, (sy - (uy - rad * (naval ? 0.8 : 0.5))) * 0.8);
+      if (d <= Math.max(rad * (naval ? 1.4 : 1.2), naval ? 9 : 6) && d < bd) { bd = d; best = u; }
     }
     return best;
+  }
+
+  // Your transport under the cursor, with a generous margin: while land units are selected,
+  // transports are highlighted and easy to hit with a right click.
+  pickTransport(sx, sy) {
+    const g = this.g, z = g.cam.zoom, r = g.renderer;
+    let best = null, bd = Infinity;
+    for (const u of g.renderUnits) {
+      if (u.owner !== g.you || !UNITS[UNIT_TYPES[u.t]].capacity) continue;
+      const [ux, uy] = r.w2s(u.dx, u.dy);
+      const rad = UNITS[UNIT_TYPES[u.t]].size * z;
+      const d = Math.hypot(sx - ux, (sy - (uy - rad * 0.8)) * 0.8);
+      if (d <= Math.max(rad * 1.9, 18) && d < bd) { bd = d; best = u; }
+    }
+    return best;
+  }
+
+  // Unload targeting (U / the Unload button): the next left click on the map or the minimap picks
+  // the place; a right click or Esc cancels.
+  setTargetMode(mode) {
+    this.targetMode = mode;
+    if (this.mouse.inside) this.updateHover();
+  }
+
+  confirmTarget(wx, wy, city) {
+    const g = this.g;
+    if (city >= 0) {
+      const c = g.map.cities[city];
+      g.commandUnload(c.x, c.y, city);
+    } else {
+      g.commandUnload(wx, wy, -1);
+    }
+    this.setTargetMode(null);
   }
 
   pickCity(sx, sy) {
@@ -157,11 +200,26 @@ export class Input {
       this.pan = { x: e.clientX, y: e.clientY, cx: this.g.cam.x, cy: this.g.cam.y };
       return;
     }
+    if (this.targetMode) {
+      if (e.button === 0) {
+        const [wx, wy] = this.g.renderer.s2w(sx, sy);
+        this.confirmTarget(wx, wy, this.pickCity(sx, sy));
+      } else if (e.button === 2) {
+        this.setTargetMode(null);
+      }
+      return;
+    }
     if (e.button === 2) {
-      this.rightClick(sx, sy, e.altKey);
+      this.rightClick(sx, sy, e.altKey, e.shiftKey);
       return;
     }
     if (e.button !== 0) return;
+    // Edit map, beach brush on: paint (or erase) beaches along the coast while the button is held.
+    if (this.g.mapEdit && this.g.beachBrush) {
+      this.brush = { pts: [], last: null, sentAt: performance.now() };
+      this.brushAt(sx, sy);
+      return;
+    }
     // Edit map mode (admins): press on any city and drag it to a new place.
     if (this.g.mapEdit) {
       const city = this.pickCity(sx, sy);
@@ -190,6 +248,10 @@ export class Input {
       this.clampCamera();
       return;
     }
+    if (this.brush) {
+      this.brushAt(this.mouse.x, this.mouse.y);
+      return;
+    }
     if (this.cityDrag) {
       const d = this.cityDrag;
       const [wx, wy] = this.g.renderer.s2w(this.mouse.x, this.mouse.y);
@@ -210,8 +272,12 @@ export class Input {
     const { x, y } = this.mouse;
     const g = this.g;
     this.hoverCity = this.pickCity(x, y);
+    const ship = g.selection.size && g.selectedLandUnits().length ? this.pickTransport(x, y) : null;
+    this.hoverShip = ship ? ship.id : -1;
     let cursor = 'default';
-    if (this.attackKey && g.selection.size) cursor = 'crosshair';
+    if (this.targetMode) cursor = 'crosshair';
+    else if (ship) cursor = 'pointer';                  // right click: go on board
+    else if (this.attackKey && g.selection.size) cursor = 'crosshair';
     else if (g.selection.size) {
       const u = this.pickUnit(x, y, false);
       const enemyUnit = u && u.owner !== g.you;
@@ -221,11 +287,43 @@ export class Input {
       cursor = 'pointer';
     }
     if (g.mapEdit && this.hoverCity >= 0) cursor = 'grab';    // Edit map: cities can be dragged
+    if (g.mapEdit && g.beachBrush) cursor = 'crosshair';       // ...unless the beach brush is on
     this.canvas.style.cursor = cursor;
+  }
+
+  // ---------------------------------------------------------------- beach brush (Edit map)
+  // Its radius in map km: about the same size on screen at any zoom.
+  brushRadius() {
+    return Math.max(BRUSH_MIN_KM, Math.min(80, BRUSH_PX / this.g.cam.zoom));
+  }
+
+  // A point of the stroke under (sx, sy): kept when it is half a radius from the last one, and the
+  // points so far go to the server a few times a second.
+  brushAt(sx, sy) {
+    const b = this.brush, r = this.brushRadius();
+    const [x, y] = this.g.renderer.s2w(sx, sy);
+    if (!b.last || Math.hypot(x - b.last[0], y - b.last[1]) >= r / 2) {
+      b.pts.push([Math.round(x * 10) / 10, Math.round(y * 10) / 10]);
+      b.last = [x, y];
+    }
+    if (performance.now() - b.sentAt > BRUSH_SEND_MS) this.brushSend();
+  }
+
+  brushSend() {
+    const b = this.brush;
+    if (!b) return;
+    if (b.pts.length) this.g.paintBeaches(b.pts, this.brushRadius());
+    b.pts = [];
+    b.sentAt = performance.now();
   }
 
   onMouseUp(e) {
     if (e.button === 1) { this.pan = null; return; }
+    if (e.button === 0 && this.brush) {
+      this.brushSend();
+      this.brush = null;
+      return;
+    }
     if (e.button === 0 && this.cityDrag) {
       const d = this.cityDrag;
       this.cityDrag = null;
@@ -319,21 +417,26 @@ export class Input {
     g.select(ids, e.shiftKey);
   }
 
-  // Right-click with units: attack the enemy under the cursor, otherwise move there.
-  // Holding A turns the move into an attack-move (fight anything met on the way).
-  rightClick(sx, sy, alt) {
+  // Right-click with units: on your transport, the land units go on board; on an enemy, attack it;
+  // otherwise move there. Holding A turns the move into an attack-move (fight anything met on the way).
+  // Holding Shift queues the move or attack after the orders the units already have.
+  rightClick(sx, sy, alt, shift = false) {
     const g = this.g;
     const [wx, wy] = g.renderer.s2w(sx, sy);
     if (g.selection.size) {
+      if (g.selectedLandUnits().length) {
+        const ship = this.pickTransport(sx, sy);
+        if (ship) { g.commandBoard(ship); return; }
+      }
       const u = this.pickUnit(sx, sy, false);
-      if (u && u.owner !== g.you) { g.commandAttack('u', u.id, u.x, u.y); return; }
+      if (u && u.owner !== g.you) { g.commandAttack('u', u.id, u.x, u.y, shift); return; }
       const city = this.pickCity(sx, sy);
       if (city >= 0 && g.cityOwner[city] !== g.you) {
         const c = g.map.cities[city];
-        g.commandAttack('c', city, c.x, c.y);
+        g.commandAttack('c', city, c.x, c.y, shift);
         return;
       }
-      g.commandMove(wx, wy, this.attackKey);
+      g.commandMove(wx, wy, this.attackKey, shift);
       return;
     }
     // Cities selected: right-click sets their rally point; Alt + right-click anywhere, or a
@@ -352,8 +455,13 @@ export class Input {
     e.preventDefault();
     const r = this.g.renderer;
     const [wx, wy] = r.miniToWorld(e.offsetX, e.offsetY);
+    if (this.targetMode) {                // Unload: a place picked on the minimap
+      if (e.button === 0) this.confirmTarget(wx, wy, -1);
+      else if (e.button === 2) this.setTargetMode(null);
+      return;
+    }
     if (e.button === 2) {
-      if (this.g.selection.size) this.g.commandMove(wx, wy, this.attackKey);
+      if (this.g.selection.size) this.g.commandMove(wx, wy, this.attackKey, e.shiftKey);
       return;
     }
     if (e.button !== 0) return;
@@ -390,7 +498,22 @@ export class Input {
     if (k === 'F1' || k === '?') { e.preventDefault(); g.hud.toggleHelp(); return; }
     if (k === 'F2') { e.preventDefault(); g.select(g.renderUnits.filter((u) => u.owner === g.you).map((u) => u.id), false); return; }
     if (k === 'Escape') {
-      if (!g.hud.closeOverlays()) g.clearSelection();
+      if (this.targetMode) this.setTargetMode(null);
+      else if (g.beachBrush) g.setBeachBrush(null);
+      else if (!g.hud.closeOverlays()) g.clearSelection();
+      return;
+    }
+    // Units selected: Ctrl + B removes the ships from the selection, Shift + B keeps only the ships.
+    // (Without units selected, Shift + B builds a transport like B.)
+    if (e.code === 'KeyB' && e.ctrlKey !== e.shiftKey && !e.altKey && !e.metaKey && g.selection.size) {
+      e.preventDefault();                  // Ctrl + B opens the bookmarks in some browsers
+      g.filterSelection(e.shiftKey);
+      return;
+    }
+    // Units selected: Ctrl + F removes the full transports from the selection, Shift + F keeps only them.
+    if (e.code === 'KeyF' && e.ctrlKey !== e.shiftKey && !e.altKey && !e.metaKey && g.selection.size) {
+      e.preventDefault();                  // Ctrl + F is the browser's Find
+      g.filterFull(e.shiftKey);
       return;
     }
     if (e.ctrlKey && /^[1-9]$/.test(k)) {
@@ -423,6 +546,7 @@ export class Input {
       case 'KeyS': g.commandStop(); break;
       case 'Delete': g.commandDisband(); break;
       case 'KeyH': g.commandHold(); break;
+      case 'KeyU': if (g.selectedTransports().length) g.startUnload(); break;
       case 'KeyT': g.hud.toggleTech(); break;
       case 'Space': e.preventDefault(); g.centerOnSelection(); break;
       default:

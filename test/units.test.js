@@ -18,7 +18,7 @@ test('a knight is built in a city and has the configured stats', () => {
   assert.equal(knights.length, 1);
   const k = knights[0];
   assert.equal(k.owner, a.id);
-  assert.equal(k.hp, 200);
+  assert.equal(k.hp, 250);
   assert.equal(k.stats.damage, 45);
   assert.equal(k.stats.moveSpeed, 45);
   assert.equal(k.isRanged, false, 'knights fight in melee');

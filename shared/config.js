@@ -59,12 +59,12 @@ export const UNITS = {
     size: 7,
     hpRegen: 0.5,
     cost: 20,
-    buildTime: 10,
+    buildTime: 7,
     hotkey: 'E',
   },
   knight: {
     name: 'Knight',
-    hp: 200,
+    hp: 250,
     damage: 45,
     attackRange: 0,
     moveSpeed: 45,
@@ -74,10 +74,39 @@ export const UNITS = {
     buildTime: 8,
     hotkey: 'R',
   },
+  // Ships (naval: true) sail on the sea and are built only in coastal cities (see NAVAL).
+  // Barracks don't speed them up.
+  //   capacity   units a transport carries, one slot each
+  transport: {
+    name: 'Transport',
+    naval: true,
+    hp: 150,
+    damage: 0,
+    attackRange: 0,
+    moveSpeed: 38,
+    size: 10,
+    hpRegen: 0.5,
+    cost: 10,
+    buildTime: 12,
+    hotkey: 'B',
+    capacity: 8,
+  },
 };
 
 // Order matters: it is the unit type id used on the network and in sprites.
-export const UNIT_TYPES = ['infantry', 'archer', 'cavalry', 'knight'];
+export const UNIT_TYPES = ['infantry', 'archer', 'cavalry', 'knight', 'transport'];
+
+// ------------------------------------------------------------------ navy
+//  The coast is where land meets the sea: transports take units on board there and land them.
+export const NAVAL = {
+  portRange: 30,      // a city with the sea this close is coastal: it can build ships
+  editPortRange: 100, // Edit map can make a city coastal when the sea is at most this far
+  boardRadius: 30,    // units this close to their transport go on board
+  returnRange: 150,   // a transport that lay at anchor this close to the beach it loads at sails back afterwards
+  harbourRange: 40,   // a ship this close to the pier of one of its owner's coastal cities is in harbour...
+  harbourRegen: 5,    // ...where it regains this much HP per second instead of its hpRegen
+                      // (like any regeneration, only after COMBAT.regenDelay seconds without being hit)
+};
 
 // ------------------------------------------------------------------ cities
 export const CITY = {
@@ -100,14 +129,20 @@ export const CITY = {
 //                unit takes about 4.3 s). Upgrades are built at normal speed.
 //  hotkey        key that orders it while one or more of your cities are selected
 //                (A and S mean attack-move and stop only while units are selected)
+//  requires      this upgrade is the next grade of another one (Wall II of Wall I): it can be
+//                ordered once that one is built or queued. It has no button or hotkey of its own:
+//                ordering an upgrade the city already has (or has queued) orders its next grade,
+//                so pressing A twice queues Wall I and then Wall II.
 export const CITY_UPGRADES = {
-  wall: { name: 'Wall', cost: 20, buildTime: 20, hp: 200, hotkey: 'A' },
-  tower: { name: 'Tower', cost: 20, buildTime: 20, rangePercent: 20, hotkey: 'S' },
-  castle: { name: 'Castle', cost: 30, buildTime: 30, damage: 15, hotkey: 'D' },
-  farm: { name: 'Farm', cost: 50, buildTime: 30, goldPerTurn: 5, hotkey: 'F' },
-  barracks: { name: 'Barracks', cost: 50, buildTime: 20, trainSpeedPercent: 40, hotkey: 'G' },
+  wall: { name: 'Wall I', cost: 6, buildTime: 4, hp: 100, hotkey: 'A' },
+  wall2: { name: 'Wall II', cost: 14, buildTime: 6, hp: 150, requires: 'wall' },
+  tower: { name: 'Tower', cost: 20, buildTime: 10, rangePercent: 55, hotkey: 'S' },
+  castle: { name: 'Castle', cost: 20, buildTime: 10, damage: 20, hotkey: 'D' },
+  farm: { name: 'Farm', cost: 50, buildTime: 20, goldPerTurn: 5, hotkey: 'F' },
+  barracks: { name: 'Barracks', cost: 30, buildTime: 12, trainSpeedPercent: 100, hotkey: 'G' },
 };
-export const UPGRADE_TYPES = ['wall', 'tower', 'castle', 'farm', 'barracks'];
+// Order matters: it is the bit of the upgrade in a city's upgrade flags (sent to the browser).
+export const UPGRADE_TYPES = ['wall', 'wall2', 'tower', 'castle', 'farm', 'barracks'];
 
 // Everything a city can produce. The index is the item id used on the network.
 export const PRODUCTION_ITEMS = [...UNIT_TYPES, ...UPGRADE_TYPES];
@@ -138,7 +173,7 @@ export const ECONOMY = {
   goldPerCityPerTurn: 10,     // gold each city you hold pays per turn
   regionBonusPerCity: 2,      // hold every city of a region: each of them pays this much more per turn
   maxQueue: 10,               // production queue length per city
-  maxUnitsPerPlayer: 1000,
+  maxUnitsPerPlayer: 500,
 };
 
 // ------------------------------------------------------------------ liberators
@@ -166,6 +201,9 @@ export const LIBERATOR = {
 //    smuggling   a liberator marks citiesPerLevel more cities per level; at the end of every turn
 //                `share` of each one's income goes from its owner to the liberator. These marks are
 //                separate from influence marks.
+//
+//  Tab 'sea' exists in every game; its technologies work as soon as they are researched.
+//    seafaring   coastal cities build ships, and units go on board transports and land from them
 const levels = (n, cost, time) => Array.from({ length: n }, (_, i) => ({ cost: Array.isArray(cost) ? cost[i] : cost, time }));
 export const TECHS = {
   supporters: {
@@ -180,11 +218,17 @@ export const TECHS = {
     tab: 'rebellion', name: 'Smuggling', citiesPerLevel: 1, share: 0.5,
     levels: levels(3, 30, 60),
   },
+  seafaring: {
+    tab: 'sea', name: 'Seafaring',
+    levels: levels(1, 100, 30),
+  },
 };
 // Order matters: it is the technology id used on the network.
-export const TECH_TYPES = ['supporters', 'influencer', 'smuggling'];
-// Tabs of the Tech window. `death`: the tab exists only with this game option.
+export const TECH_TYPES = ['supporters', 'influencer', 'smuggling', 'seafaring'];
+// Tabs of the Tech window, in order (the window opens on the first). `death`: the tab exists only
+// with this game option.
 export const TECH_TABS = [
+  { id: 'sea', name: 'Sea' },
   { id: 'rebellion', name: 'Rebellion', death: 'liberator' },
 ];
 

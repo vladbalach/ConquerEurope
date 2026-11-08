@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { CITY, CITY_UPGRADES, UNITS, ECONOMY } from '../shared/config.js';
 import { setup } from './helpers.js';
 
-const { wall, tower, castle, farm } = CITY_UPGRADES;
+const { wall, wall2, tower, castle, farm } = CITY_UPGRADES;
 
 test('each upgrade is built through the production queue and gives its bonus', () => {
   const { game, a, city, run } = setup();
@@ -24,11 +24,11 @@ test('each upgrade is built through the production queue and gives its bonus', (
 
   game.handleCommand(a, { t: 'build', cities: [paris.id], item: 'tower' });
   run(tower.buildTime + 0.1);
-  assert.ok(Math.abs(paris.range - CITY.attackRange * 1.2) < 1e-9, 'tower: +20% range');
+  assert.ok(Math.abs(paris.range - CITY.attackRange * (1 + tower.rangePercent / 100)) < 1e-9, `tower: +${tower.rangePercent}% range`);
 
   game.handleCommand(a, { t: 'build', cities: [paris.id], item: 'castle' });
   run(castle.buildTime + 0.1);
-  assert.equal(paris.damage, CITY.damage + castle.damage, 'castle: +15 damage');
+  assert.equal(paris.damage, CITY.damage + castle.damage, `castle: +${castle.damage} damage`);
   assert.equal(game.status, 'running', 'the game is still on, so orders were really processed');
 });
 
@@ -59,31 +59,32 @@ test('a Farm adds 5 gold per turn to its city, paid at the end of the turn', () 
   assert.equal(paris.goldPerTurn, ECONOMY.goldPerCityPerTurn);
 });
 
-test('Barracks train units 40% faster in their city, while upgrades build at normal speed', () => {
+test('Barracks train units faster in their city, while upgrades build at normal speed', () => {
   const { game, a, b, city, run } = setup();
   const paris = city('Paris'), lyon = city('Lyon');
   const { barracks } = CITY_UPGRADES;
   const infantry = UNITS.infantry;
+  const rate = 1 + barracks.trainSpeedPercent / 100;
   const mine = () => [...game.units.values()].filter((u) => u.owner === a.id).length;
   a.gold = 1000;
 
   game.handleCommand(a, { t: 'build', cities: [paris.id], item: 'barracks' });
-  assert.equal(a.gold, 1000 - 50, 'Barracks cost 50');
+  assert.equal(a.gold, 1000 - barracks.cost);
   run(barracks.buildTime - 0.5);
-  assert.ok(!paris.upgrades.has('barracks'), 'the Barracks themselves build at normal speed (20 s)');
+  assert.ok(!paris.upgrades.has('barracks'), 'the Barracks themselves build at normal speed');
   run(0.6);
   assert.ok(paris.upgrades.has('barracks'));
-  assert.equal(paris.trainRate, 1.4);
+  assert.equal(paris.trainRate, rate);
   assert.equal(lyon.trainRate, 1, 'other cities are not affected');
 
-  // Infantry: 1.4x speed in Paris, normal speed in Lyon.
-  const fast = infantry.buildTime / 1.4;
+  // Infantry: faster in Paris, normal speed in Lyon.
+  const fast = infantry.buildTime / rate;
   game.handleCommand(a, { t: 'build', cities: [paris.id, lyon.id], item: 'infantry' });
   const start = mine();
   run(fast - 0.2);
-  assert.equal(mine(), start, 'not trained before buildTime / 1.4');
+  assert.equal(mine(), start, 'not trained before buildTime / rate');
   run(0.3);
-  assert.equal(mine(), start + 1, 'Paris trained its infantry in buildTime / 1.4');
+  assert.equal(mine(), start + 1, 'Paris trained its infantry in buildTime / rate');
   run(infantry.buildTime - fast - 0.3);
   assert.equal(mine(), start + 1, 'Lyon still needs the full build time');
   run(0.3);
@@ -91,7 +92,7 @@ test('Barracks train units 40% faster in their city, while upgrades build at nor
 
   // An upgrade queued in Paris is not sped up.
   game.handleCommand(a, { t: 'build', cities: [paris.id], item: 'wall' });
-  run(CITY_UPGRADES.wall.buildTime / 1.4 + 0.5);
+  run(CITY_UPGRADES.wall.buildTime / rate + 0.5);
   assert.ok(!paris.upgrades.has('wall'), 'upgrades do not get the training bonus');
   run(CITY_UPGRADES.wall.buildTime);
   assert.ok(paris.upgrades.has('wall'));
@@ -105,14 +106,115 @@ test('an upgrade can be built only once per city', () => {
   const { game, a, city, run } = setup();
   const lyon = city('Lyon');
   a.gold = 1000;
-  game.handleCommand(a, { t: 'build', cities: [lyon.id], item: 'wall' });
-  game.handleCommand(a, { t: 'build', cities: [lyon.id], item: 'wall' });
-  assert.deepEqual(lyon.queue, ['wall'], 'a second wall is not queued');
-  run(wall.buildTime + 0.1);
+  game.handleCommand(a, { t: 'build', cities: [lyon.id], item: 'castle' });
+  game.handleCommand(a, { t: 'build', cities: [lyon.id], item: 'castle' });
+  assert.deepEqual(lyon.queue, ['castle'], 'a second castle is not queued');
+  run(castle.buildTime + 0.1);
   const gold = a.gold;
-  game.handleCommand(a, { t: 'build', cities: [lyon.id], item: 'wall' });
-  assert.deepEqual(lyon.queue, [], 'no wall once one is built');
+  game.handleCommand(a, { t: 'build', cities: [lyon.id], item: 'castle' });
+  assert.deepEqual(lyon.queue, [], 'no castle once one is built');
   assert.equal(a.gold, gold, 'no gold taken');
+});
+
+test('ordering the wall twice queues Wall I and then Wall II; a third order does nothing', () => {
+  const { game, a, city, run } = setup();
+  const lyon = city('Lyon');
+  a.gold = 1000;
+  const order = () => game.handleCommand(a, { t: 'build', cities: [lyon.id], item: 'wall' });
+  order();
+  order();
+  assert.deepEqual(lyon.queue, ['wall', 'wall2']);
+  assert.equal(a.gold, 1000 - wall.cost - wall2.cost);
+  order();
+  assert.deepEqual(lyon.queue, ['wall', 'wall2'], 'there is no third grade');
+  assert.equal(a.gold, 1000 - wall.cost - wall2.cost, 'no gold taken');
+
+  run(wall.buildTime + 0.1);
+  assert.ok(lyon.upgrades.has('wall') && !lyon.upgrades.has('wall2'), 'Wall I first');
+  assert.equal(lyon.maxHp, CITY.hp + wall.hp);
+  run(wall2.buildTime);
+  assert.ok(lyon.upgrades.has('wall2'));
+  assert.equal(lyon.maxHp, CITY.hp + wall.hp + wall2.hp);
+  assert.equal(lyon.hp, CITY.hp + wall.hp + wall2.hp, 'each grade adds its HP straight away');
+});
+
+test('the wall grades add up to the old single wall: 20 gold, 10 s, +250 HP', () => {
+  assert.equal(wall.cost + wall2.cost, 20);
+  assert.equal(wall.buildTime + wall2.buildTime, 10);
+  assert.equal(wall.hp + wall2.hp, 250);
+  assert.equal(wall2.requires, 'wall');
+});
+
+test('a city with Wall I built gets Wall II from the next order', () => {
+  const { game, a, city } = setup();
+  const lyon = city('Lyon');
+  lyon.addUpgrade('wall');
+  a.gold = 100;
+  game.handleCommand(a, { t: 'build', cities: [lyon.id], item: 'wall' });
+  assert.deepEqual(lyon.queue, ['wall2']);
+  assert.equal(a.gold, 100 - wall2.cost);
+});
+
+test('ordering the wall in several cities queues the next grade in each', () => {
+  const { game, a, city } = setup();
+  const paris = city('Paris'), lyon = city('Lyon'), metz = city('Metz'), dijon = city('Dijon');
+  paris.addUpgrade('wall');
+  paris.addUpgrade('wall2');
+  lyon.addUpgrade('wall');
+  metz.queue = ['wall'];
+  a.gold = 100;
+  game.handleCommand(a, { t: 'build', cities: [paris.id, lyon.id, metz.id, dijon.id], item: 'wall' });
+  assert.deepEqual(paris.queue, [], 'every grade built');
+  assert.deepEqual(lyon.queue, ['wall2']);
+  assert.deepEqual(metz.queue, ['wall', 'wall2']);
+  assert.deepEqual(dijon.queue, ['wall']);
+  assert.equal(a.gold, 100 - 2 * wall2.cost - wall.cost);
+});
+
+test('short of gold for Wall II, a cheaper Wall I in another city is still ordered', () => {
+  const { game, a, city } = setup();
+  const lyon = city('Lyon'), dijon = city('Dijon');
+  lyon.addUpgrade('wall');
+  a.gold = wall.cost + 1;   // less than Wall II
+  game.handleCommand(a, { t: 'build', cities: [lyon.id, dijon.id], item: 'wall' });
+  assert.deepEqual(lyon.queue, []);
+  assert.deepEqual(dijon.queue, ['wall']);
+  assert.equal(a.gold, 1);
+});
+
+test('cancelling Wall I also cancels the Wall II queued after it, refunding both', () => {
+  const { game, a, city, run } = setup();
+  const lyon = city('Lyon');
+  a.gold = 100;
+  game.handleCommand(a, { t: 'build', cities: [lyon.id], item: 'infantry' });
+  game.handleCommand(a, { t: 'build', cities: [lyon.id], item: 'wall' });
+  game.handleCommand(a, { t: 'build', cities: [lyon.id], item: 'infantry' });
+  game.handleCommand(a, { t: 'build', cities: [lyon.id], item: 'wall' });
+  assert.deepEqual(lyon.queue, ['infantry', 'wall', 'infantry', 'wall2']);
+  run(1);
+  const progress = lyon.progress;
+  game.handleCommand(a, { t: 'cancel', city: lyon.id, index: 1 });
+  assert.deepEqual(lyon.queue, ['infantry', 'infantry']);
+  assert.equal(a.gold, 100 - 2 * UNITS.infantry.cost, 'both grades refunded');
+  assert.equal(lyon.progress, progress, 'the unit in production keeps its progress');
+
+  // Cancelling Wall II alone keeps Wall I.
+  game.handleCommand(a, { t: 'build', cities: [lyon.id], item: 'wall' });
+  game.handleCommand(a, { t: 'build', cities: [lyon.id], item: 'wall' });
+  game.handleCommand(a, { t: 'cancel', city: lyon.id, index: 3 });
+  assert.deepEqual(lyon.queue, ['infantry', 'infantry', 'wall']);
+  assert.equal(a.gold, 100 - 2 * UNITS.infantry.cost - wall.cost);
+});
+
+test('capturing a city destroys both wall grades', () => {
+  const { game, b, city } = setup();
+  const rouen = city('Rouen');
+  rouen.addUpgrade('wall');
+  rouen.addUpgrade('wall2');
+  game.captureCity(rouen, b.id);
+  assert.equal(rouen.maxHp, CITY.hp);
+  game.handleCommand(b, { t: 'build', cities: [rouen.id], item: 'wall' });
+  assert.deepEqual(rouen.queue, ['wall'], 'the new owner starts again from Wall I');
 });
 
 test('a Tower shoots further and a Castle hits harder', () => {
@@ -153,14 +255,14 @@ test('capturing a city destroys its upgrades and refunds what was still queued',
 test('ordering an upgrade for several cities skips the ones that already have it', () => {
   const { game, a, city } = setup();
   const paris = city('Paris'), lyon = city('Lyon'), metz = city('Metz');
-  paris.addUpgrade('wall');
-  metz.queue = ['wall'];
+  paris.addUpgrade('tower');
+  metz.queue = ['tower'];
   a.gold = 100;
-  game.handleCommand(a, { t: 'build', cities: [paris.id, lyon.id, metz.id], item: 'wall' });
+  game.handleCommand(a, { t: 'build', cities: [paris.id, lyon.id, metz.id], item: 'tower' });
   assert.deepEqual(paris.queue, []);
-  assert.deepEqual(lyon.queue, ['wall']);
-  assert.deepEqual(metz.queue, ['wall']);
-  assert.equal(a.gold, 100 - wall.cost, 'paid only for Lyon');
+  assert.deepEqual(lyon.queue, ['tower']);
+  assert.deepEqual(metz.queue, ['tower']);
+  assert.equal(a.gold, 100 - tower.cost, 'paid only for Lyon');
 });
 
 test('cancelling a queued upgrade gives the gold back', () => {

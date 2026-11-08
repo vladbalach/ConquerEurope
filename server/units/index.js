@@ -4,8 +4,9 @@ import { Infantry } from './Infantry.js';
 import { Archer } from './Archer.js';
 import { Cavalry } from './Cavalry.js';
 import { Knight } from './Knight.js';
+import { Transport } from './Transport.js';
 
-export const UNIT_CLASSES = { infantry: Infantry, archer: Archer, cavalry: Cavalry, knight: Knight };
+export const UNIT_CLASSES = { infantry: Infantry, archer: Archer, cavalry: Cavalry, knight: Knight, transport: Transport };
 
 for (const type of UNIT_TYPES) {
   if (!UNIT_CLASSES[type]) throw new Error(`No unit class for type "${type}"`);

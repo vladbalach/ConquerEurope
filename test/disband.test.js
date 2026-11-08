@@ -37,9 +37,9 @@ test('a disbanded unit loses HP every second without regenerating, then dies as 
 test('hit by another player 20 s or less before dying: the kill goes to that player', () => {
   const { game, a, b, city, spawn, run } = setup();
   const { x, y } = field(city);
-  const knight = spawn(a.id, 'knight', x, y);           // 200 HP: 20 s to bleed out
+  const knight = spawn(a.id, 'knight', x, y);
   const raider = spawn(b.id, 'cavalry', x + 400, y);
-  hitOnce(game, knight, raider, 5);                      // 195 HP left: dies 19.5 s after this hit
+  hitOnce(game, knight, raider, UNITS.knight.hp - 195);  // 195 HP left: dies 19.5 s after this hit
   game.handleCommand(a, { t: 'disband', ids: [knight.id] });
   run(20);
   assert.ok(!game.units.has(knight.id));
@@ -55,7 +55,7 @@ test('last hit more than 20 s before dying: only a loss, no kill', () => {
   hitOnce(game, knight, raider, 5);
   run(10);                                               // regenerates to full meanwhile
   game.handleCommand(a, { t: 'disband', ids: [knight.id] });
-  run(UNITS.knight.hp / DISBAND.hpPerSecond + 0.5);      // dies ~30 s after the hit
+  run(UNITS.knight.hp / DISBAND.hpPerSecond + 0.5);      // dies over 30 s after the hit
   assert.ok(!game.units.has(knight.id));
   assert.equal(a.losses, UNITS.knight.cost);
   assert.equal(b.kills, 0, 'the hit was too long ago');

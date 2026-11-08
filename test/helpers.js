@@ -24,7 +24,7 @@ export function setup() {
   byX.forEach((c, i) => { c.owner = i < byX.length / 2 ? a.id : b.id; c.hp = CITY.hp; c.queue = []; });
   game.recount();
   const city = (name) => game.cities.find((c) => c.name === name);
-  const spawn = (owner, type, x, y) => game.spawnUnit({ owner, rally: null, spawnPoint: () => [x, y] }, type);
+  const spawn = (owner, type, x, y) => game.spawnUnit({ owner, rally: null, spawnPoint: () => [x, y], launchPoint: () => [x, y] }, type);
   const run = (seconds) => { for (let t = 0; t < seconds - 1e-9; t += DT) game.tick(DT); };
   return { game, a, b, city, spawn, run };
 }

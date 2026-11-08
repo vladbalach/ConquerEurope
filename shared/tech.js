@@ -1,6 +1,6 @@
-// Technologies (TECHS in shared/config.js) and what they do for a liberator. Used by the game
-// (server/game.js, in the host's browser) and by every player's page (HUD, Tech window), so both
-// always agree on incomes and limits.
+// Technologies (TECHS in shared/config.js): what they do for a liberator, and what they open up
+// (ships). Used by the game (server/game.js, in the host's browser) and by every player's page (HUD,
+// Tech window), so both always agree on incomes, limits and what may be ordered.
 import { TECHS, TECH_TYPES, TECH_TABS, LIBERATOR } from './config.js';
 
 // Levels a new player has: none of anything.
@@ -23,6 +23,11 @@ export function techAvailable(key, options) {
 }
 
 const lvl = (tech, key) => (tech && tech[key]) || 0;
+
+// Seafaring: coastal cities build ships, and units go on board transports and land from them.
+export function hasSeafaring(tech) {
+  return lvl(tech, 'seafaring') > 0;
+}
 
 // Gold a liberator gets at the end of every turn (before smuggling).
 export function liberatorIncome(tech) {

@@ -29,11 +29,15 @@ const nav = NavGrid.load(NAV_FILE);
 
 // Admin map editing (Edit map in a game): moved cities are saved in server/data/city-positions.json
 // and apply to every game; "Rebuild navigation" rebuilds territories and pathfinding from them.
+// Cities made coastal or inland are saved in server/data/city-coastal.json, painted beaches in
+// server/data/beach-edits.json.
 const editor = new MapEditor({
   map, nav, games: () => games.values(),
   files: {
     root: ROOT, map: MAP_FILE, nav: NAV_FILE,
     positions: process.env.CITY_POSITIONS || path.join(ROOT, 'server', 'data', 'city-positions.json'),
+    coastal: process.env.CITY_COASTAL || path.join(ROOT, 'server', 'data', 'city-coastal.json'),
+    beaches: process.env.BEACH_EDITS || path.join(ROOT, 'server', 'data', 'beach-edits.json'),
   },
 });
 
@@ -400,6 +404,8 @@ function handle(client, msg) {
       return;
     }
     case 'mapMove':
+    case 'mapCoast':
+    case 'mapBeach':
     case 'mapRebuild':
       // Edit map: admins only. MapEditor.handle refuses it from anyone else, whatever the page shows.
       editor.handle(client, msg, clients);
