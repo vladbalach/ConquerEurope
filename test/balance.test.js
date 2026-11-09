@@ -34,7 +34,7 @@ test('invalid values are dropped and out-of-range values are clamped', () => {
   const clean = sanitize({
     units: {
       infantry: { hp: -5, damage: 'lots', moveSpeed: Infinity, cost: 12.5, speedHack: 9 },
-      knight: { archerDamageReduction: 0.5 },          // only infantry has an archer block
+      knight: { capacity: 5 },                         // only transports carry units
       dragon: { hp: 999 },                             // no such unit
     },
     upgrades: { farm: { damage: 7 } },                 // effects may be added to any upgrade

@@ -5,13 +5,49 @@
 //
 // Both sessions offer `link.send(msg)` for this page's orders, and call onMessage(msg) with the
 // game's messages (start, snap, event, score, room, gameover), exactly like the old server did.
+// Snapshots and scores travel as changes to the last one sent on that link (delta.js).
+import { DeltaEncoder, DeltaDecoder } from './delta.js';
 
 // No direct link after this long: go through the lobby server instead (relay). Direct links
 // normally open within a second or two; some networks (mobile data, some company or home
 // routers) never allow them.
 const DIRECT_TIMEOUT_MS = 7000;
 const RELAY_TIMEOUT_MS = 15000;      // the host does not answer through the relay either: give up
-const MAX_BUFFERED = 1 << 20;        // a player whose link falls this far behind skips snapshots
+// A link that falls behind skips snapshots rather than queue them: each one has the whole state, so
+// the next one makes up for it, while a queue only delays everything after it. Behind: more than
+// this many snapshots' worth of data still waiting to go out (and at least MIN_BUFFERED).
+const BEHIND_SNAPSHOTS = 4;
+const MIN_BUFFERED = 64 * 1024;
+// Deaths and War Cries happen once: those of skipped snapshots go with the next one sent (at most
+// this many values each, the latest).
+const MAX_CARRIED = 4000;
+// A message longer than this (characters of JSON) goes in pieces: browsers take at most 256 KB in one
+// data channel message, and the game-over message carries the whole game's history. A piece is sent as
+// JSON too, so its escaped quotes can make it up to twice as long: still well under the limit.
+export const PART_SIZE = 60000;
+
+// A direct link carries the host's messages compressed (deflate, about 3 times smaller) when both
+// browsers can: the player's page names it as the data channel's protocol. Through the relay the
+// lobby server's WebSocket compresses instead (server/index.js).
+const DEFLATE = 'deflate';
+export const canDeflate = (() => {
+  try {
+    new CompressionStream(DEFLATE);
+    new DecompressionStream(DEFLATE);
+    return true;
+  } catch {
+    return false;
+  }
+})();
+const COMPRESS_MIN = 200;            // characters: shorter messages go as they are
+
+export function deflate(text) {
+  return new Response(new Blob([text]).stream().pipeThrough(new CompressionStream(DEFLATE))).arrayBuffer();
+}
+
+export function inflate(data) {
+  return new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream(DEFLATE))).text();
+}
 
 function rtcConfig(ice) {
   return { iceServers: ice.iceServers, iceTransportPolicy: ice.relayOnly ? 'relay' : 'all' };
@@ -19,6 +55,30 @@ function rtcConfig(ice) {
 
 function parse(data) {
   try { return JSON.parse(data); } catch { return null; }
+}
+
+// A long message as pieces { t: 'part', id, i, n, s } (the JSON text cut in order), or null when it fits in one.
+let nextPartId = 1;
+export function splitMessage(text) {
+  if (text.length <= PART_SIZE) return null;
+  const id = nextPartId++, n = Math.ceil(text.length / PART_SIZE);
+  return Array.from({ length: n }, (_, i) => ({ t: 'part', id, i, n, s: text.slice(i * PART_SIZE, (i + 1) * PART_SIZE) }));
+}
+
+// Puts the pieces of long messages back together. add(piece) returns the whole message once its last
+// piece is in (pieces come in order over one link, but a new message drops an unfinished one).
+export class Parts {
+  constructor() { this.id = null; this.list = []; }
+  add(p) {
+    if (!Number.isInteger(p.n) || !Number.isInteger(p.i) || typeof p.s !== 'string') return null;
+    if (p.id !== this.id) { this.id = p.id; this.list = []; }
+    this.list[p.i] = p.s;
+    if (this.list.filter((x) => x !== undefined).length < p.n) return null;
+    const text = this.list.join('');
+    this.id = null;
+    this.list = [];
+    return parse(text);
+  }
 }
 
 // ICE candidates may arrive before the offer or answer is applied: keep them until then.
@@ -35,6 +95,39 @@ class Candidates {
 }
 
 // ------------------------------------------------------------------ host
+// The host's side of the link to one player: snapshots and scores as changes to the last ones
+// sent (delta.js), the usual size of a snapshot on it, and the deaths of snapshots it skipped (they
+// happen once, so the next snapshot carries them).
+export class Outgoing {
+  constructor() {
+    this.encoder = new DeltaEncoder();
+    this.snapBytes = 0;
+    this.deaths = [];
+  }
+
+  // A snapshot went out, `bytes` long on the link: the usual size (a running average).
+  sentSnap(bytes) {
+    this.snapBytes = this.snapBytes ? this.snapBytes + (bytes - this.snapBytes) * 0.25 : bytes;
+  }
+
+  hold(snap) {
+    this.deaths = latest(this.deaths.concat(snap.d || []), 4);
+  }
+
+  release(snap) {
+    if (!this.deaths.length) return snap;
+    const out = { ...snap, d: this.deaths.concat(snap.d || []) };
+    this.deaths = [];
+    return out;
+  }
+}
+
+// The last MAX_CARRIED values of a flat list of `stride` values per entry.
+function latest(list, stride) {
+  const keep = Math.floor(MAX_CARRIED / stride) * stride;
+  return list.length > keep ? list.slice(list.length - keep) : list;
+}
+
 export class HostSession {
   // net: the lobby connection. roster: [{ id, color }]. balance: current balance values.
   // options: the game options the host picked in the waiting room.
@@ -48,6 +141,7 @@ export class HostSession {
     this.onError = onError || (() => {});
     this.peers = new Map();          // player id -> { pc, channel, candidates }
     this.relayed = new Set();        // players without a direct link: their messages go through the server
+    this.outgoing = new Map();       // player id -> Outgoing: what was last sent on their link
     this.worker = new Worker(new URL('./host-worker.js', import.meta.url), { type: 'module' });
     this.worker.onmessage = (e) => this.fromWorker(e.data);
     this.worker.onerror = (e) => this.onError(`The game could not run: ${e.message || 'worker error'}`);
@@ -58,25 +152,63 @@ export class HostSession {
 
   fromWorker(m) {
     if (m.type === 'send') {
-      if (m.to === this.you) {
-        this.onMessage(m.msg);
-        return;
-      }
-      if (this.relayed.has(m.to)) {
-        const ws = this.net.ws;
-        if (m.msg.t === 'snap' && ws && ws.bufferedAmount > MAX_BUFFERED) return;
-        this.net.send({ t: 'relay', to: m.to, msg: m.msg });
-        return;
-      }
-      const ch = this.peers.get(m.to)?.channel;
-      if (!ch || ch.readyState !== 'open') return;
-      if (m.msg.t === 'snap' && ch.bufferedAmount > MAX_BUFFERED) return;   // slow link: skip a frame
-      ch.send(JSON.stringify(m.msg));
+      if (m.to === this.you) this.onMessage(m.msg);
+      else this.sendTo(m.to, m.msg);
     } else if (m.type === 'ended') {
       this.net.send({ t: 'gameEnded', winner: m.winner });
     } else if (m.type === 'error') {
       this.onError(m.msg);
     }
+  }
+
+  // A game message for another player: over their direct link, or through the lobby server.
+  sendTo(id, msg) {
+    const relayed = this.relayed.has(id);
+    const peer = relayed ? null : this.peers.get(id);
+    const ch = peer?.channel;
+    if (!relayed && (!ch || ch.readyState !== 'open')) return;
+    let out = this.outgoing.get(id);
+    if (!out) this.outgoing.set(id, (out = new Outgoing()));
+    const snap = msg.t === 'snap';
+    if (snap) {
+      // Relayed players share this page's lobby connection.
+      const buffered = relayed ? (this.net.ws ? this.net.ws.bufferedAmount : 0) : ch.bufferedAmount;
+      const share = relayed ? this.relayed.size : 1;
+      if (buffered > Math.max(MIN_BUFFERED, BEHIND_SNAPSHOTS * out.snapBytes * share)) {
+        out.hold(msg);               // slow link: skip a frame
+        return;
+      }
+      msg = out.release(msg);
+    }
+    const delta = out.encoder.encode(msg);
+    const text = JSON.stringify(delta);
+    if (relayed) {
+      if (snap) out.sentSnap(text.length);
+      // The relay takes a snapshot in one message (up to 1 MB); anything else long goes in pieces.
+      const parts = snap ? null : splitMessage(text);
+      for (const part of parts || [delta]) this.net.send({ t: 'relay', to: id, msg: part });
+      return;
+    }
+    const parts = splitMessage(text);
+    const texts = parts ? parts.map((p) => JSON.stringify(p)) : [text];
+    if (!peer.deflate) {
+      if (snap) out.sentSnap(text.length);
+      for (const t of texts) ch.send(t);
+      return;
+    }
+    // Compressed: each message starts compressing now, and they go out in order.
+    for (const t of texts) {
+      const data = t.length < COMPRESS_MIN ? t : deflate(t);
+      peer.sending = peer.sending.then(() => data).then((d) => {
+        if (snap) out.sentSnap(typeof d === 'string' ? d.length : d.byteLength);
+        if (ch.readyState === 'open') ch.send(d);
+      }).catch((e) => console.error('Could not send to a player:', e));
+    }
+  }
+
+  // A player's page missed part of a snapshot or score (delta.js): their next ones go whole.
+  resync(id) {
+    this.outgoing.delete(id);
   }
 
   // A connection message from player `from`, passed on by the lobby server.
@@ -85,20 +217,22 @@ export class HostSession {
       this.dropPeer(from, false);    // a new offer replaces an old link (the player reconnects)
       this.relayed.delete(from);
       const pc = new RTCPeerConnection(rtcConfig(this.ice));
-      const peer = { pc, channel: null, candidates: new Candidates(pc), online: false };
+      const peer = { pc, channel: null, candidates: new Candidates(pc), online: false, deflate: false, sending: Promise.resolve() };
       this.peers.set(from, peer);
       pc.onicecandidate = (e) => {
         if (e.candidate) this.net.send({ t: 'signal', to: from, data: { candidate: e.candidate.toJSON() } });
       };
       pc.ondatachannel = (e) => {
         const ch = (peer.channel = e.channel);
+        peer.deflate = canDeflate && ch.protocol === DEFLATE;    // their page can decompress
         ch.onopen = () => {
           peer.online = true;
           this.worker.postMessage({ type: 'connect', id: from });
         };
         ch.onmessage = (ev) => {
           const msg = parse(ev.data);
-          if (msg) this.worker.postMessage({ type: 'msg', from, msg });
+          if (msg && msg.t === 'resync') this.resync(from);
+          else if (msg) this.worker.postMessage({ type: 'msg', from, msg });
         };
         ch.onclose = () => { if (this.peers.get(from) === peer) this.dropPeer(from, true); };
       };
@@ -123,14 +257,17 @@ export class HostSession {
       this.relayed.add(from);
       this.worker.postMessage({ type: 'connect', id: from });
     } else if (msg.t === 'relayClose') {
+      this.outgoing.delete(from);
       if (this.relayed.delete(from)) this.worker.postMessage({ type: 'disconnect', id: from });
     } else if (this.relayed.has(from)) {
-      this.worker.postMessage({ type: 'msg', from, msg });
+      if (msg.t === 'resync') this.resync(from);
+      else this.worker.postMessage({ type: 'msg', from, msg });
     }
   }
 
   // The link to a player is gone. `tell`: let the game know they are offline.
   dropPeer(id, tell) {
+    this.outgoing.delete(id);        // a new link starts with whole messages
     const peer = this.peers.get(id);
     if (!peer) return;
     this.peers.delete(id);
@@ -168,6 +305,9 @@ export class PeerSession {
     this.open = false;               // the direct link is open
     this.relay = false;              // playing through the lobby server instead
     this.started = false;            // the host's game has reached us
+    this.parts = new Parts();        // long messages come in pieces (splitMessage)
+    this.decoder = new DeltaDecoder();   // snapshots and scores come as changes (delta.js)
+    this.resyncAt = 0;
     this.link = {
       send: (msg) => {
         if (this.relay) this.net.send({ t: 'relay', msg });
@@ -177,7 +317,10 @@ export class PeerSession {
 
     const pc = (this.pc = new RTCPeerConnection(rtcConfig(ice)));
     this.candidates = new Candidates(pc);
-    const ch = (this.channel = pc.createDataChannel('game', { ordered: true }));
+    // The protocol tells the host this page can take compressed messages.
+    const ch = (this.channel = pc.createDataChannel('game', { ordered: true, protocol: canDeflate ? DEFLATE : '' }));
+    ch.binaryType = 'arraybuffer';
+    this.inbound = Promise.resolve();  // compressed messages are read in the order they came
     pc.onicecandidate = (e) => {
       if (e.candidate) this.net.send({ t: 'signal', data: { candidate: e.candidate.toJSON() } });
     };
@@ -188,8 +331,11 @@ export class PeerSession {
       console.info('Connected to the host directly (WebRTC).');
     };
     ch.onmessage = (e) => {
-      const msg = parse(e.data);
-      if (msg) this.receive(msg);
+      const text = typeof e.data === 'string' ? e.data : inflate(e.data);
+      this.inbound = this.inbound.then(() => text).then((t) => {
+        const msg = this.done ? null : parse(t);
+        if (msg) this.receive(msg);
+      }).catch((err) => console.error('Error with a message from the host:', err));
     };
     // The direct link failed, or died during the game (network change, a sleeping laptop, a
     // browser pausing a background tab): carry on through the server. If the host really left,
@@ -210,7 +356,34 @@ export class PeerSession {
   receive(msg) {
     this.started = true;
     this.heard = true;
+    if (msg.t === 'part') {
+      const whole = this.parts.add(msg);
+      if (whole) this.deliver(whole);
+      return;
+    }
+    this.deliver(msg);
+  }
+
+  // Snapshots and scores come as changes to the last one (delta.js): rebuilt whole for the game.
+  deliver(msg) {
+    if (msg.t === 'delta') {
+      const whole = this.decoder.decode(msg);
+      if (!whole) {
+        this.resync();
+        return;
+      }
+      msg = whole;
+    }
     this.onMessage(msg);
+  }
+
+  // A change to a message we never got (one was lost while the link switched): ask the host for
+  // whole ones again. Once a second at most, while the answer is on its way.
+  resync() {
+    const now = Date.now();
+    if (now - this.resyncAt < 1000) return;
+    this.resyncAt = now;
+    this.link.send({ t: 'resync' });
   }
 
   // The direct link died during the game.

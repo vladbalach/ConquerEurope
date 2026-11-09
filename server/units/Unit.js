@@ -2,7 +2,7 @@
 // orders, picking targets, walking around water and fighting. Unit types
 // (Infantry.js, Archer.js, Cavalry.js, Knight.js) extend it, and all numbers come
 // from UNITS in shared/config.js. Ships (Ship.js) extend it too and sail instead of walking.
-import { UNITS, UNIT_TYPES, CITY, COMBAT, DISBAND, NAVAL } from '../../shared/config.js';
+import { UNITS, UNIT_TYPES, CITY, COMBAT, DISBAND, NAVAL, HERO, TRADITIONS } from '../../shared/config.js';
 
 const SCAN_INTERVAL = 0.3;          // seconds between searches for a new target
 const REPLAN_INTERVAL = 0.5;        // minimum seconds between two path searches
@@ -38,6 +38,9 @@ export class Unit {
     this.lastAttacker = null;
     this.lastPlayerHit = null;          // { owner, time } of the last hit by another player's unit or city
     this.disbanding = false;            // Delete key: losing HP until dead
+    this.inspired = false;              // near one of its owner's Heroes this tick (Game.inspire)
+    this.standFirm = false;             // Last Stand: outnumbered, taking less damage (Game.checkStandFirm)
+    this.standCheckAt = 0;              // game time of its next outnumbered check
     this.stuck = 0;
     this.wantMove = 0;
     this.attacking = false;
@@ -52,6 +55,14 @@ export class Unit {
   get isCity() { return false; }
   get isRanged() { return this.stats.attackRange > 0; }
   get naval() { return false; }
+  // Near one of its owner's Heroes: HERO.auraBonus more damage. With the tradition Last Stand: always
+  // TRADITIONS.lastStand.damageBonus more. The two add up.
+  get damage() {
+    let f = 1;
+    if (this.inspired) f += HERO.auraBonus;
+    if (this.game.hasTradition(this.owner, 'lastStand')) f += TRADITIONS.lastStand.damageBonus;
+    return this.stats.damage * f;
+  }
 
   // Centre-to-centre distance at which this unit can hit `target`.
   reach(target) {
@@ -398,11 +409,31 @@ export class Unit {
     this.attacking = true;
     this.lastCombat = this.game.time;
     this.engaged = target.isCity ? -(target.id + 1) : target.id;
-    target.receiveDamage(this.stats.damage * dt, this);
+    target.receiveDamage(this.damage * dt, this);
   }
 
+  // This unit replaces `u` where it stands (a unit made a Hero): the same orders, guard post, target
+  // and fight, and the same share of its HP. In the Kills and Losses stats it is worth what `u` was.
+  takeOver(u) {
+    this.px = u.px; this.py = u.py;
+    this.hp = (u.hp / u.maxHp) * this.maxHp;
+    this.order = u.order;
+    this.queue = u.queue;
+    this.guardX = u.guardX; this.guardY = u.guardY;
+    this.target = u.target;
+    this.route = u.route;
+    this.unreachable = u.unreachable;
+    this.lastCombat = u.lastCombat;
+    this.lastAttacker = u.lastAttacker;
+    this.lastHitOwner = u.lastHitOwner;
+    this.lastPlayerHit = u.lastPlayerHit;
+    this.inspired = u.inspired;
+    this.value = u.value ?? UNITS[u.type].cost;
+  }
+
+  // Standing firm (Last Stand, outnumbered): TRADITIONS.lastStand.damageCut less damage, from units and cities alike.
   receiveDamage(amount, attacker) {
-    this.hp -= amount;
+    this.hp -= this.standFirm ? amount * (1 - TRADITIONS.lastStand.damageCut) : amount;
     this.lastHitOwner = attacker.owner;   // who gets the kill if this was the last hit
     if (this.game.players.has(attacker.owner)) this.lastPlayerHit = { owner: attacker.owner, time: this.game.time };
     this.lastCombat = this.game.time;

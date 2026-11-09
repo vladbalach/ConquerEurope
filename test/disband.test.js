@@ -1,7 +1,7 @@
 // Delete key: disbanded units lose HP until they die. How the death counts in the stats.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { UNITS, DISBAND } from '../shared/config.js';
+import { UNITS, DISBAND, ECONOMY, HONOR } from '../shared/config.js';
 import { setup } from './helpers.js';
 
 // A spot in the open near Paris (A's city), out of reach of every city.
@@ -32,6 +32,8 @@ test('a disbanded unit loses HP every second without regenerating, then dies as 
   assert.ok(!game.units.has(inf.id), 'it dies when its HP runs out');
   assert.equal(a.losses, UNITS.infantry.cost, 'a loss for its owner');
   assert.equal(b.kills, 0, 'nobody hit it: no kill for anyone');
+  assert.equal(b.honor, 0, 'so no honor');
+  assert.equal(b.gold, ECONOMY.startGold, 'and no kill gold');
 });
 
 test('hit by another player 20 s or less before dying: the kill goes to that player', () => {
@@ -45,6 +47,8 @@ test('hit by another player 20 s or less before dying: the kill goes to that pla
   assert.ok(!game.units.has(knight.id));
   assert.equal(a.losses, UNITS.knight.cost);
   assert.equal(b.kills, UNITS.knight.cost, 'the last player to hit it gets the kill');
+  assert.equal(b.gold, ECONOMY.startGold + UNITS.knight.cost * ECONOMY.killGoldShare, 'with its gold');
+  assert.equal(b.honor, UNITS.knight.cost * HONOR.killShare, 'and its honor');
 });
 
 test('last hit more than 20 s before dying: only a loss, no kill', () => {
@@ -59,6 +63,7 @@ test('last hit more than 20 s before dying: only a loss, no kill', () => {
   assert.ok(!game.units.has(knight.id));
   assert.equal(a.losses, UNITS.knight.cost);
   assert.equal(b.kills, 0, 'the hit was too long ago');
+  assert.equal(b.honor, 0);
 });
 
 test('a hit by a neutral city gives no kill; the last hit by a player still counts', () => {

@@ -29,13 +29,11 @@ function game2(death = 'liberator') {
   return { ...s, events };
 }
 
-test('research costs gold up front, takes game time, one at a time; cancelling refunds it', () => {
+test('research costs gold up front and takes game time; cancelling refunds it', () => {
   const { game, a, order, run, events } = game2();
   a.gold = 1000;
   order(a, { t: 'research', tech: 'supporters' });
   assert.equal(a.gold, 1000 - TECHS.supporters.levels[0].cost);
-  order(a, { t: 'research', tech: 'smuggling' });
-  assert.equal(a.research.tech, 'supporters', 'one research at a time');
   order(a, { t: 'cancelResearch' });
   assert.equal(a.gold, 1000, 'refunded');
   assert.equal(a.research, null);
@@ -48,6 +46,53 @@ test('research costs gold up front, takes game time, one at a time; cancelling r
   assert.equal(a.research, null);
   assert.ok(events.a.some((m) => m.kind === 'researched' && m.tech === 'smuggling' && m.level === 1));
   assert.equal(game.playerList().find((p) => p.id === a.id).tech.smuggling, 1, 'levels are public');
+});
+
+test('research ordered while one runs is queued, paid at once, and starts when the one before it is done', () => {
+  const { a, order, run } = game2();
+  const S = TECHS.supporters.levels, M = TECHS.smuggling.levels;
+  a.gold = 1000;
+  for (const tech of ['supporters', 'smuggling', 'supporters']) order(a, { t: 'research', tech });
+  assert.equal(a.research.tech, 'supporters', 'one research at a time');
+  assert.deepEqual(a.researchQueue.map((e) => [e.tech, e.level]), [['smuggling', 1], ['supporters', 2]], 'the others queued');
+  assert.equal(a.gold, 1000 - S[0].cost - M[0].cost - S[1].cost, 'each paid when ordered');
+
+  run(S[0].time + 0.1);
+  assert.equal(a.tech.supporters, 1);
+  assert.equal(a.research.tech, 'smuggling', 'the next one starts');
+  run(M[0].time + 0.1);
+  assert.equal(a.tech.smuggling, 1);
+  assert.deepEqual([a.research.tech, a.research.level, a.researchQueue], ['supporters', 2, []]);
+  run(S[1].time + 0.1);
+  assert.equal(a.tech.supporters, 2);
+  assert.equal(a.research, null, 'the queue is done');
+});
+
+test('the queue stops at the last level; cancelling a level refunds it and the higher levels of it after it', () => {
+  const { a, order } = game2();
+  const S = TECHS.supporters.levels, M = TECHS.smuggling.levels;
+  a.gold = 10000;
+  for (let i = 0; i <= M.length; i++) order(a, { t: 'research', tech: 'smuggling' });
+  assert.equal(a.researchQueue.length, M.length - 1, `${M.length} levels in all, no more`);
+  for (let i = 1; i <= M.length; i++) order(a, { t: 'cancelResearch', tech: 'smuggling', level: M.length + 1 - i });
+  assert.equal(a.gold, 10000, 'every level refunded');
+
+  a.gold = 1000;
+  for (const tech of ['supporters', 'smuggling', 'supporters', 'supporters']) order(a, { t: 'research', tech });
+  order(a, { t: 'cancelResearch', tech: 'supporters', level: 2 });
+  assert.deepEqual(a.researchQueue.map((e) => [e.tech, e.level]), [['smuggling', 1]], 'level 3 needs level 2: gone too');
+  assert.equal(a.gold, 1000 - S[0].cost - M[0].cost, 'both refunded');
+
+  order(a, { t: 'research', tech: 'supporters' });
+  assert.equal(a.researchQueue.at(-1).level, 2, 'ordered again: level 2 again');
+  order(a, { t: 'cancelResearch', tech: 'supporters', level: 1 });
+  assert.deepEqual([a.research.tech, a.research.level, a.research.progress], ['smuggling', 1, 0], 'the running one cancelled: the next starts');
+  assert.deepEqual(a.researchQueue, [], 'level 2 needs level 1: gone too');
+  assert.equal(a.gold, 1000 - M[0].cost);
+  order(a, { t: 'cancelResearch', tech: 'nonsense', level: 1 });
+  order(a, { t: 'cancelResearch', tech: 'smuggling', level: 1 });
+  assert.equal(a.research, null);
+  assert.equal(a.gold, 1000);
 });
 
 test('research needs the gold, stops at the last level, and Rebellion needs Death: Liberator', () => {

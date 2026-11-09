@@ -1,15 +1,16 @@
 // In-game client state: snapshot interpolation, selection, commands, effects.
 import {
   UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES, PRODUCTION_ITEMS, ECONOMY, LIBERATOR, TECHS, TECH_TYPES,
-  NEUTRAL_COLOR, PLAYER_COLOR_NAMES,
+  NEUTRAL_COLOR, PLAYER_COLOR_NAMES, TRADITIONS, TRADITION_TYPES, HERO, HERO_KINDS, HEALER,
 } from '/shared/config.js';
 import { liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring } from '/shared/tech.js';
 import { sanitizeOptions, citiesToWin, describeOptions } from '/shared/options.js';
 import { regionCities, regionHolder } from '/shared/regions.js';
 import { nearestCell } from '/shared/coastline.js';
+import { CARGO_SHIFT, heroKindOf } from '/shared/protocol.js';
 import { nextGrade, upgradeGrades } from '/shared/upgrades.js';
-import { UNIT_CLASSES } from './units/index.js';
-import { Renderer, REGION_GLOW } from './render.js';
+import { heroName } from './units/Hero.js';
+import { Renderer, REGION_GLOW, LOST_PING } from './render.js';
 import { Input } from './input.js';
 import { Hud, colorTag } from './hud.js';
 import { playSound } from './sound.js';
@@ -20,10 +21,16 @@ const TICK_SECONDS = 3;      // a clock tick sounds in each of the last seconds 
 export class GameClient {
   constructor({
     map, net, link, gameId, you, title, options, players, ports, beaches, onLeave, debug = null, admin = false, mapState = null,
+    prestart = null,
   }) {
     this.map = map;
     this.net = net;              // the lobby server: balance and map edits
-    this.link = link || net;     // the game, run by the host's browser: orders go here (p2p.js)
+    this.hostLink = link || net; // the game, run by the host's browser (p2p.js)
+    this.link = { send: (msg) => this.order(msg) };   // orders go here, on to the host once the game has started
+    // Before the start (hosted games): { loaded, total, left } from the host, null once it has started.
+    this.prestart = prestart && prestart.left !== 0 ? prestart : null;
+    this.prestartLeft = null;    // the last second of the countdown shown (clock ticks)
+    this.waitToldAt = -Infinity; // when an order before the start last said "not yet"
     this.debug = debug;          // debug tools (stats overlays) or null in production
     this.admin = admin;          // may edit the game balance (Edit button) and the map (Edit map)
     this.mapEdit = false;        // Edit map mode: drag cities to move them (admins only)
@@ -48,10 +55,16 @@ export class GameClient {
 
     this.snaps = [];
     this.offset = null;
+    this.timeScale = 1;          // game speed (developer console "slomo"): see gameClock
     this.renderUnits = [];
     this.unitById = new Map();
     this.myQueues = new Map();
     this.gold = 0;
+    this.honor = 0;              // from kills; spent in the Honor window and on Heroes
+    this.traditions = new Set(); // traditions learned (Honor window)
+    this.learning = null;        // { tradition, progress }: the one being learned, if any
+    this.learnQueue = [];        // traditions queued after it, in order
+    this.researchQueue = [];     // technologies queued after the research running, one entry per level, in order
     this.cityShots = [];
     this.cargo = new Map();          // your transports: ship id -> [{ t, hp }] of the units on board
     this.plans = new Map();          // your units with Shift-queued orders: id -> [kind, x, y, ...], current order first
@@ -69,7 +82,10 @@ export class GameClient {
     this.groups = new Map();
 
     // regions: regions you just took whole, lit up for a moment ({ region, city taken last, t0 }).
-    this.effects = { shots: [], sparks: [], deaths: [], markers: [], flashes: [], regions: [] };
+    // lost: your cities just captured, pinging on the minimap ({ city, t0 }, render.js LOST_PING).
+    this.effects = { shots: [], sparks: [], deaths: [], markers: [], flashes: [], regions: [], lost: [] };
+    this.lostCity = -1;              // your city captured last: Shift + Space shows it
+    this.toldLostKey = false;        // the feed said so (with the first city you lose)
     this.unitTimers = new Map();
     this.cityTimers = new Map();
 
@@ -87,9 +103,43 @@ export class GameClient {
     this.input = new Input(this);
     this.input.clampCamera();
 
+    this.hud.renderPrestart(this.prestart);
+
     this.lastFrame = performance.now();
     this.frame = this.frame.bind(this);
     this.raf = requestAnimationFrame(this.frame);
+  }
+
+  // Orders for the host. Before the start it ignores them (it waits for every player), so say why
+  // instead. The view always goes: snapshots follow the camera.
+  order(msg) {
+    if (this.prestart && msg.t !== 'view') {
+      const now = performance.now();
+      if (now - this.waitToldAt > 3000) {
+        this.waitToldAt = now;
+        this.hud.feed('The game has not started yet: orders count once the countdown is over', 'bad');
+      }
+      return;
+    }
+    this.hostLink.send(msg);
+  }
+
+  // How a hosted game's start goes: players loading it, then the countdown, then the start itself
+  // (info null, or left 0). Clock ticks for the last 3 seconds, as for the end of a turn.
+  onPrestart(info) {
+    const waiting = !!this.prestart;
+    this.prestart = info && info.left !== 0 ? info : null;
+    const left = this.prestart ? this.prestart.left : null;
+    const lower = left !== null && (this.prestartLeft === null || left < this.prestartLeft);
+    if (lower && left >= 1 && left <= TICK_SECONDS) playSound('tick');
+    this.prestartLeft = left;
+    const go = waiting && !this.prestart;
+    if (go) {
+      // The game clock starts now; until then every snapshot stood at time 0.
+      this.snaps = [];
+      this.offset = null;
+    }
+    this.hud.renderPrestart(this.prestart, go);
   }
 
   destroy() {
@@ -190,11 +240,32 @@ export class GameClient {
     return PLAYER_COLOR_NAMES[color] || 'Someone';
   }
 
+  // The page's estimate of the game clock runs on this, not on performance.now(): real milliseconds
+  // times the game speed (developer console "slomo"), so it keeps pace with a faster or slower game.
+  gameClock(now) {
+    if (this.clockAt === undefined) { this.clockAt = now; this.clockMs = now; }
+    if (now > this.clockAt) {
+      this.clockMs += (now - this.clockAt) * this.timeScale;
+      this.clockAt = now;
+    }
+    return this.clockMs;
+  }
+
   onSnap(msg) {
     const now = performance.now();
-    const sample = now - msg.time * 1000;
-    if (this.offset === null || sample < this.offset) this.offset = sample;
+    this.gameClock(now);                 // up to now at the old speed, then the new one
+    const speed = msg.ts || 1;
+    if (speed !== this.timeScale) {
+      this.timeScale = speed;
+      this.offset = null;                // the clock ran at the old speed until now: anchor it again
+      this.hud.speedChanged();
+    }
+    const sample = this.gameClock(now) - msg.time * 1000;
+    // Before the start the game clock stands still: no estimate of it until it runs.
+    if (this.prestart) this.offset = null;
+    else if (this.offset === null || sample < this.offset) this.offset = sample;
     else this.offset += (sample - this.offset) * 0.02;
+    this.snapTime = msg.time;
 
     const units = new Map();
     const a = msg.u;
@@ -218,13 +289,22 @@ export class GameClient {
 
     this.cityShots = msg.s;
     this.gold = msg.g;
+    this.honor = msg.h || 0;
+    this.traditions = new Set((msg.tr || []).map((i) => TRADITION_TYPES[i]));
+    this.learning = msg.tl ? { tradition: TRADITION_TYPES[msg.tl[0]], progress: msg.tl[1] } : null;
+    this.learnQueue = (msg.lq || []).map((i) => TRADITION_TYPES[i]);
     if (msg.st !== undefined) this.serverTickMs = msg.st;
     this.turn = msg.turn;
     this.nextTurnAt = msg.next;
     this.research = msg.r ? { tech: TECH_TYPES[msg.r[0]], progress: msg.r[1] } : null;   // yours, if any
+    this.researchQueue = (msg.rq || []).map((i) => TECH_TYPES[i]);
     this.myQueues.clear();
-    for (const [city, progress, queue, rx, ry, sx, sy] of msg.q) {
-      this.myQueues.set(city, { progress, queue, rally: rx == null ? null : [rx, ry], seaRally: sx == null ? null : [sx, sy] });
+    for (const [city, progress, queue, rx, ry, sx, sy, honorPaid] of msg.q) {
+      // honorPaid: the honor paid for each queue entry (0: gold), or 0 when all of it was paid in gold.
+      this.myQueues.set(city, {
+        progress, queue, rally: rx == null ? null : [rx, ry], seaRally: sx == null ? null : [sx, sy],
+        honorPaid: Array.isArray(honorPaid) ? honorPaid : [],
+      });
     }
     this.cargo.clear();
     for (const [id, list] of msg.b || []) {
@@ -270,17 +350,24 @@ export class GameClient {
       this.effects.flashes.push({ city: msg.city, color: this.colorOf(msg.to), t0: now });
       const cls = msg.to === this.you ? 'good' : msg.from === this.you ? 'bad' : '';
       const from = msg.from >= 0 ? [' from ', this.who(msg.from)] : [];
-      const took = msg.liberated ? 'liberated' : 'captured';      // a liberator took it (Death: Liberator)
+      // A liberator took it (Death: Liberator), or someone pressed "Own" on it (debug builds).
+      const took = msg.debug ? 'took' : msg.liberated ? 'liberated' : 'captured';
+      const how = msg.debug ? ' (developer: Own)' : '';
       if (msg.to === this.you) {
-        this.hud.feed([this.who(this.you), ` ${took} ${city.n}`, ...from], cls);
+        this.hud.feed([this.who(this.you), ` ${took} ${city.n}`, ...from, how], cls);
         // You took the city you were looking at: select it, so you can build there at once.
-        if (msg.liberated && this.inspect?.k === 'c' && this.inspect.id === msg.city) this.selectCity(msg.city);
+        if ((msg.liberated || msg.debug) && this.inspect?.k === 'c' && this.inspect.id === msg.city) this.selectCity(msg.city);
       } else if (msg.from === this.you) {
         playSound('city-lost');     // wherever the city is, on screen or not
-        const refund = msg.refund ? ` (+${msg.refund} gold from its queue refunded)` : '';
-        this.hud.feed([this.who(msg.to), ` ${took} your city ${city.n}!${refund}`], cls);
+        this.cityLost(msg.city, now);
+        const back = [msg.refund ? `+${msg.refund} gold` : '', msg.refundHonor ? `+${msg.refundHonor} honor` : ''].filter(Boolean);
+        const refund = back.length ? ` (${back.join(', ')} from its queue refunded)` : '';
+        // The first time, how to get there.
+        const look = this.toldLostKey ? '' : ' Shift + Space shows it.';
+        this.toldLostKey = true;
+        this.hud.feed([this.who(msg.to), ` ${took} your city ${city.n}!${refund}${how}${look}`], cls);
       }
-      else this.hud.feed([this.who(msg.to), ` ${took} ${city.n}`, ...from]);
+      else this.hud.feed([this.who(msg.to), ` ${took} ${city.n}`, ...from, how]);
       this.regionChanged(msg);
     } else if (msg.kind === 'turn') {
       const need = this.citiesToWin(msg.turn);
@@ -328,6 +415,7 @@ export class GameClient {
       const def = TECHS[msg.tech];
       const what = msg.tech === 'seafaring' ? ': coastal cities build transports (B), and your units can go on board' : '';
       this.hud.feed(`Research complete: ${def.name}${def.levels.length > 1 ? ` ${msg.level}` : ''}${what}`, 'good');
+      playSound('tech-learned');
     } else if (msg.kind === 'liberator') {
       // Death: Liberator. The banner and the panel explain it to the fallen player (hud.js).
       if (msg.player === this.you) this.hud.feed('You have fallen and lost all your gold. You are now a liberator.', 'bad');
@@ -340,6 +428,35 @@ export class GameClient {
       this.hud.feed([this.who(msg.player), ' reset the HP of every unit and city (developer console)']);
     } else if (msg.kind === 'goldSet') {
       this.hud.feed([this.who(msg.player), ` set every player's gold to ${msg.gold.toLocaleString('en-US')} (developer console)`]);
+    } else if (msg.kind === 'speedSet') {
+      this.hud.feed([this.who(msg.player), ` set the game speed to ${msg.speed}× (developer console)`]);
+    } else if (msg.kind === 'honorSet') {
+      this.hud.feed([this.who(msg.player), ` set every player's honor to ${msg.honor.toLocaleString('en-US')} (developer console)`]);
+    } else if (msg.kind === 'learned') {
+      const what = msg.tradition === 'heroes' ? `: select one of your land units and press Make Hero (${HERO.cost} honor)`
+        : msg.tradition === 'mercy' ? `: select one of your land units and press Make Healer (${HEALER.cost} honor)`
+          : msg.tradition === 'honoredDead' ? `: each of your units that falls now gives you ${Math.round(TRADITIONS.honoredDead.lossShare * 100)}% ` +
+            'of its cost in honor'
+            : msg.tradition === 'brotherhood' ? `: Barracks now cost ${TRADITIONS.brotherhood.barracksHonor} honor (Shift + G) or ` +
+              `gold, and build ${TRADITIONS.brotherhood.barracksBuildSpeed} times faster` : '';
+      this.hud.feed(`Tradition learned: ${TRADITIONS[msg.tradition].name}${what}`, 'good');
+      playSound('tradition-learned');
+    } else if (msg.kind === 'ultimate') {
+      // Someone (maybe you) has learned an ultimate tradition: everyone is told. (Learning it only shows
+      // as its countdown in the Players list.)
+      const def = TRADITIONS[msg.tradition], me = msg.player === this.you, their = me ? 'your' : 'their';
+      const effect = msg.tradition === 'lastStand'
+        ? `${their} units deal +${Math.round(def.damageBonus * 100)}% damage, and take ${Math.round(def.damageCut * 100)}% ` +
+          `less while outnumbered ${def.odds} to 1`
+        : `${their} cities train any unit with honor`;
+      const what = ` ${me ? 'have' : 'has'} learned ${def.name}: ${effect}`;
+      this.hud.banner(`${me ? 'You' : this.nameOf(msg.player)}${what}`, 10000);
+      this.hud.feed([this.who(msg.player), what], 'ultimate');
+    } else if (msg.kind === 'promoted') {
+      const what = msg.to === 'healer' ? `a Healer: your units within ${HEALER.radius} km heal`
+        : `${heroName(HERO.kinds[msg.from], true)}: your units within ${HERO.auraRadius} km deal ` +
+          `+${Math.round(HERO.auraBonus * 100)}% damage`;
+      this.hud.feed(`Your ${UNITS[msg.from].name.toLowerCase()} became ${what}`, 'good');
     } else if (msg.kind === 'left') {
       // Sent before the updated player list, so the leaver's colour is still known here.
       this.hud.feed([this.who(msg.player), ' left — their cities are now neutral']);
@@ -369,11 +486,13 @@ export class GameClient {
   }
 
   // The game is over: everyone is revealed, nicknames with colours.
+  // `history`: what happened turn by turn, for the results screen (server/history.js).
   onGameOver(msg) {
     this.ended = true;
     if (msg.players) this.setPlayers(msg.players);
     this.winner = msg.winner;
-    this.hud.showGameOver(msg.winner, this.revealedName(msg.winner));
+    this.history = msg.history || null;
+    this.hud.showGameOver(msg.winner);
   }
 
   // The lobby server reveals every nickname once the game is over (the host's browser never had
@@ -384,21 +503,17 @@ export class GameClient {
     this.hud.renderScores();
     if (msg.reason) {
       this.ended = true;
-      this.hud.showGameOver(-1, null, msg.reason);
+      this.hud.showGameOver(-1, msg.reason);
     } else if (this.ended) {
-      this.hud.showGameOver(this.winner, this.revealedName(this.winner));
+      this.hud.showGameOver(this.winner);
     }
-  }
-
-  revealedName(id) {
-    return (this.revealed && this.revealed.get(id)) || null;
   }
 
   // The link to the host broke (the host closed the game, or the network failed).
   onHostLost(text) {
     if (this.ended) return;
     this.ended = true;
-    this.hud.showGameOver(-1, null, text);
+    this.hud.showGameOver(-1, text);
   }
 
   leave() {
@@ -438,7 +553,8 @@ export class GameClient {
 
   interpolate(now) {
     if (!this.snaps.length) return;
-    const rt = (now - this.offset) / 1000 - INTERP_DELAY;
+    // Faster games send snapshots further apart in game time: the delay stretches with them.
+    const rt = (this.gameClock(now) - this.offset) / 1000 - INTERP_DELAY * Math.max(1, this.timeScale);
     const snaps = this.snaps;
     let s0 = snaps[0], s1 = snaps[0];
     for (let i = snaps.length - 1; i >= 0; i--) {
@@ -461,7 +577,7 @@ export class GameClient {
     // Melee attackers lunge at their target.
     const tsec = now / 1000;
     for (const u of list) {
-      if (!(u.flags & 1) || UNIT_CLASSES[u.t].isRanged || !u.tgt) continue;
+      if (!(u.flags & 1) || this.unitStats(u).attackRange > 0 || !u.tgt) continue;
       const tp = this.targetPos(u.tgt);
       if (!tp) continue;
       const dx = tp[0] - u.x, dy = tp[1] - u.y, d = Math.hypot(dx, dy) || 1;
@@ -472,6 +588,18 @@ export class GameClient {
     list.sort((p, q) => p.dy - q.dy);
     this.renderUnits = list;
   }
+
+  // A unit's numbers (UNITS). A Hero has its own HP and damage but the speed and range of its kind, which
+  // its snapshot flags carry (shared/protocol.js).
+  unitStats(u) {
+    const def = UNITS[UNIT_TYPES[u.t]];
+    if (!def.hero) return def;
+    const kind = UNITS[this.heroKind(u)];
+    return { ...def, moveSpeed: kind.moveSpeed, attackRange: kind.attackRange };
+  }
+
+  // What a Hero was made from (HERO_KINDS: infantry, archer or cavalry).
+  heroKind(u) { return HERO_KINDS[heroKindOf(u.flags)] || 'infantry'; }
 
   targetPos(tgt) {
     if (tgt > 0) {
@@ -493,7 +621,7 @@ export class GameClient {
       if (now < next) continue;
       const tp = this.targetPos(u.tgt);
       if (!tp) continue;
-      if (UNIT_CLASSES[u.t].isRanged) {
+      if (this.unitStats(u).attackRange > 0) {
         const d = Math.hypot(tp[0] - u.x, tp[1] - u.y);
         fx.shots.push({
           x0: u.x, y0: u.y - 4, x1: tp[0] + (Math.random() - 0.5) * 4, y1: tp[1] - 3 + (Math.random() - 0.5) * 4,
@@ -531,6 +659,29 @@ export class GameClient {
     fx.markers = alive(fx.markers, 550);
     fx.flashes = alive(fx.flashes, 1600);
     fx.regions = alive(fx.regions, REGION_GLOW.ms);
+    fx.lost = alive(fx.lost, LOST_PING.ms);
+  }
+
+  // One of your cities was captured, wherever it is: it pings on the minimap (render.js drawLostPing),
+  // whose frame glows red, and Shift + Space now shows it.
+  cityLost(ci, now) {
+    this.lostCity = ci;
+    const fx = this.effects;
+    fx.lost = fx.lost.filter((e) => e.city !== ci);
+    fx.lost.push({ city: ci, t0: now });
+    this.renderer.alertMinimap();
+  }
+
+  // Shift + Space: the camera goes to your city captured last, and a red ring flashes on it.
+  showLostCity() {
+    const ci = this.lostCity;
+    if (ci < 0) {
+      this.hud.feed('None of your cities has been captured yet');
+      return;
+    }
+    const c = this.map.cities[ci];
+    this.input.centerOn(c.x, c.y);
+    this.effects.flashes.push({ city: ci, color: '#ff4a3a', t0: performance.now() });
   }
 
   // ---------------------------------------------------------------- view
@@ -655,6 +806,15 @@ export class GameClient {
     if (this.isLiberator() && this.myInfluence().length) this.link.send({ t: 'liberate' });
   }
 
+  // "Own" (debug builds): the city becomes yours at once. The host ignores it outside debug builds.
+  canTakeCity(ci) {
+    return this.cityOwner[ci] !== this.you && !this.ended && !this.players.get(this.you)?.eliminated;
+  }
+
+  takeCity(ci) {
+    if (this.canTakeCity(ci)) this.link.send({ t: 'takeCity', city: ci });
+  }
+
   // Start or stop smuggling from a city (its mark is separate from influence marks).
   toggleSmuggling(ci) {
     if (this.isLiberator() && this.otherMark('smuggle', ci) < 0) this.link.send({ t: 'smuggle', city: ci });
@@ -669,8 +829,62 @@ export class GameClient {
   }
 
   // Technologies (Tech window).
+  // Research (or queue, while one runs) the next level of `key` not yet planned.
   startResearch(key) { this.link.send({ t: 'research', tech: key }); }
-  cancelResearch() { this.link.send({ t: 'cancelResearch' }); }
+  // Cancels that level of `key`, running or queued, and the higher levels of it queued after it.
+  cancelResearch(key, level) { this.link.send({ t: 'cancelResearch', tech: key, level }); }
+  // The research running and the queue after it, in order: [{ tech, level }].
+  researchPlan() {
+    const levels = { ...this.myTech() };
+    const keys = this.research ? [this.research.tech, ...this.researchQueue] : [];
+    return keys.map((tech) => ({ tech, level: levels[tech] = (levels[tech] || 0) + 1 }));
+  }
+  // The level of `key` once the research running and the queue are done.
+  plannedTechLevel(key) {
+    return this.researchPlan().reduce((n, e) => (e.tech === key ? Math.max(n, e.level) : n), this.myTech()[key] || 0);
+  }
+
+  // ---------------------------------------------------------------- honor (Honor window, Heroes)
+  hasTradition(key) { return this.traditions.has(key); }
+  // Seconds an upgrade takes to build: Barracks build barracksBuildSpeed times faster with Brotherhood of Arms.
+  upgradeBuildTime(def) {
+    const fast = def === CITY_UPGRADES.barracks && this.hasTradition('brotherhood');
+    return fast ? def.buildTime / TRADITIONS.brotherhood.barracksBuildSpeed : def.buildTime;
+  }
+  // Learn `key`, or queue it while another is learned.
+  startLearning(key) { this.link.send({ t: 'learn', tradition: key }); }
+  // Cancels `key`, being learned or queued (a tier I one takes the queued tier II ones with it).
+  cancelLearning(key) { this.link.send({ t: 'cancelLearn', tradition: key }); }
+  // Learned, being learned or queued?
+  plansTradition(key) {
+    return this.hasTradition(key) || this.learning?.tradition === key || this.learnQueue.includes(key);
+  }
+
+  isHealer(t) { return !!UNITS[UNIT_TYPES[t]]?.healer; }
+  // Made from another unit (Hero, Healer): can't be made one again.
+  isPromoted(t) { return !!UNITS[UNIT_TYPES[t]]?.promoted; }
+
+  // Your selected plain land units: the ones that could be made a Hero or a Healer (not disbanding).
+  promotionCandidates() {
+    return this.selectedLandUnits().filter((id) => !this.isPromoted(this.unitById.get(id).t));
+  }
+
+  // Make Hero / Make Healer (`to`): the one selected plain land unit becomes a Hero (tradition Cult of
+  // Heroes, HERO.cost honor) or a Healer (Order of Mercy, HEALER.cost honor).
+  promote(to = 'hero') {
+    const ids = this.promotionCandidates();
+    const rule = to === 'healer' ? { tradition: 'mercy', cost: HEALER.cost } : { tradition: 'heroes', cost: HERO.cost };
+    const name = UNITS[to].name;
+    if (!this.hasTradition(rule.tradition)) {
+      this.hud.feed(`${name}s need the tradition ${TRADITIONS[rule.tradition].name}: learn it in the Honor window (O)`, 'bad');
+    } else if (ids.length !== 1) {
+      this.hud.feed(`Select a single land unit to make it a ${name}`, 'bad');
+    } else if (this.honor < rule.cost) {
+      this.hud.feed(`A ${name} costs ${rule.cost} honor: you have ${this.honor}`, 'bad');
+    } else {
+      this.link.send({ t: 'promote', id: ids[0], ...(to === 'healer' ? { to } : {}) });
+    }
+  }
 
   // The game balance changed (already applied to the config by main.js): redraw everything
   // that shows stats, costs or build times.
@@ -752,8 +966,9 @@ export class GameClient {
 
   // Seconds until the next turn pays out, from the server clock estimate.
   secondsToNextTurn(now = performance.now()) {
+    if (this.prestart && this.nextTurnAt != null) return this.nextTurnAt - this.snapTime;   // stopped until the start
     if (this.offset === null || this.nextTurnAt == null) return null;
-    return Math.max(0, this.nextTurnAt - (now - this.offset) / 1000);
+    return Math.max(0, this.nextTurnAt - (this.gameClock(now) - this.offset) / 1000);
   }
 
   // A clock tick as the countdown reaches 3, 2 and 1 seconds, the moments the top bar shows them.
@@ -784,7 +999,7 @@ export class GameClient {
   // Your units, counting the ones on board your transports.
   ownUnitCount() {
     let n = 0;
-    for (const u of this.renderUnits) if (u.owner === this.you) n += 1 + (u.flags >> 5);
+    for (const u of this.renderUnits) if (u.owner === this.you) n += 1 + (u.flags >> CARGO_SHIFT);
     return n;
   }
 
@@ -920,7 +1135,7 @@ export class GameClient {
     if (!ids.length) return;
     this.boardRound = -1;
     this.link.send({ t: 'disband', ids });
-    const aboard = ids.reduce((n, id) => n + (this.unitById.get(id).flags >> 5), 0);
+    const aboard = ids.reduce((n, id) => n + (this.unitById.get(id).flags >> CARGO_SHIFT), 0);
     this.hud.feed(`${ids.length} unit${ids.length === 1 ? ' is' : 's are'} disbanding` +
       (aboard ? ` — the ${aboard} on board will sink with ${ids.length === 1 ? 'it' : 'them'}` : ''), aboard ? 'bad' : '');
   }
@@ -954,7 +1169,7 @@ export class GameClient {
   filterFull(full) {
     const isFull = (u) => {
       const cap = UNITS[UNIT_TYPES[u.t]].capacity;
-      return cap > 0 && u.flags >> 5 >= cap;
+      return cap > 0 && u.flags >> CARGO_SHIFT >= cap;
     };
     const ids = [...this.selection].filter((id) => {
       const u = this.unitById.get(id);
@@ -972,7 +1187,7 @@ export class GameClient {
   selectedTransports(loaded = false) {
     return [...this.selection].filter((id) => {
       const u = this.unitById.get(id);
-      return u && u.owner === this.you && UNITS[UNIT_TYPES[u.t]].capacity > 0 && (!loaded || u.flags >> 5 > 0);
+      return u && u.owner === this.you && UNITS[UNIT_TYPES[u.t]].capacity > 0 && (!loaded || u.flags >> CARGO_SHIFT > 0);
     });
   }
 
@@ -983,7 +1198,7 @@ export class GameClient {
   commandBoard(ship) {
     const ids = this.selectedLandUnits();
     if (!ids.length || !this.hasSeafaring(true)) return;
-    if (ship.flags >> 5 >= UNITS[UNIT_TYPES[ship.t]].capacity) {
+    if (ship.flags >> CARGO_SHIFT >= UNITS[UNIT_TYPES[ship.t]].capacity) {
       this.hud.feed('This transport is full', 'bad');
       return;
     }
@@ -1031,10 +1246,12 @@ export class GameClient {
 
   // Queue one unit or upgrade (`item`) in every selected city, as far as the gold reaches.
   // An upgrade queues its next grade in each city and is skipped where every grade is built or
-  // queued; ships are built only in coastal cities.
-  build(item) {
+  // queued; ships are built only in coastal cities. `honor`: paid with honor instead of gold, as far as
+  // the honor reaches (honorPrice: Barracks with Brotherhood of Arms, units with Eternal Glory).
+  build(item, honor = false) {
     let cities = [...this.selectedCities].filter((ci) => this.cityOwner[ci] === this.you);
     if (!cities.length) return;
+    if (honor && this.honorPrice(item) === null) return;
     if (UNITS[item]?.naval) {
       if (!this.hasSeafaring(true)) return;
       cities = cities.filter((ci) => this.isCoastal(ci));
@@ -1046,15 +1263,18 @@ export class GameClient {
     const isUpgrade = !!CITY_UPGRADES[item];
     const defOf = (key) => UNITS[key] || CITY_UPGRADES[key];
     const queued = [];       // [city, what it queues]: an upgrade's grade can differ from city to city
-    let gold = this.gold, full = 0, done = 0, short = null;
+    // What is spent: gold, or honor for honor Barracks. priceOf(def) is what one costs in it.
+    const money = honor ? 'honor' : 'gold';
+    const priceOf = (key) => (honor ? this.honorPrice(key) : defOf(key).cost);
+    let left = honor ? this.honor : this.gold, full = 0, done = 0, short = null;
     for (const ci of cities) {
       const q = this.myQueues.get(ci);
       if (q && q.queue.length >= ECONOMY.maxQueue) { full++; continue; }
       const key = isUpgrade ? this.nextUpgrade(ci, item) : item;
       if (!key) { done++; continue; }
-      const { cost } = defOf(key);
-      if (gold < cost) { short ||= defOf(key); continue; }
-      gold -= cost;
+      const price = priceOf(key);
+      if (left < price) { short ||= key; continue; }
+      left -= price;
       queued.push([ci, key]);
     }
     // Units are named in lower case inside a sentence ("not enough gold for infantry"), upgrades not ("Wall II").
@@ -1063,27 +1283,39 @@ export class GameClient {
       const top = defOf(isUpgrade ? upgradeGrades(item).at(-1) : item);
       const msg = done === cities.length ? `${top.name} is already built or on its way`
         : full + done === cities.length ? 'Production queue is full'
-          : `Not enough gold for ${inText(short)} (${short.cost})`;
+          : `Not enough ${money} for ${inText(defOf(short))} (${priceOf(short)})`;
       this.hud.feed(msg, 'bad');
       return;
     }
-    this.link.send({ t: 'build', cities: queued.map(([ci]) => ci), item });
+    this.link.send({ t: 'build', cities: queued.map(([ci]) => ci), item, ...(honor ? { honor: true } : {}) });
     // Optimistic update so rapid key presses reflect immediately; the next snapshot corrects it.
-    this.gold = gold;
+    if (honor) this.honor = left;
+    else this.gold = left;
     for (const [ci, key] of queued) {
-      const entry = this.myQueues.get(ci) || { progress: 0, queue: [], rally: null, seaRally: null };
+      const entry = this.myQueues.get(ci) || { progress: 0, queue: [], rally: null, seaRally: null, honorPaid: [] };
+      const paid = entry.queue.map((_, i) => entry.honorPaid[i] || 0);
       entry.queue = entry.queue.concat([PRODUCTION_ITEMS.indexOf(key)]);
+      entry.honorPaid = paid.concat([honor ? priceOf(key) : 0]);
       this.myQueues.set(ci, entry);
     }
     if (cities.length > 1 && queued.length + done < cities.length) {
       const names = [...new Set(queued.map(([, key]) => defOf(key).name))].join(' / ');
       this.hud.feed(`${names} queued in ${queued.length} of ${cities.length} cities` +
-        (queued.length + full + done < cities.length ? ' — not enough gold for the rest' : ''), 'bad');
+        (queued.length + full + done < cities.length ? ` — not enough ${money} for the rest` : ''), 'bad');
     }
   }
 
   cancel(ci, index) {
     this.link.send({ t: 'cancel', city: ci, index });
+  }
+
+  // What honor pays for this item (a unit type or an upgrade key), or null when it can't: Barracks with
+  // Brotherhood of Arms, any trained unit with Eternal Glory (the host's Game.honorPrice).
+  honorPrice(key) {
+    if (key === 'barracks' && this.hasTradition('brotherhood')) return TRADITIONS.brotherhood.barracksHonor;
+    const unit = UNITS[key];
+    if (unit && !unit.promoted && this.hasTradition('eternalGlory')) return unit.cost * TRADITIONS.eternalGlory.unitHonorFactor;
+    return null;
   }
 
   // Set (or with x = null clear) the rally points of the given cities: on land for the units they

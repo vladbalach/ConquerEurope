@@ -22,7 +22,7 @@ everyone is revealed.
   because anyone can read the network messages.
 - **Everyone is revealed when the game ends.** As soon as the game is over (someone won), identities are no longer
   secret:
-  - The game-over screen names the winner by nickname and lists every player with their colour and nickname.
+  - The results screen names the winner by nickname and lists every player by nickname, written in their colour.
   - The server sends the full list only at that moment.
   - From then on the lobby may show the finished game's players with their colours.
 - **Rejoining still works by nickname,** because it happens in the lobby, before entering the game.
@@ -38,8 +38,9 @@ everyone is revealed.
   nicknames, so keeping them would let a client match nicknames to colours.
 - For a game in progress the lobby lists nicknames only, alphabetically: no city counts, and no connection or
   elimination status that could be matched with the in-game event feed.
-- When the game ends, the `gameover` message carries every player's nickname and colour. The game-over screen
-  names the winner and lists everyone, and the Players overlay adds the nicknames.
+- When the game ends, the `gameover` message carries every player's nickname and colour. The results screen
+  names the winner and lists everyone, and the Players overlay adds the nicknames. Players who gave up during the
+  game are revealed too (the lobby server keeps them for that).
 - **Browser-to-browser play** (the game runs in the host player's browser, see README): the lobby server gives the
   host only ids and colours, so the host's browser never has a nickname either. The nicknames come from the lobby
   server (`reveal`) once the game is over or the host has left.

@@ -49,35 +49,67 @@ test('options are checked and clamped: unknown modes, junk and out-of-range numb
 // setup() gives A and B half the map each: how many cities a player holds.
 const held = (game, p) => game.cities.filter((c) => c.owner === p.id).length;
 
-test('the game ends when someone holds the current target, which the countdown lowers', () => {
+test('the game ends when someone holds the target at the end of a turn, and the countdown lowers it', () => {
   const { game, a, b } = setup();
   const n = held(game, a);                            // A and B hold n cities each
   game.options = { countdown: 'turn', countdownTurn: 5, winCities: n + 5 };
   const from = game.cities.find((c) => c.owner === b.id);
   from.owner = a.id;                                  // A n + 1, B n - 1
   game.turn = 5;
-  game.recount();
-  assert.equal(game.status, 'running', 'turn 5: still n + 5');
-  game.turn = 8;                                      // n + 5 - 3 = n + 2
-  game.recount();
+  game.endTurn();                                     // turn 6 ends: still n + 5
+  assert.equal(game.status, 'running', 'turn 6: still n + 5');
+  game.turn = 7;
+  game.endTurn();                                     // turn 8 ends: n + 5 - 2 = n + 3
   assert.equal(game.status, 'running');
-  game.turn = 9;                                      // n + 1
+  assert.equal(game.turn, 8, 'the next turn: target n + 2');
+  game.endTurn();
+  assert.equal(game.status, 'running', 'n + 1 is not n + 2');
+  assert.equal(game.citiesToWin(), n + 1, 'A holds the new target...');
   game.recount();
+  assert.equal(game.status, 'running', '...but wins only if they still hold it when this turn ends');
+  game.endTurn();
   assert.equal(game.status, 'ended');
   assert.equal(game.winner, a.id);
   assert.notEqual(game.winner, b.id);
+  assert.equal(game.turn, 9, 'the turn that decided the game is not paid out');
 });
 
-test('when the target reaches several players, the most cities win; an exact tie plays on', () => {
+test('reaching the target during a turn is not enough: it must still be held when the turn ends', () => {
+  const { game, a, b, run } = setup();
+  const n = held(game, a);
+  game.options = { countdown: 'none', countdownTurn: 10, winCities: n + 2 };
+  const taken = game.cities.filter((c) => c.owner === b.id).slice(0, 2);
+  for (const c of taken) game.captureCity(c, a.id);   // A n + 2: the target, in the middle of the turn
+  run(1);
+  assert.equal(game.status, 'running', 'no win before the turn is over');
+  game.captureCity(taken[0], b.id);                   // B takes one back: A n + 1
+  game.nextTurnAt = game.time;                        // the turn ends on the next tick
+  const turn = game.turn;
+  run(0.05);
+  assert.equal(game.status, 'running', 'A lost the target before the turn ended: the game goes on');
+  assert.equal(game.turn, turn + 1);
+
+  game.captureCity(taken[0], a.id);                   // A n + 2 again, and holds it this time
+  run(1);
+  assert.equal(game.status, 'running');
+  game.nextTurnAt = game.time;
+  run(0.05);
+  assert.equal(game.status, 'ended', 'held to the end of the turn');
+  assert.equal(game.winner, a.id);
+});
+
+test('when several players hold the target at the end of a turn, the most cities win; an exact tie plays on', () => {
   const { game, a, b } = setup();
   const n = held(game, a);                            // n each
   game.options = { countdown: 'start', countdownTurn: 10, winCities: 120 };
-  game.turn = 120 - n;                                // target n: both reach it with the same count
-  game.recount();
+  game.turn = 120 - n;                                // target n: both hold it with the same count
+  game.endTurn();
   assert.equal(game.status, 'running', 'a tie is not a win');
   const city = game.cities.find((c) => c.owner === a.id);
   city.owner = b.id;                                  // B pulls ahead: n + 1 to n - 1
   game.recount();
+  assert.equal(game.status, 'running', 'not before the turn ends');
+  game.endTurn();
   assert.equal(game.status, 'ended');
   assert.equal(game.winner, b.id);
 });
@@ -87,11 +119,11 @@ test('without a countdown the target stays where the host set it', () => {
   const n = held(game, a);                            // n each
   game.options = { countdown: 'none', countdownTurn: 10, winCities: n + 1 };
   game.turn = 200;
-  game.recount();
+  game.endTurn();
   assert.equal(game.status, 'running', 'n cities are not n + 1');
   game.options = { ...game.options, winCities: n };
   game.cities.find((c) => c.owner === 1).owner = 0;   // n + 1 to n - 1: player 0 holds enough
-  game.recount();
+  game.endTurn();
   assert.equal(game.status, 'ended');
   assert.equal(game.winner, 0);
 });

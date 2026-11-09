@@ -8,6 +8,7 @@ export const COUNTRIES = [
   { name: 'Castile', cities: [['Madrid', 40.42, -3.70], ['Valladolid', 41.65, -4.72], ['Santiago', 42.88, -8.54], ['Oviedo', 43.36, -5.85], ['Bilbao', 43.26, -2.93], ['Mérida', 38.92, -6.34]] },
   { name: 'Aragon', cities: [['Barcelona', 41.39, 2.17], ['Zaragoza', 41.65, -0.89], ['Valencia', 39.47, -0.38]] },
   { name: 'Andalusia', cities: [['Seville', 37.39, -5.98], ['Granada', 37.18, -3.60], ['Córdoba', 37.88, -4.78]] },
+  { name: 'Balearics', cities: [['Palma', 39.57, 2.65]] },
 
   { name: 'France', cities: [['Paris', 48.86, 2.35], ['Orléans', 47.90, 1.90], ['Rouen', 49.44, 1.10], ['Reims', 49.26, 4.03], ['Lille', 50.63, 3.06]] },
   { name: 'Brittany', cities: [['Rennes', 48.11, -1.68], ['Brest', 48.39, -4.49], ['Nantes', 47.22, -1.55]] },
@@ -18,7 +19,7 @@ export const COUNTRIES = [
   { name: 'Scotland', cities: [['Edinburgh', 55.95, -3.19], ['Glasgow', 55.86, -4.25], ['Aberdeen', 57.15, -2.09], ['Inverness', 57.48, -4.22]] },
   { name: 'Shetland', cities: [['Lerwick', 60.15, -1.15]] },
   { name: 'Ireland', cities: [['Dublin', 53.35, -6.26], ['Cork', 51.90, -8.47], ['Galway', 53.27, -9.05], ['Belfast', 54.60, -5.93]] },
-  { name: 'Iceland', cities: [['Reykjavík', 64.15, -21.94], ['Akureyri', 65.68, -18.09]] },
+  { name: 'Iceland', cities: [['Reykjavík', 64.15, -21.94], ['Akureyri', 65.68, -18.09], ['Egilsstaðir', 65.27, -14.39]] },
 
   { name: 'Netherlands', cities: [['Amsterdam', 52.37, 4.90], ['Groningen', 53.22, 6.57], ['Eindhoven', 51.44, 5.47], ['Brussels', 50.85, 4.35], ['Luxembourg', 49.61, 6.13]] },
   { name: 'Prussia', cities: [['Berlin', 52.52, 13.40], ['Magdeburg', 52.13, 11.63], ['Rostock', 54.09, 12.10], ['Königsberg', 54.71, 20.51]] },
@@ -30,6 +31,7 @@ export const COUNTRIES = [
   { name: 'Austria', cities: [['Vienna', 48.21, 16.37], ['Salzburg', 47.81, 13.04], ['Innsbruck', 47.27, 11.39], ['Graz', 47.07, 15.44], ['Ljubljana', 46.06, 14.51]] },
 
   { name: 'Savoy', cities: [['Turin', 45.07, 7.69], ['Milan', 45.46, 9.19], ['Genoa', 44.41, 8.93]] },
+  { name: 'Corsica', cities: [['Ajaccio', 41.93, 8.74]] },
   { name: 'Sardinia', cities: [['Cagliari', 39.22, 9.12], ['Sassari', 40.73, 8.56]] },
   { name: 'Venice', cities: [['Venice', 45.44, 12.32], ['Verona', 45.44, 10.99]] },
   { name: 'Papal States', cities: [['Rome', 41.90, 12.50], ['Bologna', 44.49, 11.34], ['Florence', 43.77, 11.26], ['Ancona', 43.62, 13.52]] },
@@ -38,7 +40,7 @@ export const COUNTRIES = [
   { name: 'Malta', cities: [['Valletta', 35.90, 14.51]] },
 
   { name: 'Denmark', cities: [['Copenhagen', 55.68, 12.57], ['Aarhus', 56.16, 10.20], ['Aalborg', 57.05, 9.92]] },
-  { name: 'Norway', cities: [['Oslo', 59.91, 10.75], ['Bergen', 60.39, 5.32], ['Trondheim', 63.43, 10.40], ['Bodø', 67.28, 14.40], ['Tromsø', 69.65, 18.96]] },
+  { name: 'Norway', cities: [['Oslo', 59.91, 10.75], ['Bergen', 60.39, 5.32], ['Trondheim', 63.43, 10.40], ['Bodø', 67.28, 14.40], ['Tromsø', 69.65, 18.96], ['Karasjok', 69.47, 25.51]] },
   { name: 'Sweden', cities: [['Stockholm', 59.33, 18.07], ['Gothenburg', 57.71, 11.97], ['Kalmar', 56.66, 16.36], ['Sundsvall', 62.39, 17.31], ['Luleå', 65.58, 22.15]] },
   { name: 'Finland', cities: [['Helsinki', 60.17, 24.94], ['Turku', 60.45, 22.27], ['Kuopio', 62.89, 27.68], ['Oulu', 65.01, 25.47]] },
 
@@ -63,7 +65,9 @@ export const COUNTRIES = [
   { name: 'Zaporozhia', cities: [['Poltava', 49.59, 34.55], ['Kharkiv', 49.99, 36.23], ['Dnipro', 48.46, 35.05], ['Odesa', 46.48, 30.72], ['Simferopol', 44.95, 34.10]] },
   { name: 'Muscovy', cities: [['Moscow', 55.76, 37.62], ['Smolensk', 54.78, 32.05], ['Tula', 54.19, 37.62], ['Yaroslavl', 57.63, 39.87], ['Nizhny Novgorod', 56.33, 44.00], ['Voronezh', 51.66, 39.20]] },
   { name: 'Novgorod', cities: [['Saint Petersburg', 59.94, 30.31], ['Novgorod', 58.52, 31.27], ['Petrozavodsk', 61.79, 34.35], ['Arkhangelsk', 64.54, 40.54], ['Murmansk', 68.97, 33.07]] },
-  { name: 'Golden Horde', cities: [['Kazan', 55.79, 49.11], ['Samara', 53.20, 50.15], ['Saratov', 51.53, 46.03], ['Volgograd', 48.71, 44.51], ['Astrakhan', 46.35, 48.04], ['Rostov', 47.24, 39.72]] },
+  { name: 'Yugra', cities: [['Ukhta', 63.56, 53.68], ['Ivdel', 60.69, 60.43]] },
+  { name: 'Kazan Khanate', cities: [['Kazan', 55.79, 49.11], ['Samara', 53.20, 50.15], ['Kungur', 57.43, 56.95], ['Ufa', 54.73, 55.97]] },
+  { name: 'Golden Horde', cities: [['Saratov', 51.53, 46.03], ['Volgograd', 48.71, 44.51], ['Astrakhan', 46.35, 48.04], ['Rostov', 47.24, 39.72]] },
 
   { name: 'Ottomans', cities: [['Istanbul', 41.01, 28.98], ['Edirne', 41.68, 26.56], ['Izmir', 38.42, 27.14], ['Ankara', 39.93, 32.86]] },
   { name: 'Anatolia', cities: [['Konya', 37.87, 32.48], ['Antalya', 36.90, 30.70], ['Trabzon', 41.00, 39.72], ['Erzurum', 39.90, 41.27], ['Adana', 37.00, 35.32]] },

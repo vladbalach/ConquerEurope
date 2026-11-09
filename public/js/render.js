@@ -1,11 +1,12 @@
 // Canvas renderer: cached map layer (sea, land, territories, borders, labels),
 // then ports, cities, units, ships and effects on top every frame. Also draws the minimap.
-import { UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, PRODUCTION_ITEMS, ECONOMY } from '/shared/config.js';
-import { unitSprite, castleSprite, anchorBadge, CONE, CASTLE_ANCHOR, mix } from './sprites.js';
+import { UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, PRODUCTION_ITEMS, ECONOMY, HERO, HEALER } from '/shared/config.js';
+import { unitSprite, standFirmSprite, castleSprite, anchorBadge, CONE, CASTLE_ANCHOR, mix } from './sprites.js';
 import { regionIndex, regionLabelSizes, placeLabels, regionOutlines } from './map-labels.js';
 import { forEachCoastPiece } from '/shared/coastline.js';
+import { CARGO_SHIFT, STAND_FIRM_FLAG } from '/shared/protocol.js';
 
-const SEA = '#1f3d58';
+export const SEA = '#1f3d58';
 const LAND = '#dccfa8';
 const LAND_DIM = '#a9a088';
 const TERRITORY_ALPHA = 0.5;
@@ -29,6 +30,15 @@ const COUNTRY_LABEL = { alpha: 0.3, spacing: 0.18, labelZoom: 0.5 };
 // time, its outline lights up behind the wave, and each city it reaches bursts with a gold ring
 // and shows the gold it now pays more ("+2/turn"). Its name shines in gold for the first half.
 export const REGION_GLOW = { ms: 4200, spread: 0.35 };
+// One of your cities is captured (client.js): for `ms` it pings on the minimap. A red ring goes out
+// from it every `every` ms, `waves` times, and a red frame blinks around its marker.
+export const LOST_PING = { ms: 7000, every: 1100, waves: 4 };
+const LOST_RED = '#ff4a3a';
+// The minimap: players resize it by dragging its top-right corner (input.js), and the browser keeps
+// that width for their next games (`key`). Never narrower than `min` CSS px; never wider than
+// `maxShare` of the screen, nor so tall that less than `topRoom` px is left above it (the top bar
+// and the first lines of the feed).
+const MINI = { min: 80, maxShare: 0.45, topRoom: 190, key: 'coe.minimapWidth' };
 const LABEL_FONT = (px) => `600 ${px}px 'Palatino Linotype', Georgia, serif`;
 const CITY_FONT = (px) => `600 ${px}px system-ui, 'Segoe UI', sans-serif`;
 // Close up: castle sprite size and city name font size in screen px at zoom z.
@@ -42,6 +52,21 @@ function addRing(path, r) {
 }
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+// The minimap width the player chose, or null for the default (private mode: no storage, the default).
+function loadMiniWidth() {
+  try {
+    const w = Number(localStorage.getItem(MINI.key));
+    return w > 0 ? w : null;
+  } catch { return null; }
+}
+
+function saveMiniWidth(w) {
+  try {
+    if (w == null) localStorage.removeItem(MINI.key);
+    else localStorage.setItem(MINI.key, String(Math.round(w)));
+  } catch { /* private mode: kept for this page only */ }
+}
 
 // The lines of the map: coastlines, region borders and the borders between cities of one region.
 // A ring edge that another landmass shares is a land border, not coast. Land borders
@@ -74,6 +99,9 @@ export class Renderer {
     this.ctx = canvas.getContext('2d');
     this.mini = minimap;
     this.mctx = minimap.getContext('2d');
+    this.miniWrap = minimap.parentElement;
+    this.miniWrap.onanimationend = () => this.miniWrap.classList.remove('alert');
+    this.miniPref = loadMiniWidth();  // the width the player gave the minimap, or null: the default
     this.mapLayer = document.createElement('canvas');
     this.mapKey = '';
     this.miniBase = document.createElement('canvas');
@@ -178,18 +206,67 @@ export class Renderer {
     this.mapLayer.width = this.canvas.width;
     this.mapLayer.height = this.canvas.height;
     this.mapKey = '';
+    this.sizeMinimap();
+  }
 
-    const b = this.g.map.bounds;
-    const mw = Math.min(230, Math.max(140, this.W * 0.16));
-    const mh = mw * (b.y1 - b.y0) / (b.x1 - b.x0);
+  // ---------------------------------------------------------------- minimap size
+  // The minimap's width on this screen when the player hasn't chosen one: a sixth of the screen,
+  // within 140–230 px, and 60% of that on a narrow screen (≤ 900 px, as in style.css).
+  miniDefaultWidth() {
+    const w = clamp(this.W * 0.16, 140, 230);
+    return this.W <= 900 ? Math.round(w * 0.6) : w;
+  }
+
+  // The minimap's size: the width the player gave it, or the default, within what this screen leaves
+  // room for (MINI). Its height follows the map. Also after the window is resized.
+  sizeMinimap() {
+    const b = this.g.map.bounds, ratio = (b.y1 - b.y0) / (b.x1 - b.x0), dpr = this.dpr;
+    const max = Math.max(MINI.min, Math.min(this.W * MINI.maxShare, (this.H - MINI.topRoom) / ratio));
+    const mw = Math.round(clamp(this.miniPref ?? this.miniDefaultWidth(), MINI.min, max));
+    const mh = mw * ratio;
+    const pw = Math.round(mw * dpr), ph = Math.round(mh * dpr);
+    if (mw === this.miniW && pw === this.mini.width && ph === this.mini.height) return;
     this.miniW = mw; this.miniH = mh;
     this.mini.style.width = `${mw}px`;
     this.mini.style.height = `${mh}px`;
-    this.mini.width = Math.round(mw * dpr);
-    this.mini.height = Math.round(mh * dpr);
-    this.miniBase.width = this.mini.width;
-    this.miniBase.height = this.mini.height;
+    this.mini.width = pw;
+    this.mini.height = ph;
+    this.miniBase.width = pw;
+    this.miniBase.height = ph;
     this.miniVersion = -1;
+    this.miniTime = -Infinity;          // the canvas is blank now: paint the map under it this frame
+    // The panel at the bottom keeps clear of it (style.css, .panel). Its frame: padding and border.
+    const root = document.documentElement.style;
+    root.setProperty('--minimap-w', `${this.miniWrap.offsetWidth || mw + 10}px`);
+    root.setProperty('--minimap-h', `${this.miniWrap.offsetHeight || Math.round(mh) + 10}px`);
+  }
+
+  // Dragging the minimap's corner (input.js): `w` CSS px wide, as far as the screen allows.
+  setMiniWidth(w) {
+    this.miniPref = w;
+    this.sizeMinimap();
+  }
+
+  // The drag is over: the browser keeps the width it ended at for the next games.
+  keepMiniWidth() {
+    this.miniPref = this.miniW;
+    saveMiniWidth(this.miniW);
+  }
+
+  // Double click on the corner: back to the default width for this screen.
+  resetMiniWidth() {
+    this.miniPref = null;
+    saveMiniWidth(null);
+    this.sizeMinimap();
+  }
+
+  // One of your cities was captured: the minimap's frame glows red a few times (style.css) to catch
+  // the eye, while the city pings on it (drawLostPing).
+  alertMinimap() {
+    const wrap = this.miniWrap;
+    wrap.classList.remove('alert');
+    void wrap.offsetWidth;              // restarts the animation when it is already running
+    wrap.classList.add('alert');
   }
 
   // ---------------------------------------------------------------- coordinates
@@ -254,9 +331,9 @@ export class Renderer {
     this.paintCountryLabels(ctx);
   }
 
-  // Draws land, territory tint and borders in world coordinates.
-  paintMap(ctx, z, alpha, detailed) {
-    const g = this.g;
+  // Draws land, territory tint and borders in world coordinates. `owners` and `colorOf`: city owners
+  // and player colours to paint instead of the current ones (the results screen's Timeline).
+  paintMap(ctx, z, alpha, detailed, owners = this.g.cityOwner, colorOf = (o) => this.g.colorOf(o)) {
     if (detailed) {
       ctx.strokeStyle = 'rgba(140,190,215,0.22)';
       ctx.lineWidth = 8 / z;
@@ -276,19 +353,19 @@ export class Renderer {
     ctx.globalAlpha = alpha;
     for (let i = 0; i < this.cityPaths.length; i++) {
       const p = this.cityPaths[i];
-      const o = g.cityOwner[i];
+      const o = owners[i];
       if (!p || o < 0) continue;
-      ctx.fillStyle = g.colorOf(o);
+      ctx.fillStyle = colorOf(o);
       ctx.fill(p, 'evenodd');
     }
     for (const m of this.multi) {
-      if (!m.cells.some((cell) => g.cityOwner[cell.city] >= 0)) continue;
+      if (!m.cells.some((cell) => owners[cell.city] >= 0)) continue;
       ctx.save();
       ctx.clip(m.clip, 'evenodd');
       for (const cell of m.cells) {
-        const o = g.cityOwner[cell.city];
+        const o = owners[cell.city];
         if (o < 0) continue;
-        ctx.fillStyle = g.colorOf(o);
+        ctx.fillStyle = colorOf(o);
         ctx.fill(cell.path);
       }
       ctx.restore();
@@ -811,6 +888,7 @@ export class Renderer {
     // With land units selected, your transports that can take them light up: right-click one to go on board.
     const boarding = g.selection.size > 0 && g.hasSeafaring() && g.selectedLandUnits().length > 0;
     const hoverShip = g.input ? g.input.hoverShip : -1;
+    const healed = this.healedUnits(list);
     for (const u of list) {
       const def = UNITS[UNIT_TYPES[u.t]];
       const rpx = def.size * z;
@@ -822,10 +900,14 @@ export class Renderer {
       const disbanding = u.flags & 4;
       // Only transports with room left: a full one can't take anyone on board. (Distance doesn't matter:
       // a transport sails to the nearest beach of the units' land, however far.)
-      if (boarding && def.capacity && u.owner === g.you && u.flags >> 5 < def.capacity) {
+      if (boarding && def.capacity && u.owner === g.you && u.flags >> CARGO_SHIFT < def.capacity) {
         this.drawBoardGlow(sx, sy, rpx, u.id === hoverShip, now);
       }
       if (disbanding) this.drawDisbandGlow(sx, sy, rpx, u.id, now);   // under the selection ring
+      if (healed.has(u)) this.drawHealGlow(sx, sy, rpx, u.id, now);    // a Healer is mending it
+      if (def.healer && selected) this.drawHealRange(sx, sy);
+      if (def.hero && selected) this.drawAuraRange(sx, sy);
+      if (def.hero && rpx >= 2.6) this.drawHeroRing(sx, sy, rpx);
 
       if (selected || u.id === inspectId) {
         ctx.strokeStyle = selected ? '#9dff6a' : '#ff6a5a';
@@ -836,11 +918,23 @@ export class Renderer {
       if (rpx < 2.6) {
         ctx.fillStyle = color;
         ctx.beginPath(); ctx.arc(sx, sy, Math.max(1.6, rpx), 0, Math.PI * 2); ctx.fill();
+        if (u.flags & STAND_FIRM_FLAG) { // standing firm (Last Stand): a thin red ring around the dot
+          ctx.strokeStyle = 'rgba(240,40,40,0.95)';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath(); ctx.arc(sx, sy, Math.max(1.6, rpx) + 0.9, 0, Math.PI * 2); ctx.stroke();
+        }
+        if (def.hero) {                  // a Hero stays recognisable as a dot: a gold ring
+          ctx.strokeStyle = '#f2cc5c';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(sx, sy, Math.max(1.6, rpx) + 1.8, 0, Math.PI * 2); ctx.stroke();
+        }
         continue;
       }
       if (u.flags & 8 && u.owner === g.you) this.drawHoldMark(sx, sy, rpx);
       const s = rpx / CONE.rx;
-      const sprite = unitSprite(color, u.t);
+      // Standing firm (Last Stand: outnumbered, taking less damage): the same sprite glowing red.
+      const variant = def.hero ? g.heroKind(u) : null;      // a Hero's kind: its mark behind the crown
+      const sprite = u.flags & STAND_FIRM_FLAG ? standFirmSprite(color, u.t, variant) : unitSprite(color, u.t, variant);
       if (def.naval && this.facing.get(u.id) === -1) {
         ctx.save();
         ctx.translate(sx, sy);
@@ -851,7 +945,7 @@ export class Renderer {
         ctx.drawImage(sprite, sx - CONE.cx * s, sy - CONE.by * s, 64 * s, 64 * s);
       }
       if (disbanding) this.drawDisbandMotes(sx, sy, rpx, u.id, now);
-      if (u.flags >> 5) this.drawCargoCount(sx + rpx * 1.15, sy - rpx * 1.45, rpx, u.flags >> 5);
+      if (u.flags >> CARGO_SHIFT) this.drawCargoCount(sx + rpx * 1.15, sy - rpx * 1.45, rpx, u.flags >> CARGO_SHIFT);
 
       if (u.hp < def.hp || selected || disbanding) {
         const bw = Math.max(12, rpx * 2), bh = Math.max(2, rpx * 0.22);
@@ -1013,6 +1107,92 @@ export class Renderer {
     ctx.lineWidth = 1.5;
     ctx.setLineDash([3, 3]);
     ctx.beginPath(); ctx.ellipse(sx, sy, rpx * 1.1 + 1, rpx * 0.55 + 1, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+
+  // A Hero: a gold double ring at its feet, so it stands out in a crowd.
+  drawHeroRing(sx, sy, rpx) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = '#f2cc5c';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(sx, sy, rpx * 1.25 + 2, rpx * 0.62 + 1, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(122,82,18,0.9)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.ellipse(sx, sy, rpx * 1.25 + 4, rpx * 0.62 + 2.5, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+
+  // Units a Healer is mending right now, worked out here with the host's rule (Game.heal): wounded land
+  // units of a Healer's owner within HEALER.radius of it, not disbanding. The snapshot carries every unit
+  // that close to anything in view, so nothing is missed.
+  healedUnits(list) {
+    const out = new Set();
+    const healers = list.filter((u) => UNITS[UNIT_TYPES[u.t]].healer);
+    if (!healers.length) return out;
+    for (const u of list) {
+      const def = UNITS[UNIT_TYPES[u.t]];
+      if (def.naval || u.flags & 4 || u.hp >= def.hp) continue;
+      if (healers.some((h) => h.owner === u.owner && Math.hypot(h.dx - u.dx, h.dy - u.dy) <= HEALER.radius)) out.add(u);
+    }
+    return out;
+  }
+
+  // A unit being healed: a green glow ringed in darker green at its feet (it has to show on the pale
+  // land and on green territories alike), and now and then a green cross rising from it.
+  drawHealGlow(sx, sy, rpx, id, now) {
+    const ctx = this.ctx;
+    const pulse = 0.5 + 0.5 * Math.sin(now / 260 + id * 0.9);
+    const rx = Math.max(4, rpx * 1.45);
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.scale(1, 0.5);
+    const grad = ctx.createRadialGradient(0, 0, rx * 0.25, 0, 0, rx);
+    grad.addColorStop(0, `rgba(60,210,90,${0.6 + 0.2 * pulse})`);
+    grad.addColorStop(0.75, `rgba(40,170,70,${0.35 + 0.15 * pulse})`);
+    grad.addColorStop(1, 'rgba(30,140,60,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(0, 0, rx, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle = `rgba(20,120,45,${0.75 + 0.25 * pulse})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.ellipse(sx, sy, rx * 0.85, rx * 0.42, 0, 0, Math.PI * 2); ctx.stroke();
+    if (rpx < 4) return;
+    const t = ((now / 1400 + id * 0.37) % 1);          // a cross rising and fading, once every 1.4 s
+    const s = Math.max(4, rpx * 0.5), y = sy - rpx * (0.9 + 1.6 * t), x = sx + rpx * 0.75;
+    const cross = new Path2D();
+    cross.rect(x - s / 6, y - s / 2, s / 3, s);
+    cross.rect(x - s / 2, y - s / 6, s, s / 3);
+    ctx.globalAlpha = 1 - t;
+    ctx.strokeStyle = '#0f3d1a';
+    ctx.lineWidth = 2;
+    ctx.stroke(cross);
+    ctx.fillStyle = '#5dea6f';
+    ctx.fill(cross);
+    ctx.globalAlpha = 1;
+  }
+
+  // Your selected Healer: how far it heals (HEALER.radius), a faint green dashed circle.
+  drawHealRange(sx, sy) {
+    const ctx = this.ctx, r = HEALER.radius * this.g.cam.zoom;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(30,140,60,0.75)';          // shows on the pale land and on territories alike
+    ctx.fillStyle = 'rgba(60,200,90,0.07)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+
+  // Your selected Hero: how far its aura reaches (HERO.auraRadius), a faint gold dashed circle.
+  drawAuraRange(sx, sy) {
+    const ctx = this.ctx, r = HERO.auraRadius * this.g.cam.zoom;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(150,105,20,0.8)';          // shows on the pale land and on territories alike
+    ctx.fillStyle = 'rgba(230,180,60,0.06)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     ctx.restore();
   }
 
@@ -1194,5 +1374,38 @@ export class Renderer {
     ctx.strokeStyle = 'rgba(255,255,255,0.9)';
     ctx.lineWidth = 1;
     ctx.strokeRect((v.x0 - b.x0) * s + 0.5, (v.y0 - b.y0) * s + 0.5, (v.x1 - v.x0) * s, (v.y1 - v.y0) * s);
+
+    // Your cities captured in the last few seconds, on top of everything.
+    for (const e of g.effects.lost) this.drawLostPing(ctx, e, now);
+  }
+
+  // One of your cities was just captured (LOST_PING): red rings go out from it on the minimap, a dark
+  // edge under each so they show on sea and land alike, and a red frame blinks around its marker.
+  // In minimap CSS px.
+  drawLostPing(ctx, e, now) {
+    const P = LOST_PING, age = now - e.t0;
+    if (age < 0 || age > P.ms) return;
+    const b = this.g.map.bounds, s = this.miniScale(), c = this.g.map.cities[e.city];
+    const x = (c.x - b.x0) * s, y = (c.y - b.y0) * s;
+    const reach = clamp(this.miniW * 0.09, 14, 44);         // how far a ring goes, with the minimap's size
+    const ring = (r, alpha) => {
+      ctx.globalAlpha = alpha;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 3.5; ctx.stroke();
+      ctx.strokeStyle = LOST_RED; ctx.lineWidth = 2; ctx.stroke();
+    };
+    for (let k = 0; k < P.waves; k++) {
+      const t = (age - k * P.every) / (P.every * 1.4);
+      if (t >= 0 && t <= 1) ring(4 + t * reach, 1 - t * t);
+    }
+    // The frame: on, off, about three times a second; fades out in the last second.
+    if (Math.floor(age / 160) % 2 === 0) {
+      ctx.globalAlpha = Math.min(1, (P.ms - age) / 1000);
+      ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 3.5;
+      ctx.strokeRect(x - 5, y - 5, 10, 10);
+      ctx.strokeStyle = LOST_RED; ctx.lineWidth = 2;
+      ctx.strokeRect(x - 5, y - 5, 10, 10);
+    }
+    ctx.globalAlpha = 1;
   }
 }

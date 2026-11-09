@@ -1,16 +1,31 @@
 // DOM HUD: resource bar, selection panel (city production / units / info), feed, overlays.
 import {
   UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES, PRODUCTION_ITEMS, ECONOMY, DISBAND, LIBERATOR, TECHS, TECH_TYPES,
-  TECH_TABS, PLAYER_COLOR_NAMES, NAVAL,
+  TECH_TABS, NAVAL, HONOR, TRADITIONS, TRADITION_TYPES, HERO, HEALER, GAME, DEBUG,
 } from '/shared/config.js';
 import { nextLevel, liberatorIncome, influenceLimit } from '/shared/tech.js';
 import { upgradeGrades, higherGrades, topGrades } from '/shared/upgrades.js';
-import { unitIconURL, unitEmblemURL, upgradeIconURL, techIconURL } from './sprites.js';
+import { CARGO_SHIFT } from '/shared/protocol.js';
+import { unitIconURL, unitEmblemURL, upgradeIconURL, techIconURL, traditionIconURL, traditionSmallIconURL } from './sprites.js';
 import { UNIT_CLASSES } from './units/index.js';
+import { heroName } from './units/Hero.js';
 import { BalanceEditor } from './balance-editor.js';
+import { Results } from './results.js';
 
 const $ = (id) => document.getElementById(id);
 const HINT_CLOSED_KEY = 'coe.hintClosed';   // the player closed the "how to play" tip (localStorage)
+
+// The share of a killed unit's cost its killer gets in gold (ECONOMY.killGoldShare), e.g. "25%".
+const killShareText = () => `${Math.round(ECONOMY.killGoldShare * 1000) / 10}%`;
+const goldText = (n) => `${Math.round(n * 10) / 10} gold`;
+// The honor a kill gives (HONOR.killShare of the unit's cost): "its cost", or e.g. "50% of its cost".
+const honorShareText = () => (HONOR.killShare === 1 ? 'its cost' : `${Math.round(HONOR.killShare * 1000) / 10}% of its cost`);
+const honorFor = (type) => Math.floor(UNITS[type].cost * HONOR.killShare);
+// Seconds as m:ss, rounded up (a cooldown shows 0:01 until it is really over).
+const clock = (sec) => { const s = Math.ceil(sec); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+// How research goes, on every tab of the Tech window.
+const RESEARCH_QUEUE_TEXT = 'One research at a time; order more meanwhile and they are queued, each paid when ordered, ' +
+  'and researched one after another. Cancel or remove one to get its gold back.';
 
 function loadHintClosed() {
   try { return localStorage.getItem(HINT_CLOSED_KEY) === '1'; } catch { return false; }
@@ -20,7 +35,7 @@ function loadHintClosed() {
 // Purple). Names in such a colour get a light backing instead (CSS .who.dark).
 const PANEL_LUMINANCE = 0.0068;      // the feed's background, about #19130c
 const darkCache = new Map();
-function tooDark(hex) {
+export function tooDark(hex) {
   if (!darkCache.has(hex)) {
     const n = parseInt(String(hex).slice(1), 16);
     const lin = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
@@ -39,7 +54,7 @@ export function colorTag(text, color) {
   return s;
 }
 
-function el(tag, attrs = {}, ...children) {
+export function el(tag, attrs = {}, ...children) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === 'class') e.className = v;
@@ -87,6 +102,7 @@ export class Hud {
       [$('btn-beach-del'), 'click', () => this.g.setBeachBrush('del')],
       [$('btn-scores'), 'click', () => this.showScores($('scoreboard').hidden)],
       [$('btn-tech'), 'click', () => this.toggleTech()],
+      [$('stat-honor'), 'click', () => this.toggleHonor()],
       [$('btn-help'), 'click', () => this.toggleHelp()],
       [$('help-close'), 'click', () => this.toggleHelp(false)],
       [$('help-tabs'), 'click', (e) => {
@@ -96,7 +112,6 @@ export class Hud {
       [$('btn-leave'), 'click', () => {
         if (this.g.ended || confirm('Leave this game? Your cities will become neutral.')) this.g.leave();
       }],
-      [$('gameover-leave'), 'click', () => this.g.leave()],
       [window, 'keyup', (e) => { if (e.key === 'Shift') this.applyPicks(); }],
       [window, 'blur', () => this.applyPicks()],         // Shift released outside the page
     ];
@@ -105,16 +120,25 @@ export class Hud {
     $('hud-title').textContent = game.title;
     $('stat-gold').title = `Gold. Every ${ECONOMY.turnSeconds} seconds (one turn) each city you hold pays ` +
       `${ECONOMY.goldPerCityPerTurn} gold, +${ECONOMY.regionBonusPerCity} if you hold every city of its region, ` +
-      `more with a Farm. F1 → Economy explains it all.`;
+      `more with a Farm. Every kill pays ${killShareText()} of the unit's cost. F1 → Economy explains it all.`;
+    $('stat-honor').title = `Honor: every enemy unit you destroy (your units and cities alike) gives you ${honorShareText()} ` +
+      `in honor: ${UNITS.infantry.name} ${honorFor('infantry')}, ${UNITS.knight.name} ${honorFor('knight')}. ` +
+      'Click (or O) for the Honor window: learn traditions with it, such as Heroes.';
     $('stat-turn').title = `Turns passed since the start, and time until the next turn pays out gold ` +
       `(${ECONOMY.goldPerCityPerTurn} per city, more for Farms and whole regions).`;
-    $('gameover').hidden = true;
+    // Once the game is over: every player's stats and the timeline, full screen or as a bar at the top.
+    this.results = new Results(game);
     $('scoreboard').hidden = true;
     $('help').hidden = true;
     $('tech').hidden = true;
+    $('honor').hidden = true;
+    this.honorKey = null;
     this.techTab = TECH_TABS[0].id;
     this.techKey = null;
     $('banner').hidden = true;
+    $('race').hidden = true;
+    $('prestart').hidden = true;
+    this.prestartTimer = 0;
     this.feedEl.textContent = '';
     this.panel.textContent = '';
     this.buildCol.hidden = true;
@@ -146,7 +170,10 @@ export class Hud {
   destroy() {
     for (const [t, ev, fn] of this.handlers) t.removeEventListener(ev, fn);
     clearTimeout(this.bannerTimer);
+    clearTimeout(this.prestartTimer);
+    $('prestart').hidden = true;
     this.editor.root.remove();
+    this.results.destroy();
   }
 
   // New game balance from the server: rebuild everything that shows stats, costs or times.
@@ -163,6 +190,7 @@ export class Hud {
 
   // ---------------------------------------------------------------- overlays
   showScores(show) {
+    if (show && this.results.isOpen) return;     // the results screen has every player already
     $('scoreboard').hidden = !show;
     if (show) this.renderScores();
   }
@@ -210,10 +238,15 @@ export class Hud {
     $('help-economy').replaceChildren(
       el('h3', {}, 'Economy'),
       el('p', {}, 'Gold pays for units and city upgrades. You pay when you order them, and you start with ',
-        b(E.startGold), ' gold. Cities are the only source of gold:'),
+        b(E.startGold), ' gold. Gold comes from cities and from fighting:'),
       el('table', {},
         row('Every city', 'Every ', b(`${E.turnSeconds} seconds`), ' (one turn) each city you hold pays you ',
           b(`${E.goldPerCityPerTurn} gold`), '. The gold of all your cities arrives at once at the end of the turn.'),
+        row('Kills', 'Destroy an enemy unit and you get ', b(`${killShareText()} of its cost`), ' in gold at once (',
+          `${UNITS.infantry.name} ${goldText(UNITS.infantry.cost * E.killGoldShare)}, ${UNITS.knight.name} ` +
+          `${goldText(UNITS.knight.cost * E.killGoldShare)}), and `, b(`${honorShareText()} in honor`),
+          ' (the star in the top bar). The kill goes to whoever landed the last hit; your cities\' kills are yours. ' +
+          'Units on board a transport you sink count too. Kills by neutral cities pay nobody.'),
         row('Whole region', 'The map is split into regions: their names are printed on the map and dark lines are ' +
           'their borders (faint lines divide the cities of one region). Hold every city of a region and each of them pays ',
           b(`+${E.regionBonusPerCity} gold`), ' more per turn. Lose one of them and the whole region loses the bonus. ' +
@@ -275,18 +308,19 @@ export class Hud {
   toggleTech(force, tab) {
     const box = $('tech');
     box.hidden = force === undefined ? !box.hidden : !force;
+    if (!box.hidden) $('honor').hidden = true;       // the Honor window opens in the same place
     if (tab) this.techTab = tab;
     this.techKey = null;
     this.renderTech();
   }
 
-  // Rebuilt only when what it shows changes (levels, the research running, the tab), so a click
-  // never lands on a replaced button; progress and gold are kept current by refreshTech().
+  // Rebuilt only when what it shows changes (levels, the research running and queued, the tab), so a
+  // click never lands on a replaced button; progress and gold are kept current by refreshTech().
   renderTech() {
     const box = $('tech');
     if (box.hidden) return;
     const g = this.g, r = g.research;
-    const key = [this.techTab, JSON.stringify(g.myTech()), r ? r.tech : '', g.options.death].join('|');
+    const key = [this.techTab, JSON.stringify(g.myTech()), r ? r.tech : '', g.researchQueue.join(','), g.options.death].join('|');
     if (key === this.techKey) { this.refreshTech(); return; }
     this.techKey = key;
     this.techDyn = [];
@@ -308,16 +342,34 @@ export class Hud {
       if (tab.id === 'rebellion') {
         body.append(el('p', { class: 'muted small' }, 'Rebellion technologies work only while you are a liberator ' +
           '(after losing every city and unit). You can research them at any time, also before you fall. ' +
-          'One research at a time; cancel it to get its gold back. F1 → Liberator explains it all.'));
+          `${RESEARCH_QUEUE_TEXT} F1 → Liberator explains it all.`));
       } else if (tab.id === 'sea') {
         body.append(el('p', { class: 'muted small' }, 'Ships and the sea. Sea technologies work as soon as they are ' +
-          'researched. One research at a time; cancel it to get its gold back.'));
+          `researched. ${RESEARCH_QUEUE_TEXT}`));
       }
       for (const k of TECH_TYPES.filter((t) => TECHS[t].tab === tab.id)) body.append(this.techCard(k));
     }
-    box.replaceChildren(el('h3', {}, 'Technologies'), tabs, body,
-      el('button', { type: 'button', class: 'primary tech-close', onclick: () => this.toggleTech(false) }, 'Close'));
+    box.replaceChildren(...[el('h3', {}, 'Technologies'), tabs, this.researchQueueLine(), body,
+      el('button', { type: 'button', class: 'primary tech-close', onclick: () => this.toggleTech(false) }, 'Close')].filter(Boolean));
     this.refreshTech();
+  }
+
+  // The levels queued after the research running, in order and across tabs, each with ✕ to take it out
+  // of the queue (with the higher levels of it after it). Null when none is queued.
+  researchQueueLine() {
+    const g = this.g, queued = g.researchPlan().slice(1);
+    if (!queued.length) return null;
+    return el('div', { class: 'plan-queue' }, el('span', { class: 'muted small' }, 'Queued:'),
+      ...queued.map((e, i) => {
+        const def = TECHS[e.tech], cost = def.levels[e.level - 1]?.cost ?? 0;
+        const higher = queued.some((o) => o.tech === e.tech && o.level > e.level);
+        return el('span', { class: 'plan-item' }, `${i + 1}. ${def.name}${def.levels.length > 1 ? ` ${e.level}` : ''}`,
+          el('button', {
+            type: 'button', 'aria-label': 'Remove',
+            title: `Take it out of the queue: ${cost} gold back${higher ? ' (and the higher levels after it, as they need it)' : ''}`,
+            onclick: () => g.cancelResearch(e.tech, e.level),
+          }, '✕'));
+      }));
   }
 
   techEffect(key, level) {
@@ -352,10 +404,13 @@ export class Hud {
     return `Take ${Math.round(T.smuggling.share * 100)}% of the income of the cities you mark`;
   }
 
-  // A technology: its picture, name and level, what it is for, the details, and research.
+  // A technology: its picture, name and level, what it is for, the details, and research: the level
+  // running (progress, Cancel), the levels queued, and the next level to order (queued while one runs).
   techCard(key) {
     const g = this.g, def = TECHS[key], level = g.myTech()[key] || 0, max = def.levels.length;
-    const next = nextLevel(key, level), r = g.research;
+    const r = g.research, running = r && r.tech === key ? nextLevel(key, level) : null;
+    const queued = g.researchPlan().slice(1).filter((e) => e.tech === key).map((e) => e.level);
+    const next = nextLevel(key, g.plannedTechLevel(key));
     const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
     const body = el('div', { class: 'tech-body' },
       el('div', { class: 'tech-head' },
@@ -364,22 +419,34 @@ export class Hud {
         max > 1 ? el('span', { class: 'muted small' }, `Level ${level}/${max}`) : null),
       el('div', { class: 'tech-summary' }, this.techSummary(key)),
       el('div', { class: 'tech-text' }, this.techEffect(key, level)));
-    const card = el('div', { class: `tech-card${next ? '' : ' done'}` },
+    const card = el('div', { class: `tech-card${level < max ? '' : ' done'}` },
       el('img', { class: 'tech-icon', src: techIconURL(key, g.colorOf(g.you)), alt: '' }), body);
-    if (r && r.tech === key && next) {
+    if (running) {
       const fill = el('i'), left = el('span', { class: 'muted small' });
+      const also = queued.length ? ' (and the higher levels queued after it, as they need it)' : '';
       body.append(el('div', { class: 'tech-actions' },
         el('div', { class: 'tech-progress' }, fill), left,
-        el('button', { type: 'button', title: `Stop and get ${next.cost} gold back`, onclick: () => this.g.cancelResearch() }, 'Cancel')));
-      this.techDyn.push({ kind: 'progress', fill, left, time: next.time, fmt });
-    } else if (next) {
+        el('button', { type: 'button', title: `Stop and get ${running.cost} gold back${also}`, onclick: () => g.cancelResearch(key, running.level) }, 'Cancel')));
+      this.techDyn.push({ kind: 'progress', fill, left, time: running.time, fmt });
+    }
+    if (queued.length) {
+      const last = queued.at(-1), cost = def.levels[last - 1]?.cost ?? 0;
+      body.append(el('div', { class: 'tech-actions' },
+        el('span', { class: 'tech-queued' }, max > 1 ? `Queued: level ${queued.join(', ')}` : 'Queued'),
+        el('button', {
+          type: 'button', title: `Take ${max > 1 ? `level ${last}` : 'it'} out of the queue: ${cost} gold back`,
+          onclick: () => g.cancelResearch(key, last),
+        }, 'Remove')));
+    }
+    if (next) {
+      // While a research runs, the next one ordered is queued after it (and the queue).
       const btn = el('button', {
         type: 'button', class: 'primary',
-        onclick: (e) => { e.currentTarget.disabled = true; this.g.startResearch(key); },
-      }, max > 1 ? `Research level ${next.level}` : 'Research');
+        onclick: (e) => { e.currentTarget.disabled = true; g.startResearch(key); },
+      }, `${r ? 'Queue' : 'Research'}${max > 1 ? ` level ${next.level}` : ''}`);
       body.append(el('div', { class: 'tech-actions' }, btn, el('span', { class: 'tech-price' }, `${next.cost} gold · ${fmt(next.time)}`)));
       this.techDyn.push({ kind: 'button', btn, cost: next.cost });
-    } else {
+    } else if (level >= max) {
       body.append(el('div', { class: 'tech-actions tech-done' }, max > 1 ? '✓ Fully researched' : '✓ Researched'));
     }
     return card;
@@ -394,19 +461,189 @@ export class Hud {
         const text = `${d.fmt(Math.max(0, d.time - done))} left`;
         if (d.left.textContent !== text) d.left.textContent = text;
       } else {
-        const busy = !!r, poor = g.gold < d.cost;
-        d.btn.disabled = busy || poor;
-        d.btn.title = busy ? `Already researching ${TECHS[r.tech].name}: one at a time` : poor ? `Needs ${d.cost} gold` : '';
+        const poor = g.gold < d.cost;
+        d.btn.disabled = poor;
+        d.btn.title = poor ? `Needs ${d.cost} gold`
+          : r ? `Paid now; it starts once ${TECHS[r.tech].name}${g.researchQueue.length ? ' and the queue' : ''} is done. ` +
+            'Take it out of the queue to get the gold back.' : '';
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- Honor window (O, or click the honor star)
+  // Traditions, learned with honor. Rebuilt only when what it shows changes (traditions learned, the one
+  // being learned), so a click never lands on a replaced button; refreshHonor() keeps the rest current.
+  toggleHonor(force) {
+    const box = $('honor');
+    box.hidden = force === undefined ? !box.hidden : !force;
+    if (!box.hidden) $('tech').hidden = true;        // the Tech window opens in the same place
+    this.honorKey = null;
+    this.renderHonor();
+  }
+
+  renderHonor() {
+    const box = $('honor');
+    if (box.hidden) return;
+    const g = this.g, l = g.learning;
+    const key = [[...g.traditions].join(','), l ? l.tradition : '', g.learnQueue.join(',')].join('|');
+    if (key === this.honorKey) { this.refreshHonor(); return; }
+    this.honorKey = key;
+    const amount = el('b');
+    this.honorDyn = [{ kind: 'amount', amount }];
+    box.replaceChildren(
+      el('h3', {}, 'Honor'),
+      el('div', { class: 'honor-have' }, el('span', { class: 'honor' }), amount,
+        el('span', { class: 'muted small' }, `honor · every enemy unit you or your cities destroy gives ${honorShareText()} ` +
+          `(${UNITS.infantry.name} ${honorFor('infantry')}, ${UNITS.knight.name} ${honorFor('knight')})`)),
+      el('p', { class: 'muted small' }, 'Traditions are learned once and kept for the whole game. They cost honor, not ' +
+        'gold, and take a while to learn: one at a time, alongside your research. Order more meanwhile and they are ' +
+        'queued, each paid when ordered, and learned one after another. Cancel or remove one to get its honor back.'),
+      el('h4', { class: 'honor-sub' }, 'Traditions'),
+      ...TRADITION_TYPES.map((k) => this.traditionCard(k)),
+      el('button', { type: 'button', class: 'primary tech-close', onclick: () => this.toggleHonor(false) }, 'Close'));
+    this.refreshHonor();
+  }
+
+  // What a tradition is for, in a few words (under its name), and what it does.
+  traditionSummary(key) {
+    if (key === 'heroes') return 'Make any of your land units a Hero';
+    if (key === 'brotherhood') return 'Build Barracks with honor instead of gold';
+    if (key === 'mercy') return 'Turn any of your land units into a Healer';
+    if (key === 'honoredDead') return 'Your fallen units bring you honor';
+    if (key === 'eternalGlory') return 'Train any unit with honor instead of gold';
+    if (key === 'lastStand') return 'Your units strike harder and hold firm when outnumbered';
+    return '';
+  }
+
+  traditionText(key) {
+    if (key === 'heroes') {
+      const h = UNITS.hero;
+      return `Then select one of your land units and press Make Hero in its panel (${HERO.cost} honor each): it becomes ` +
+        `a Hero where it stands, keeping its orders and its share of HP. A Hero has ${h.hp} HP and ${h.damage} damage/s, ` +
+        `and the speed and range of what it was: infantry and archers make Infantry and Archer Heroes, cavalry and ` +
+        `knights make Cavalry Heroes. All the time, every land unit of yours within ${HERO.auraRadius} km of a Hero, ` +
+        `the Hero too, deals +${Math.round(HERO.auraBonus * 100)}% damage. Several Heroes don't add up.`;
+    }
+    if (key === 'mercy') {
+      const h = UNITS.healer;
+      return `Then select one of your land units and press Make Healer in its panel (${HEALER.cost} honor each): it ` +
+        `becomes a Healer where it stands, keeping its orders and its share of HP. A Healer (${h.hp} HP, ${h.damage} ` +
+        `damage/s, speed ${h.moveSpeed}) restores ${HEALER.hpPerSecond} HP per second to every land unit of yours within ` +
+        `${HEALER.radius} km, itself included, even in the middle of a fight. Several Healers don't add up: a unit gets ` +
+        `${HEALER.hpPerSecond} HP per second at most.`;
+    }
+    if (key === 'brotherhood') {
+      const b = CITY_UPGRADES.barracks, { barracksHonor: price, barracksBuildSpeed: speed } = TRADITIONS.brotherhood;
+      return `Then any of your cities can build its ${b.name} for ${price} honor instead of ${b.cost} gold: the same ` +
+        `building, and units train twice as fast there. Pay with gold or with honor, as you like (Shift + G, or the ` +
+        `honor button under ${b.name}); either way it builds ${speed} times faster, in ${b.buildTime / speed} s instead ` +
+        `of ${b.buildTime} s. Cancel it in the queue to get the honor back. A captured city loses its ${b.name}, and ` +
+        `the honor spent on it is lost.`;
+    }
+    if (key === 'eternalGlory') {
+      const f = TRADITIONS.eternalGlory.unitHonorFactor;
+      const ex = ['infantry', 'archer', 'cavalry', 'knight', 'transport'].map((t) => `${UNITS[t].name} ${UNITS[t].cost * f}`);
+      return `A tier II tradition, open only once every tier I tradition is learned. Then every city can train ` +
+        `any unit for honor, at ${f} times its gold cost: ${ex.join(', ')}. Use the Gold / Honor switch in the Units ` +
+        `box, or Shift + the unit's key. While you learn it, every player can see its countdown in the Players list ` +
+        '(Tab), and everyone is told once you have learned it.';
+    }
+    if (key === 'honoredDead') {
+      const share = TRADITIONS.honoredDead.lossShare, pct = Math.round(share * 1000) / 10;
+      const ex = ['infantry', 'archer', 'cavalry', 'knight'].map((t) => `${UNITS[t].name} ${Math.round(UNITS[t].cost * share * 10) / 10}`);
+      return `From then on, every unit of yours that falls in battle gives you ${pct}% of its cost in honor: ` +
+        `${ex.join(', ')}. Units on board a sunk ship count too. Units you disband don't count, unless an enemy hit ` +
+        `them in their last ${DISBAND.killCreditSeconds} seconds.`;
+    }
+    if (key === 'lastStand') {
+      const d = TRADITIONS.lastStand;
+      return `A tier II tradition, open only once every tier I tradition is learned. Then all your units deal ` +
+        `${Math.round(d.damageBonus * 100)}% more damage (on top of a Hero's). A unit, or a ship, with at least ${d.odds} ` +
+        `times as many enemy units as units of yours (itself included) within ${d.radius} km of it takes ` +
+        `${Math.round(d.damageCut * 100)}% less damage, and glows red meanwhile. While you learn it, every player can ` +
+        'see its countdown in the Players list (Tab), and everyone is told once you have learned it.';
+    }
+    return '';
+  }
+
+  // A tradition, one row as tall as its picture: the picture, name and what it is for, then learning it on
+  // the right. The details are the row's tooltip.
+  traditionCard(key) {
+    const g = this.g, def = TRADITIONS[key], learned = g.hasTradition(key), l = g.learning, queuedAt = g.learnQueue.indexOf(key);
+    const icon = traditionIconURL(key, g.colorOf(g.you));
+    const price = el('span', { class: 'tech-price' }, `${def.cost} honor · ${clock(def.time)}`);
+    const body = el('div', { class: 'tech-body' },
+      el('div', { class: 'tech-head' }, el('b', { class: def.ultimate ? 'ultimate' : '' }, def.name),
+        def.ultimate ? el('span', { class: 'ultimate-tag' }, 'Tier II') : null),
+      el('div', { class: 'tech-summary' }, this.traditionSummary(key)));
+    const actions = el('div', { class: 'tech-actions' });
+    const card = el('div', { class: `tech-card honor-card${learned ? ' done' : ''}`, title: this.traditionText(key) },
+      el('img', { class: 'tech-icon', src: icon, alt: '' }), body, actions);
+    // An ultimate (tier II) tradition waits for every tier I one: learned, or queued ahead of it.
+    const missing = def.ultimate ? TRADITION_TYPES.filter((k) => !TRADITIONS[k].ultimate && !g.plansTradition(k)) : [];
+    // A tier I tradition cancelled takes the queued tier II ones with it.
+    const also = !def.ultimate && g.learnQueue.some((k) => TRADITIONS[k].ultimate) ? ' (and the tier II traditions queued, as they need it)' : '';
+    if (learned) {
+      actions.classList.add('tech-done');
+      actions.append('✓ Learned');
+    } else if (l && l.tradition === key) {
+      const fill = el('i'), left = el('span', { class: 'muted small' });
+      actions.append(el('div', { class: 'tech-progress' }, fill), left,
+        el('button', { type: 'button', title: `Stop and get ${def.cost} honor back${also}`, onclick: () => g.cancelLearning(key) }, 'Cancel'));
+      this.honorDyn.push({ kind: 'progress', fill, left, time: def.time });
+    } else if (queuedAt >= 0) {
+      actions.append(el('span', { class: 'tech-queued' }, `Queued #${queuedAt + 1}`),
+        el('button', { type: 'button', title: `Take it out of the queue: ${def.cost} honor back${also}`, onclick: () => g.cancelLearning(key) }, 'Remove'));
+    } else if (missing.length) {
+      actions.append(price, el('span', {
+        class: 'ultimate-lock',
+        title: `Learn or queue every tier I tradition first. Missing: ${missing.map((k) => TRADITIONS[k].name).join(', ')}`,
+      }, '🔒 Locked'));
+    } else {
+      // While one is learned, the next one ordered is queued after it (and the queue).
+      const btn = el('button', {
+        type: 'button', class: 'primary',
+        onclick: (e) => { e.currentTarget.disabled = true; g.startLearning(key); },
+      }, l ? 'Queue' : 'Learn');
+      actions.append(price, btn);
+      this.honorDyn.push({ kind: 'button', btn, cost: def.cost });
+    }
+    return card;
+  }
+
+  refreshHonor() {
+    const g = this.g, l = g.learning;
+    for (const d of this.honorDyn || []) {
+      if (d.kind === 'amount') {
+        const text = String(g.honor);
+        if (d.amount.textContent !== text) d.amount.textContent = text;
+      } else if (d.kind === 'progress') {
+        const done = l ? l.progress : 0;
+        d.fill.style.width = `${Math.min(1, done / d.time) * 100}%`;
+        const text = `${clock(Math.max(0, d.time - done))} left`;
+        if (d.left.textContent !== text) d.left.textContent = text;
+      } else {
+        const poor = g.honor < d.cost;
+        d.btn.disabled = poor;
+        const why = poor ? `Needs ${d.cost} honor (you have ${g.honor})`
+          : l ? `Paid now; learned once ${TRADITIONS[l.tradition].name}${g.learnQueue.length ? ' and the queue' : ''} is done. ` +
+            'Take it out of the queue to get the honor back.' : '';
+        // No reason: no tooltip of its own, so the row's details show over the button too.
+        if (why) d.btn.title = why;
+        else { d.btn.removeAttribute('title'); delete d.btn.dataset.tip; }
       }
     }
   }
 
   closeOverlays() {
-    const open = !$('help').hidden || !$('scoreboard').hidden || !$('tech').hidden || this.editor.isOpen;
+    const results = this.results.isOpen;
+    const open = !$('help').hidden || !$('scoreboard').hidden || !$('tech').hidden || !$('honor').hidden || this.editor.isOpen || results;
     $('help').hidden = true;
     $('tech').hidden = true;
+    $('honor').hidden = true;
     $('scoreboard').hidden = true;
     this.editor.close();
+    if (results) this.results.collapse();   // the game is over: Esc folds the results to look around, like the button
     return open;
   }
 
@@ -425,6 +662,7 @@ export class Hud {
         el('th', {}, 'Units'),
         el('th', { class: 'num', title: 'Gold value of enemy units this player destroyed' }, 'Kills'),
         el('th', { class: 'num', title: 'Gold value of units this player lost' }, 'Losses'),
+        el('th', { title: 'Traditions the player has learned (Honor window). Everyone sees them.' }, 'Traditions'),
         el('th', {}, '')));
     for (const p of rows) {
       const status = p.eliminated ? 'Eliminated'
@@ -439,6 +677,7 @@ export class Hud {
         el('td', {}, String(p.units)),
         el('td', { class: 'num kills' }, gold(p.kills)),
         el('td', { class: 'num losses' }, gold(p.losses)),
+        this.traditionsCell(p),
         el('td', { class: 'muted small' }, status)));
     }
     sb.append(table);
@@ -446,41 +685,67 @@ export class Hud {
     const need = g.citiesToWin();
     sb.append(el('p', { class: 'muted small' },
       `Kills and losses are in gold: the cost of the units destroyed. ${neutral} neutral cities · ` +
-      `${need} cities win${g.countdownRunning() ? ', one fewer at the end of every turn' : ''}`));
+      `${need} cities held at the end of the turn win${g.countdownRunning() ? ', one fewer after every turn' : ''}`));
   }
 
-  // Identities are no longer secret: name the winner and reveal every player's colour and nickname.
-  // `name` arrives from the lobby server shortly after the game ends (the host never has it);
-  // `reason` explains a game that ended early, e.g. the host left.
-  showGameOver(winnerId, name, reason = null) {
-    const g = this.g;
-    $('gameover').hidden = false;
-    if (reason) {
-      $('gameover-title').textContent = 'Game over';
-      $('gameover-text').textContent = reason;
-    } else if (winnerId === g.you) {
-      $('gameover-title').textContent = 'Victory!';
-      $('gameover-text').textContent = 'Europe bows before you.';
-    } else if (winnerId >= 0) {
-      $('gameover-title').textContent = 'Defeat';
-      $('gameover-text').textContent = name ? `${name} (${g.nameOf(winnerId)}) has conquered Europe.`
-        : `${g.nameOf(winnerId)} has conquered Europe.`;
+  // A player's traditions for the Players list: an icon each (the name on hover; the ultimate ones framed
+  // in red), and while they are learning an ultimate one, its name and countdown.
+  traditionsCell(p) {
+    const td = el('td', { class: 'trads' });
+    for (const k of p.traditions || []) {
+      const def = TRADITIONS[k];
+      td.append(el('img', {
+        src: traditionSmallIconURL(k, p.color), alt: def.name, title: def.name, class: def.ultimate ? 'ultimate-icon' : '',
+      }));
+    }
+    const ultimate = TRADITIONS[p.ultimate] ? p.ultimate : null;
+    if (p.ultimateLeft > 0 && ultimate) {
+      td.append(el('span', { class: 'ultimate learning', title: `Learning ${TRADITIONS[ultimate].name}` },
+        `${TRADITIONS[ultimate].name} ${clock(p.ultimateLeft)}`));
+    }
+    if (!td.childNodes.length) td.append(el('span', { class: 'muted small' }, '—'));
+    return td;
+  }
+
+  // Identities are no longer secret: the results screen names the winner and every player with their
+  // nickname, in their colour, with their stats and the timeline of the game (results.js). `reason`
+  // explains a game that ended early, e.g. the host left. Called again when the nicknames arrive from the
+  // lobby server (the host never has them): the screen keeps where the player is.
+  showGameOver(winnerId, reason = null) {
+    clearTimeout(this.prestartTimer);
+    $('prestart').hidden = true;         // e.g. the host left before the start
+    $('scoreboard').hidden = true;
+    this.panelKey = null;                // the how-to-play tip goes: the game is over
+    this.results.show(winnerId, reason);
+  }
+
+  // Before a hosted game starts (info from the host, null once it has): how many players have
+  // loaded it, then the countdown. `go`: it has just started, say so for a moment.
+  renderPrestart(info, go = false) {
+    const box = $('prestart');
+    clearTimeout(this.prestartTimer);
+    box.classList.toggle('go', go);
+    if (go) {
+      box.replaceChildren(el('b', {}, 'Go!'));
+      box.hidden = false;
+      this.prestartTimer = setTimeout(() => { box.hidden = true; }, 1200);
+      return;
+    }
+    box.hidden = !info;
+    if (!info) return;
+    if (info.left === null) {
+      box.replaceChildren(
+        el('div', { class: 'label' }, 'Waiting for every player to load the game'),
+        el('b', {}, `${info.loaded} / ${info.total}`),
+        el('div', { class: 'muted small' }, GAME.startCountdown
+          ? `Then a ${GAME.startCountdown}-second countdown, and the game starts for everyone at once.`
+          : 'Then the game starts for everyone at once.'));
     } else {
-      $('gameover-title').textContent = 'Game over';
-      $('gameover-text').textContent = 'No one is left standing.';
+      box.replaceChildren(
+        el('div', { class: 'label' }, 'The game starts in'),
+        el('b', {}, String(info.left)),
+        el('div', { class: 'muted small' }, 'Look around and plan: orders count from the start.'));
     }
-    const list = $('gameover-players');
-    list.textContent = '';
-    const rows = [...g.players.values()].sort((a, b) => (b.id === winnerId) - (a.id === winnerId) || b.cities - a.cities);
-    for (const p of rows) {
-      list.append(el('li', { class: p.id === g.you ? 'me-row' : '' },
-        el('span', { class: 'swatch', style: `background:${p.color}` }),
-        el('b', {}, PLAYER_COLOR_NAMES[p.color] || '?'),
-        el('span', {}, p.name || ''),
-        el('span', { class: 'muted small' },
-          `${p.id === winnerId ? 'winner · ' : ''}${p.id === g.you ? 'you · ' : ''}${p.cities} cities`)));
-    }
-    list.hidden = !rows.length;
   }
 
   banner(text, ms = 6000) {
@@ -508,12 +773,65 @@ export class Hud {
     if (key === this.winKey) return;
     this.winKey = key;
     $('hud-win').textContent = `/ ${need}${running ? ' ▾' : ''}`;
-    let tip = `Cities you hold. ${need} cities win the game.`;
+    let tip = `Cities you hold. Hold ${need} when the turn ends to win the game.`;
     if (running) tip += `
 The target drops by one city at the end of every turn (it started at ${o.winCities}).`;
     else if (o.countdown === 'turn' && (g.turn || 0) < o.countdownTurn) tip += `
 Once turn ${o.countdownTurn} is over, it drops by one city at the end of every turn.`;
     $('stat-cities').title = tip;
+  }
+
+  // Top centre, for everyone: every player within GAME.closeToWinCities of the target, closest first
+  // ("Maroon needs 10 more cities to win"). Holding the target wins only when the turn ends
+  // (server/game.js, checkCityVictory), so the player who would win then gets a red line with the
+  // time left and how many cities they can still lose. Players are named by colour only.
+  updateRace(now) {
+    const g = this.g, box = $('race');
+    const need = g.citiesToWin();
+    const held = new Map();
+    for (const o of g.cityOwner) if (o >= 0) held.set(o, (held.get(o) || 0) + 1);
+    const close = g.ended ? [] : [...held]
+      .filter(([id, n]) => g.players.has(id) && need - n <= GAME.closeToWinCities)
+      .sort((a, b) => b[1] - a[1]);
+    // The same rule as the server: the one player with the most cities among those holding the target.
+    const top = close.filter(([, n]) => n >= need);
+    const winner = top.length && (top.length === 1 || top[0][1] > top[1][1]) ? top[0][0] : -1;
+    const left = g.secondsToNextTurn(now);
+    const s = left === null ? null : Math.ceil(left);
+    const clock = s === null ? '' : ` (${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')})`;
+    const key = `${need}|${close.map(([id, n]) => `${id}:${n}`).join(',')}|${winner >= 0 ? clock : ''}`;
+    if (key === this.raceKey) return;
+    this.raceKey = key;
+    box.textContent = '';
+    box.hidden = !close.length;
+    const cities = (n) => `${n} ${n === 1 ? 'city' : 'cities'}`;
+    const MAX_LINES = 4;
+    for (const [id, n] of close.slice(0, MAX_LINES)) {
+      const you = id === g.you;
+      let parts;
+      if (id === winner) {
+        const spare = n - need + 1;     // losing this many puts them below the target
+        parts = [you ? ` win when the turn ends${clock} unless you lose ${cities(spare)}`
+          : ` wins when the turn ends${clock} unless they lose ${cities(spare)}`];
+      } else if (n >= need) {
+        const verb = you ? 'hold' : 'holds';
+        parts = winner >= 0 ? [` ${verb} enough cities, but `, g.who(winner), ` ${winner === g.you ? 'hold' : 'holds'} more`]
+          : [` ${verb} enough cities, but ${you ? 'are' : 'is'} tied for the most: a tie plays on`];
+      } else {
+        parts = [` ${you ? 'need' : 'needs'} ${need - n} more ${need - n === 1 ? 'city' : 'cities'} to win`];
+      }
+      box.append(el('div', { class: `${id === winner ? 'wins' : ''}${you ? ' me' : ''}` }, g.who(id), ...parts));
+    }
+    if (close.length > MAX_LINES) {
+      const more = close.length - MAX_LINES;
+      box.append(el('div', { class: 'more' }, `and ${more} more ${more === 1 ? 'player' : 'players'} within ${GAME.closeToWinCities} cities`));
+    }
+  }
+
+  // The game speed (developer console "slomo") shows next to the title while it is not normal.
+  speedChanged() {
+    const s = this.g.timeScale;
+    $('hud-title').textContent = s === 1 ? this.g.title : `${this.g.title} · speed ${s}×`;
   }
 
   // ---------------------------------------------------------------- per frame
@@ -525,6 +843,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     const myCities = g.myCityCount();
     $('hud-gold').textContent = String(g.gold);
     $('hud-income').textContent = `+${g.myIncome()}/turn`;
+    $('hud-honor').textContent = String(g.honor);
     $('hud-turn').textContent = String(g.turn || 0);
     const left = g.secondsToNextTurn(now);
     if (left !== null) {
@@ -534,6 +853,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     }
     $('hud-cities').textContent = String(myCities);
     this.updateWinTarget();
+    this.updateRace(now);
     $('hud-units').textContent = String(g.ownUnitCount());
     // Death: Liberator. Every time you fall, say what you can do now.
     const liberator = g.isLiberator();
@@ -543,6 +863,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     }
     this.liberatorShown = liberator;
     this.renderTech();
+    this.renderHonor();
     if (me && me.eliminated && !g.ended && !this.eliminatedShown) {
       this.eliminatedShown = true;
       this.banner('You have been eliminated. You can keep watching or leave.', 10000);
@@ -565,7 +886,9 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     }
     if (g.selection.size) {
       const ids = this.sortedSelection();
-      return { key: `units:${ids.join(',')}`, kind: 'units', ids };
+      // Rebuilt when a unit becomes a Hero, or once Heroes can be made (the Hero buttons).
+      const promoted = ids.filter((id) => g.isPromoted(g.unitById.get(id)?.t)).length;
+      return { key: `units:${ids.join(',')}:${promoted}:${g.hasTradition('heroes')}:${g.hasTradition('mercy')}`, kind: 'units', ids };
     }
     if (g.inspect) {
       const { k, id } = g.inspect;
@@ -628,7 +951,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       this.dyn = {};
       this.panel.textContent = '';
       // With nothing selected the panel shows a tip; once the tip is closed, the panel only appears for a selection.
-      this.panel.hidden = st.kind === 'none' && this.hintClosed;
+      this.panel.hidden = st.kind === 'none' && (this.hintClosed || this.g.ended);
       this.panel.classList.toggle('units', st.kind === 'units');   // compact, with a height limit
       if (st.kind === 'city') this.buildCityPanel(st);
       else if (st.kind === 'cities') this.buildCitiesPanel(st);
@@ -639,12 +962,13 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       else if (st.kind === 'icity') this.buildCityInfo(st.id);
       else if (st.kind === 'iunit') this.buildUnitInfo(st.u);
       else if (st.kind === 'liberator') this.buildLiberatorPanel();
-      else if (!this.hintClosed) this.buildHint();
+      else if (!this.hintClosed && !this.g.ended) this.buildHint();
     }
     // The column is rebuilt only when the selected cities change, not on every queue change,
     // so a click does not replace the button under the mouse.
     const own = st.kind === 'city' || st.kind === 'cities';
-    const colKey = own ? `${st.kind}:${st.ids.join(',')}` : '';
+    // Also once Brotherhood of Arms is learned: the column gets the honor Barracks button.
+    const colKey = own ? `${st.kind}:${st.ids.join(',')}:${this.g.hasTradition('brotherhood')}:${this.g.hasTradition('eternalGlory')}` : '';
     if (colKey !== this.colKey) {
       this.colKey = colKey;
       this.buildProduction(own ? st : null);
@@ -727,6 +1051,14 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       el('span', { class: 'muted small' }, text));
   }
 
+  // Debug builds: make any city yours at once, to test without conquering it. Everyone is told.
+  ownRow(ci) {
+    const text = 'Debug: this city becomes yours now, like a capture (its upgrades are lost, its queue is refunded).';
+    return el('div', { class: 'liberate' },
+      el('button', { type: 'button', title: text, onclick: () => this.g.takeCity(ci) }, 'Own'),
+      el('span', { class: 'muted small' }, text));
+  }
+
   // How much of the city's region its owner holds: all of it makes each of them pay more gold.
   regionStat(ci) {
     const g = this.g;
@@ -769,7 +1101,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       const lo = Math.min(...values), hi = Math.max(...values);
       return lo === hi ? `${lo}${unit}` : `${lo}–${hi}${unit}`;
     };
-    return `${range(defs.map((d) => d.cost), '')} gold${many ? ' each' : ''} · ${range(defs.map((d) => d.buildTime), 's')}`;
+    return `${range(defs.map((d) => d.cost), '')} gold${many ? ' each' : ''} · ${range(defs.map((d) => this.g.upgradeBuildTime(d)), 's')}`;
   }
 
   // Tooltip of an upgrade button. An upgrade with grades lists them: each order queues the next one.
@@ -801,7 +1133,8 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     return `Needs ${name}: click to research it`;
   }
 
-  unitCostText(def, ids) {
+  // `honor`: the price in honor (Eternal Glory), shown after the honor star.
+  unitCostText(def, ids, honor = false) {
     if (def.naval) {
       if (!this.g.hasSeafaring()) return `🔒 ${TECHS.seafaring.name}`;
       ids = ids.filter((ci) => this.g.isCoastal(ci));
@@ -811,7 +1144,8 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     const times = ids.map((ci) => def.buildTime / (def.naval ? 1 : this.g.cityTrainRate(ci)));
     const lo = Math.min(...times), hi = Math.max(...times);
     const time = hi - lo < 0.05 ? fmt(lo) : `${fmt(lo)}–${fmt(hi)}`;
-    return `${def.cost} gold${ids.length > 1 ? ' each' : ''} · ${time}`;
+    const price = honor ? `${def.cost * TRADITIONS.eternalGlory.unitHonorFactor}` : `${def.cost} gold`;
+    return `${price}${ids.length > 1 ? ' each' : ''} · ${time}`;
   }
 
   // Right-hand column for your selected city, or cities: its upgrades on top, the units it can
@@ -845,11 +1179,14 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       img, el('span', { class: 'nm' }, name, def.hotkey ? el('kbd', {}, def.hotkey) : null), state, eff);
       this.upgradeBox.append(btn);
       buttons.push({ btn, def, item: key, state, eff, name, img, shown: key, color: myColor });
+      if (key === 'barracks' && g.hasTradition('brotherhood')) this.upgradeBox.append(this.honorBarracksButton(buttons, many));
     }
 
     this.unitBox.append(el('h5', {}, 'Units', many ? el('small', {}, 'one in every city') : null));
+    if (g.hasTradition('eternalGlory')) this.unitBox.append(this.paySwitch());
     UNIT_TYPES.forEach((type, t) => {
       const def = UNITS[type];
+      if (def.promoted) return;            // Hero, Healer: made from a unit for honor, never trained
       // Ships only where they can be built: at least one of the selected cities is coastal.
       if (def.naval && !st.ids.some((ci) => g.isCoastal(ci))) return;
       const range = def.attackRange ? `range ${def.attackRange}` : 'melee';
@@ -861,7 +1198,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       // A ship without Seafaring is locked (see refreshDynamic): a click opens the Sea technologies instead.
       const btn = el('button', {
         type: 'button', class: 'build-btn', title: UNIT_CLASSES[t].describe(),
-        onclick: () => (def.naval && !g.hasSeafaring() ? this.toggleTech(true, 'sea') : g.build(type)),
+        onclick: () => (def.naval && !g.hasSeafaring() ? this.toggleTech(true, 'sea') : g.build(type, this.unitsForHonor())),
       },
       el('img', { src: unitIconURL(myColor, t), alt: '' }),
       el('span', { class: 'nm' }, def.name, el('kbd', {}, def.hotkey)),
@@ -871,6 +1208,50 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       buttons.push({ btn, def, item: type, state, eff, about, title: UNIT_CLASSES[t].describe() });
     });
     this.colButtons = buttons;
+  }
+
+  // Eternal Glory: the Units box pays with gold or with honor (TRADITIONS.eternalGlory.unitHonorFactor
+  // times the gold cost). Shift + a unit's key pays with honor either way. Kept for the whole session.
+  paySwitch() {
+    const pick = (honor) => {
+      this.payHonor = honor;
+      gold.classList.toggle('active', !honor);
+      star.classList.toggle('active', honor);
+    };
+    const factor = TRADITIONS.eternalGlory.unitHonorFactor;
+    const gold = el('button', { type: 'button', title: 'Pay for units with gold', onclick: () => pick(false) }, 'Gold');
+    const star = el('button', {
+      type: 'button', title: `Pay for units with honor: ${factor} times their gold cost (${TRADITIONS.eternalGlory.name}). ` +
+        'Shift + a unit\'s key pays with honor either way.',
+      onclick: () => pick(true),
+    }, el('span', { class: 'honor' }), 'Honor');
+    pick(!!this.payHonor);
+    return el('div', { class: 'pay-switch' }, el('span', { class: 'muted small' }, 'Pay with'), gold, star);
+  }
+
+  // Do the unit buttons pay with honor right now?
+  unitsForHonor() {
+    return !!this.payHonor && this.g.hasTradition('eternalGlory');
+  }
+
+  // Brotherhood of Arms: the same Barracks, paid with honor (Shift + G), in the Honor window's colours.
+  // Kept current in refreshDynamic, like the other buttons of the column.
+  honorBarracksButton(buttons, many) {
+    const g = this.g, price = TRADITIONS.brotherhood.barracksHonor, def = CITY_UPGRADES.barracks;
+    const amount = el('span', {}, `${price}${many ? ' each' : ''}`);
+    const state = el('span', { class: 'cost' }, el('span', { class: 'honor' }), amount);
+    const btn = el('button', {
+      type: 'button', class: 'build-btn honor-buy',
+      title: `${def.name} for ${price} honor instead of ${def.cost} gold (${TRADITIONS.brotherhood.name}): the same ` +
+        `building, ${this.upgradeEffect(def)} for the city. Cancel it in the queue to get the honor back.`,
+      onclick: () => g.build('barracks', true),
+    },
+    el('img', { src: upgradeIconURL('barracks', g.colorOf(g.you)), alt: '' }),
+    el('span', { class: 'nm' }, def.name, el('kbd', {}, 'Shift G')),
+    state,
+    el('span', { class: 'eff' }, `for honor · ${g.upgradeBuildTime(def)}s`));
+    buttons.push({ btn, honorBarracks: true, amount, many, price });
+    return btn;
   }
 
   // Several cities selected: the column's orders go to every one of them.
@@ -903,11 +1284,14 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       // Cancelling a grade cancels the higher grades queued after it too (Wall II needs Wall I).
       const along = higherGrades(item).filter((k) => items.includes(PRODUCTION_ITEMS.indexOf(k)))
         .map((k) => CITY_UPGRADES[k].name);
+      const paidHonor = st.q.honorPaid?.[idx] || 0;
+      const refund = paidHonor ? `${paidHonor} honor back` : 'refund';
       queue.append(el('button', {
-        type: 'button', class: 'qitem',
-        title: `${def.name} — click to cancel${along.length ? ` it and the ${along.join(', ')} after it` : ''} (refund)`,
+        type: 'button', class: `qitem${paidHonor ? ' honor-paid' : ''}`,
+        title: `${def.name}${paidHonor ? ` (paid with ${paidHonor} honor)` : ''} — click to cancel` +
+          `${along.length ? ` it and the ${along.join(', ')} after it` : ''} (${refund})`,
         onclick: () => g.cancel(ci, idx),
-      }, el('img', { src: icon, alt: '' }), prog));
+      }, el('img', { src: icon, alt: '' }), prog, paidHonor ? el('span', { class: 'honor' }) : null));
     });
     if (!items.length) queue.append(el('span', { class: 'label' }, '— empty'));
     queue.append(el('span', { class: 'label', style: 'margin-left:auto' }, 'Right-click land: rally point · water: rally point for ships · Alt + right-click: clear'));
@@ -918,6 +1302,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     this.cityHeader(ci);
     const g = this.g;
     const owner = g.cityOwner[ci];
+    if (DEBUG && g.canTakeCity(ci)) this.panel.append(this.ownRow(ci));
     if (g.isLiberator() && owner !== g.you) {
       this.buildLiberate(ci);
       return;
@@ -1090,8 +1475,10 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
         // A transport's tile shows how many units are on board (kept current in refreshUnitTiles).
         const count = def.capacity ? el('b', { class: 'tile-count' }) : null;
         if (count) count.hidden = true;
+        // A Hero's tile shows its kind's mark (the group chip above keeps the plain crown: kinds mix there).
+        const u = def.hero ? g.unitById.get(id) : null;
         const tile = this.unitPickButton({ class: 'unit-tile' }, [id],
-          el('img', { src: img, alt: def.name }), el('span', { class: 'uhp' }, fill), count);
+          el('img', { src: u ? unitEmblemURL(t, g.heroKind(u)) : img, alt: def.name }), el('span', { class: 'uhp' }, fill), count);
         box.append(tile);
         byId.set(id, { tile, fill, count, def, key: '' });
       }
@@ -1106,6 +1493,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     note.hidden = true;
     this.panel.append(note);
     this.dyn.groupDisband = note;
+    this.buildHeroRow();
     const ships = st.ids.filter((id) => {
       const u = g.unitById.get(id);
       return u && u.owner === g.you && UNITS[UNIT_TYPES[u.t]].capacity;
@@ -1118,6 +1506,53 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     // Many units: the panel has a height limit, and the icons need the room more than the help
     // line does. If keeping it would make them scroll, it goes.
     if (box.scrollHeight > box.clientHeight + 1) help.remove();
+  }
+
+  // Make Hero (Cult of Heroes) and Make Healer (Order of Mercy) for a single selected plain land unit,
+  // once the tradition is learned. Kept current in refreshHeroRow().
+  buildHeroRow() {
+    const g = this.g;
+    const plain = g.promotionCandidates().length > 0;
+    const canMake = g.hasTradition('heroes') && plain;
+    const canHeal = g.hasTradition('mercy') && plain;
+    if (!canMake && !canHeal) return;
+    const row = el('div', { class: 'hero-row' });
+    const d = {};
+    if (canMake) {
+      d.make = el('button', { type: 'button', onclick: () => g.promote('hero') },
+        'Make Hero ', el('span', { class: 'honor' }), ` ${HERO.cost}`, el('kbd', {}, 'C'));
+      row.append(d.make);
+    }
+    if (canHeal) {
+      d.heal = el('button', { type: 'button', onclick: () => g.promote('healer') },
+        'Make Healer ', el('span', { class: 'honor' }), ` ${HEALER.cost}`);
+      row.append(d.heal);
+    }
+    this.panel.append(row);
+    this.dyn.hero = d;
+  }
+
+  refreshHeroRow(d) {
+    const g = this.g;
+    if (d.heal) {
+      const n = g.promotionCandidates().length, h = UNITS.healer;
+      d.heal.disabled = n !== 1 || g.honor < HEALER.cost;
+      d.heal.title = n !== 1 ? 'Select a single land unit to make it a Healer'
+        : g.honor < HEALER.cost ? `A Healer costs ${HEALER.cost} honor: you have ${g.honor}`
+          : `This unit becomes a Healer for ${HEALER.cost} honor: ${h.hp} HP, ${h.damage} damage/s. Your land units within ` +
+            `${HEALER.radius} km heal ${HEALER.hpPerSecond} HP per second. It keeps its place, its orders and its share of HP.`;
+    }
+    if (d.make) {
+      const ids = g.promotionCandidates(), n = ids.length, h = UNITS.hero;
+      const from = n === 1 ? g.unitById.get(ids[0]) : null;
+      const kind = from ? HERO.kinds[UNIT_TYPES[from.t]] || 'infantry' : 'infantry';
+      d.make.disabled = n !== 1 || g.honor < HERO.cost;
+      d.make.title = n !== 1 ? 'Select a single land unit to make it a Hero'
+        : g.honor < HERO.cost ? `A Hero costs ${HERO.cost} honor: you have ${g.honor}`
+          : `This unit becomes ${heroName(kind, true)} for ${HERO.cost} honor: ${h.hp} HP, ${h.damage} damage/s, with its ` +
+            `speed and range. Your land units within ${HERO.auraRadius} km of it deal +${Math.round(HERO.auraBonus * 100)}% ` +
+            'damage. It keeps its place, its orders and its share of HP.';
+    }
   }
 
   // Your selected transports and the Unload button (U), which asks where to land them. With one
@@ -1180,7 +1615,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     for (const id of cg.ships) {
       const u = g.unitById.get(id);
       if (!u) continue;
-      aboard += u.flags >> 5;
+      aboard += u.flags >> CARGO_SHIFT;
       room += UNITS[UNIT_TYPES[u.t]].capacity;
     }
     cg.unload.disabled = !aboard;
@@ -1191,17 +1626,17 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
 
   buildUnitInfo(u) {
     const g = this.g;
-    const def = UNITS[UNIT_TYPES[u.t]];
+    const def = g.unitStats(u);         // a Hero: the speed and range of its kind
     this.panel.append(el('div', { class: 'head' },
-      el('img', { src: unitIconURL(g.colorOf(u.owner), u.t), alt: '', style: 'width:34px;height:34px' }),
-      el('h4', {}, def.name),
+      el('img', { src: unitIconURL(g.colorOf(u.owner), u.t, def.hero ? g.heroKind(u) : null), alt: '', style: 'width:34px;height:34px' }),
+      el('h4', {}, def.hero ? heroName(g.heroKind(u)) : def.name),
       el('span', { class: 'sub' }, g.nameOf(u.owner))));
     const hpFill = el('i');
     const hpText = el('b');
     this.panel.append(el('div', { class: 'hpbar' }, hpFill));
     this.panel.append(el('div', { class: 'stats' },
       el('span', {}, 'HP ', hpText),
-      def.naval ? el('span', {}, 'On board ', el('b', {}, `${u.flags >> 5} / ${def.capacity}`))
+      def.naval ? el('span', {}, 'On board ', el('b', {}, `${u.flags >> CARGO_SHIFT} / ${def.capacity}`))
         : el('span', {}, 'Damage ', el('b', {}, `${def.damage}/s`)),
       def.naval ? null : el('span', {}, 'Range ', el('b', {}, def.attackRange ? String(def.attackRange) : 'melee')),
       el('span', {}, 'Speed ', el('b', {}, String(def.moveSpeed)))));
@@ -1221,7 +1656,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       const picked = this.picks.has(id);
       if (picked) marked++;
       const disbanding = !!(u.flags & 4);
-      const aboard = s.count ? u.flags >> 5 : 0;
+      const aboard = s.count ? u.flags >> CARGO_SHIFT : 0;
       const key = `${u.hp}|${picked}|${disbanding}|${aboard}`;
       if (key === s.key) continue;
       s.key = key;
@@ -1256,15 +1691,31 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       // Usable while there is gold for one and at least one selected city can still take it.
       const full = (ci) => (g.myQueues.get(ci)?.queue.length || 0) >= ECONOMY.maxQueue;
       for (const b of this.colButtons) {
+        if (b.honorBarracks) {
+          const open = st.ids.filter((ci) => g.nextUpgrade(ci, 'barracks') && !full(ci));
+          b.btn.disabled = !open.length || g.honor < b.price;
+          const one = st.ids.length === 1 && !g.nextUpgrade(st.ids[0], 'barracks');
+          const built = one && g.hasUpgrade(st.ids[0], 'barracks');
+          const text = one ? (built ? 'built' : 'in queue') : `${b.price}${b.many ? ' each' : ''}`;
+          if (b.amount.textContent !== text) b.amount.textContent = text;
+          b.btn.classList.toggle('built', built);
+          continue;
+        }
         const { btn, def, item, state, eff, about, title } = b;
         if (!CITY_UPGRADES[item]) {
           const ids = def.naval ? st.ids.filter((ci) => g.isCoastal(ci)) : st.ids;   // ships: coastal cities
           // Ships without Seafaring: not greyed out but locked, saying why; a click opens the Sea tab.
           const locked = !!def.naval && !g.hasSeafaring();
+          const honor = !locked && this.unitsForHonor();
+          const price = honor ? def.cost * TRADITIONS.eternalGlory.unitHonorFactor : def.cost;
           btn.classList.toggle('locked', locked);
-          btn.disabled = !locked && (g.gold < def.cost || !ids.length || ids.every(full));
-          const text = locked ? `🔒 ${TECHS.seafaring.name}` : this.unitCostText(def, st.ids);   // shorter once a Barracks is built
-          if (state.textContent !== text) state.textContent = text;
+          btn.classList.toggle('honor-buy', honor);
+          btn.disabled = !locked && ((honor ? g.honor : g.gold) < price || !ids.length || ids.every(full));
+          const text = locked ? `🔒 ${TECHS.seafaring.name}` : this.unitCostText(def, st.ids, honor);   // shorter once a Barracks is built
+          if (b.shownCost !== `${honor}|${text}`) {
+            b.shownCost = `${honor}|${text}`;
+            state.replaceChildren(...(honor ? [el('span', { class: 'honor' }), text] : [text]));
+          }
           const line = locked ? this.seafaringLock() : about;
           if (eff.textContent !== line) eff.textContent = line;
           const tip = locked ? `${def.name}: ships need the ${TECHS.seafaring.name} technology ` +
@@ -1301,6 +1752,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     }
     if (d.unitTiles) this.refreshUnitTiles(d.unitTiles);
     if (d.cargo) this.refreshCargo(d.cargo);
+    if (d.hero) this.refreshHeroRow(d.hero);
     if (d.groupHp) {
       let hp = 0, max = 0, disbanding = 0;
       for (const id of g.selection) {

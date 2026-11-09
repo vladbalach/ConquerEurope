@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setup as setupGame, nav, map } from './helpers.js';
 import { forEachCoastPiece, nearestCell } from '../shared/coastline.js';
-import { UNITS, NAVAL, COMBAT, TECHS } from '../shared/config.js';
+import { UNITS, NAVAL, COMBAT, TECHS, ECONOMY, HONOR } from '../shared/config.js';
+import { CARGO_SHIFT } from '../shared/protocol.js';
 
 // The two-player game of helpers.js; both players have researched Seafaring (ships, boarding, landing).
 function setup() {
@@ -121,7 +122,7 @@ test('units sent to a transport go on board, as many as fit, the closest first',
   a.client = { send: (m) => { if (m.t === 'snap') snap.push(m); } };
   game.sendSnapshots();
   const i = snap[0].u.indexOf(ship.id);
-  assert.equal(snap[0].u[i + 6] >> 5, 8, 'the snapshot says how many are on board');
+  assert.equal(snap[0].u[i + 6] >> CARGO_SHIFT, 8, 'the snapshot says how many are on board');
   assert.deepEqual(snap[0].b[0][0], ship.id, 'you get the list of who is on board');
 });
 
@@ -275,12 +276,15 @@ test('a sunk transport takes everyone on board down with it', () => {
   run(15);
   assert.equal(ship.cargo.length, 3);
   const enemy = ctx.spawn(b.id, 'archer', c.x + 200, c.y);
+  const goldB = b.gold;
   ship.receiveDamage(ship.hp + 1, enemy);
   run(0.1);
   assert.ok(!game.units.has(ship.id));
   const lost = UNITS.transport.cost + 3 * UNITS.infantry.cost;
   assert.equal(a.losses, lost, 'the ship and its passengers are lost');
   assert.equal(b.kills, lost, 'and count as kills for whoever sank it');
+  assert.equal(b.gold - goldB, lost * ECONOMY.killGoldShare, 'each of them pays the kill gold');
+  assert.equal(b.honor, lost * HONOR.killShare, 'and honor: the ship and its three passengers');
   assert.equal(a.unitCount, 0);
 });
 
@@ -338,9 +342,27 @@ test('a city has two rally points: on land for its units, on the water for its s
   game.handleCommand(a, { t: 'rally', cities: [brest.id], x: seaSpot[0], y: seaSpot[1] });
   game.sendSnapshots();
   const q = snap[0].q.find(([id]) => id === brest.id);
-  assert.deepEqual(q.slice(5), [Math.round(seaSpot[0] * 10) / 10, Math.round(seaSpot[1] * 10) / 10], 'your browser gets it');
+  assert.deepEqual(q.slice(5, 7), [Math.round(seaSpot[0] * 10) / 10, Math.round(seaSpot[1] * 10) / 10], 'your browser gets it');
   brest.capture(-1);
   assert.equal(brest.seaRally, null, 'a captured city loses it');
+});
+
+test('new units step out of the city onto its own landmass, never onto an island across the water', () => {
+  const { game } = setup();
+  const sizes = [...new Set(Object.values(UNITS).filter((u) => !u.naval).map((u) => u.size))];
+  // Split, Athens, Copenhagen, Turku and Reggio have islands just outside their walls.
+  for (const c of game.cities) {
+    const land = nav.landmass(c.x, c.y);
+    for (let k = 0; k < 32; k++) {
+      const ang = (k / 32) * Math.PI * 2;
+      c.rally = { x: c.x + Math.cos(ang) * 100, y: c.y + Math.sin(ang) * 100 };
+      for (const size of sizes) {
+        const [x, y] = c.spawnPoint(size);
+        if (nav.landmass(x, y) !== land) assert.fail(`${c.name}: a unit facing ${Math.round(ang * 180 / Math.PI)}° spawned off its landmass`);
+      }
+    }
+    c.rally = null;
+  }
 });
 
 test('ships, boarding and landing need the Seafaring technology (Tech, Sea tab)', () => {

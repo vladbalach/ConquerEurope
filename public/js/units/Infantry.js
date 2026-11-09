@@ -12,7 +12,7 @@ export class Infantry extends UnitType {
   static type = 'infantry';
 
   static special() {
-    return `Blocks ${Math.round(this.stats.archerDamageReduction * 100)}% of archer damage.`;
+    return 'Sturdy melee line.';
   }
 
   static drawIcon(ctx, outline) {

@@ -1,7 +1,7 @@
 # Conquest of Europa
 
 A multiplayer, top-down real-time strategy game played in the browser on a map of Europe.
-Up to 20 players each start with 10 random cities and race to hold **120 of the 210 cities** (the host can
+Up to 20 players each start with 10 random cities and race to hold **120 of the 218 cities** (the host can
 change the number, and by default it counts down every turn).
 
 Core design rules, such as anonymous players, are in [GAME_DESIGN.md](GAME_DESIGN.md).
@@ -27,7 +27,7 @@ lists every game with its players (offline players are greyed out). The host sta
 solo to practise against neutral cities. Once a game has started, nobody new can join it.
 
 **Players are anonymous during a game:** everyone is known only by colour ("Red", "Teal", ...; you are "You"), and
-for a game in progress the lobby lists nicknames only. Everyone is revealed on the game-over screen. The rule is in
+for a game in progress the lobby lists nicknames only. Everyone is revealed on the results screen. The rule is in
 [GAME_DESIGN.md](GAME_DESIGN.md).
 
 **Coming back after a disconnect:** a player who drops out keeps their empire (it can still be conquered) until
@@ -51,8 +51,15 @@ So the server needs almost no CPU or bandwidth, and it can run on a free plan.
   connection messages between each player and the host. When the game ends, it reveals every nickname.
 - **The host's browser:** simulates the game in a Web Worker ([server/host-engine.js](server/host-engine.js), the same
   code the tests run in Node, served to browsers as `/sim/`). A worker keeps full speed while the host's tab is in
-  the background. The host sends each player about 30–100 KB/s, so 20 players need roughly 8 Mbit/s of upload.
+  the background. The host sends each player the changes since the last snapshot, compressed
+  ([public/js/delta.js](public/js/delta.js)): with the whole map in view, about 2–20 KB/s per player in a game of 2–8
+  players, 45 KB/s with 20 players of 100 units each. So the host needs about 1 Mbit/s of upload for 8 players and
+  7 Mbit/s for 20.
 - **Other browsers:** send their orders to the host and get snapshots back, as they did from the server before.
+- **The start:** the host's game stands still until every player's link is open (at most 30 seconds, for a player who
+  never connects), then counts down 10 seconds, so the host gets no head start (`GAME.startWait`,
+  `GAME.startCountdown` in [shared/config.js](shared/config.js)). Debug builds skip the countdown: the game starts as
+  soon as every player has loaded it.
 - **The host leaving:** closing or refreshing the host's tab, or pressing Leave, ends the game for everyone, and the
   game-over screen says so.
 - **Cheating:** the host's browser decides everything, so a host could cheat. Fine among friends.
@@ -75,7 +82,7 @@ their game goes through the lobby server instead (`relay` messages), and they se
 host: your game goes through the server." The same happens when a direct link dies during a game (a network
 change, a laptop going to sleep, a browser pausing a background tab): the player carries on through the server, and
 the others see them leave and come back. The game plays the same. It just costs the server bandwidth, about
-0.1–0.35 GB per relayed player per hour (messages are compressed). On a free plan with a small monthly allowance
+0.02–0.15 GB per relayed player per hour (changes only, and compressed). On a free plan with a small monthly allowance
 (Render: 5 GB), set up the Cloudflare TURN relay above if many of your players need the fallback. The browser
 console (F12) says which way each player connected.
 
@@ -90,7 +97,7 @@ console (F12) says which way each player connected.
 | Transport (ship) | 150 | — | — | 38 | 0.5/s, 5/s in harbour | 10 | 12 s |
 | City | 100 | 20/s | 70 | — | 5/s (always) | — | — |
 
-\* Units regenerate only after 3 seconds without fighting. Infantry blocks 10% of damage from archers.
+\* Units regenerate only after 3 seconds without fighting.
 
 - **Land units walk on land:** they find their own way around seas but cannot cross water, so islands
   (Britain, Ireland, Sicily, Sardinia, Zealand, Crete, Cyprus, Iceland, ...) are reached only by transport (see
@@ -170,6 +177,75 @@ console (F12) says which way each player connected.
   10 gold, all at once. The top bar shows how many turns have passed and the countdown to the next payout.
   A clock ticks in the last 3 seconds of every turn.
   Players start with 50 gold. The **Economy** page of the help (F1) explains every way to get gold.
+- **Kills pay:** destroying an enemy unit pays you **25% of its cost** in gold at once (Infantry 3, Archers 2.5,
+  Cavalry 5, Knight 37.5, Transport 2.5) and **its full cost in honor** (Infantry 12, Archers 10, Cavalry 20,
+  Knight 150, Transport 10): honor grows exactly like your Kills in the Players list. Honor is shown with a silver star
+  in the top bar next to your gold, and is spent in the Honor window (below). A kill is the same as in the Players list: whoever landed the last
+  hit gets it (your cities' kills are yours, a neutral city's kills pay nobody), the units on board a sunk transport
+  count for whoever sank it, and a disbanded unit pays the last player who hit it in the 20 seconds before it died.
+  The top bar shows gold rounded down; halves still add up. The numbers are `killGoldShare` in `ECONOMY` and `HONOR`
+  in [shared/config.js](shared/config.js).
+- **Honor and traditions:** click the honor star in the top bar (or press **O**) for the Honor window. There you learn
+  **traditions** with honor: once, for good, one at a time (alongside any research), and cancelling gives the honor
+  back. Learn more while one is being learned and they are **queued** (the button says **Queue**): each is paid when
+  ordered and starts once the one before it is done. Its row shows its place in the queue and **Remove**, which gives
+  the honor back. A tier II tradition can be queued once every tier I one is learned or queued ahead of it; removing a
+  tier I one removes the queued tier II ones too. Your honor is private. The traditions each player has are public: the Players
+  list (Tab) shows them in a Traditions column, an icon each (the name on hover).
+
+  | Tradition | Cost | Time | Effect |
+  |---|---|---|---|
+  | Cult of Heroes | 1500 honor | 30 s | Any of your land units can be made a Hero |
+  | Order of Mercy | 1500 honor | 30 s | Any of your land units can be made a Healer |
+  | Brotherhood of Arms | 1500 honor | 30 s | Barracks can be paid with 30 honor instead of 30 gold, and build twice as fast either way |
+  | Honored Dead | 1500 honor | 30 s | Every unit of yours that falls gives you 25% of its cost in honor |
+  | **Eternal Glory** (tier II) | 4000 honor | 2 min | Every unit can be trained for honor, at 2 times its gold cost. Only once every tier I tradition is learned |
+  | **Last Stand** (tier II) | 4000 honor | 2 min | Your units deal 30% more damage; a unit outnumbered 2 to 1 within 80 km takes 30% less damage. Only once every tier I tradition is learned |
+
+  - **Heroes:** select one of your land units (not a ship, not one being disbanded) and press **C** (or **Make Hero**
+    in its panel): for **100 honor** it becomes a Hero where it stands, keeping its orders and its share of HP. A Hero has
+    300 HP and 15 damage per second, and **the speed and attack range of what it was**: infantry make an Infantry
+    Hero (melee), archers an Archer Hero (it shoots from afar), cavalry and knights a Cavalry Hero (it rides). The unit
+    panel names its kind. Cities never train Heroes. In the Kills and Losses stats a Hero is worth the gold of the unit
+    it was made from. On the map it has a crown and a gold ring.
+  - **A Hero's aura:** all the time, every land unit of yours within **80 km** of a Hero, the Hero too, deals **10%
+    more damage**. Nothing to press, no cooldown. Several Heroes don't add up: +10% at most. Your selected Hero shows
+    how far it reaches, a faint gold dashed circle.
+  - **Barracks for honor (Brotherhood of Arms):** with cities selected, the build column shows a second Barracks
+    button under the usual one, in the Honor window's colours: **Barracks ★ 30** (or **Shift + G**). It queues the same
+    Barracks (same effect) paid with 30 honor instead of 30 gold, in each selected city that has none
+    yet, as far as your honor reaches. Gold works as before. Either way, with this tradition Barracks build twice as
+    fast (6 s instead of 12 s). In the queue it carries a small silver star; cancelling it
+    gives the honor back, and so does losing the city while it waits. A built one is lost with the city like any upgrade.
+  - **Healers (Order of Mercy):** select one of your plain land units and press **Make Healer** in its panel: for
+    **80 honor** it becomes a Healer where it stands, keeping its orders and its share of HP. A Healer is a weak
+    fighter (120 HP, 5 damage per second, melee, as fast as infantry) with a white cross for an emblem. Every land unit
+    of yours within **60 km** of it, the Healer too, regains **3 HP per second**, even in the middle of a fight and on top
+    of its own regeneration. Several Healers don't add up. Ships and units being disbanded are not healed. Wounded units
+    being healed glow green with a small cross rising from them, and your selected Healer shows its range as a dashed
+    green circle. Heroes and Healers can't be made into each other: only plain units can.
+  - **Honor for the fallen (Honored Dead):** every unit of yours that falls gives you **25% of its cost in honor**
+    (Infantry 3, Archers 2.5, Cavalry 5, Knight 37.5), whoever killed it: an enemy, a neutral city, or the sea when its
+    transport sank. A Hero or Healer counts as the unit it was made from. Units you disband don't count, unless an enemy
+    hit them in their last 20 seconds (the same rule that makes them an enemy's kill), so deleting cheap units can't turn
+    gold into honor.
+  - **Tier II traditions (Eternal Glory, Last Stand):** their names are always written in red. Their cards stay locked,
+    naming what is missing, until every tier I tradition is learned; they don't need each other. Nobody is told when
+    someone starts or cancels learning one, but the Players list shows its name and countdown in red while it is
+    learned, and every player is told (a red banner and a feed line) once someone has learned it.
+  - **Eternal Glory:** every unit a city trains can be paid with honor, at **2 times its gold cost** (Infantry 24, Archers 20,
+    Cavalry 40, Knight 300, Transport 20): the Units box gets a **Pay with Gold / ★ Honor** switch, and **Shift + the
+    unit's key** pays with honor either way. Units paid with honor carry the silver star in the queue; cancelling one,
+    or losing the city or its port while it waits, gives the honor back. Ships still need Seafaring, and the unit limit
+    still counts.
+  - **Last Stand:** all your units deal **30% more damage**, always (near a Hero it adds up to +40%). And a unit of
+    yours, a ship too, that has at least **twice as many enemy units as units of yours** (itself included) within
+    **80 km** takes **30% less damage**, from units and cities alike. Each unit checks this twice a second. Units standing
+    firm like that glow red on the map (a thin red ring when zoomed out to dots), and every player sees it. Units on
+    board a transport neither count nor are counted.
+  - The numbers are `TRADITIONS`, `HERO`, `HEALER`, `UNITS.hero` and `UNITS.healer` in [shared/config.js](shared/config.js)
+    (the Barracks price in honor is `TRADITIONS.brotherhood.barracksHonor`; Last Stand's numbers are
+    `TRADITIONS.lastStand`).
 - **Regions:** the map is split into regions (Hungary, Wallachia, ...: the countries of `tools/cities.js`). Their
   names are printed on the map and dark solid lines are their borders; faint lines divide the cities of one region.
   Hold every city of a region and each of them pays **+2 gold** more per turn (`regionBonusPerCity` in
@@ -181,7 +257,8 @@ console (F12) says which way each player connected.
 - **Production:** each city has a queue of up to 10 units. Select several cities, by frame or with Shift, and one
   key press queues a unit in each of them.
 - **Disbanding:** to get rid of units you no longer need, select them and press **Delete**.
-- **Alerts:** a sword clash sounds when someone captures one of your cities.
+- **Alerts:** a sword clash sounds when someone captures one of your cities. A choir hums when you learn a
+  tradition, and a quill signs its name when your research is complete.
   - They lose 10 HP per second until they die. They don't regenerate, and it can't be undone. Until then they still
     move and fight as ordered. They show a pulsing red pool and red drops rising from them.
   - Cities can't be disbanded.
@@ -190,15 +267,23 @@ console (F12) says which way each player connected.
     gets the kill. So disbanding a dying unit in battle doesn't deny the enemy the kill.
   - The numbers are in `DISBAND` in [shared/config.js](shared/config.js).
 - **Neutral cities:** these are the cities nobody was given. They shoot at everyone.
-- **Winning:** the first player to hold the target number of cities wins. The last player standing also wins if the game
-  started with 2 or more players. The host sets the target in the waiting room (**Game options**):
+- **Winning:** a player who holds the target number of cities when a turn ends wins. Reaching it during the turn is not
+  enough: if they lose cities again and are below the target when the turn ends, the game goes on. The last player
+  standing wins at once if the game started with 2 or more players. The host sets the target in the waiting room
+  (**Game options**):
   - **Cities to win:** the starting target, 120 by default (11 up to every city on the map).
   - **Countdown:** *From start* (the default) lowers the target by one city at the end of every turn: 120 in the first
     turn, 119 in the second, and so on. *From turn N* (10 by default) keeps it until turn N is over, then counts down
     the same way. *No* keeps it fixed. It never drops below one city.
   - The top bar shows your cities next to the current target (▾ while it is counting down).
-  - When the target drops to several players at once, the one with the most cities wins. If they hold exactly as many,
-    the game goes on until one of them pulls ahead.
+  - **Close to winning:** when a player is 25 cities or fewer from the target, everyone sees it at the top centre of
+    the screen, by colour: "Maroon needs 10 more cities to win". A player who holds the target gets a red line with
+    the time left in the turn and how many cities they can still lose ("Maroon wins when the turn ends (0:23) unless
+    they lose 6 cities"). Up to 4 players are listed, closest first. The distance is `closeToWinCities` in `GAME` in
+    [shared/config.js](shared/config.js).
+  - The target checked is the one shown during that turn; a countdown lowers it only after the check.
+  - When several players hold the target at the end of a turn, the one with the most cities wins. If they hold exactly
+    as many, the game goes on to the next turn.
 - **Death** (also a game option): what happens to a player who has lost every city and every unit.
   - **Spectator:** they are out of the game and can only watch.
   - **Liberator** (the default): they lose all their gold and become a liberator. A liberator gets 20 gold at the end of every turn and
@@ -211,7 +296,10 @@ console (F12) says which way each player connected.
     (or by being the only player left once everyone else has pressed Leave).
   - The numbers are in `LIBERATOR` in [shared/config.js](shared/config.js). F1 → **Liberator** explains it in the game.
 - **Technologies:** the **Tech** button (or **T**) opens the Technologies window. Research costs gold up front and takes
-  game time; one at a time, and cancelling gives the gold back. It opens on the **Sea** tab:
+  game time; one at a time, and cancelling gives the gold back. Order more while one runs and they are **queued**
+  (the button says **Queue level N**): each is paid when ordered and starts once the one before it is done. A line
+  under the tabs lists the queue in order, each with ✕ to take it out (gold back); taking out a level also takes out
+  the higher levels of that technology queued after it. It opens on the **Sea** tab:
   - **Seafaring** (100 gold, 30 s): coastal cities build transports, and units can go on board and land (see Navy).
     Without it there are no ships.
 
@@ -239,7 +327,10 @@ Every number lives in **[shared/config.js](shared/config.js)**, which both the s
   Ships have `naval: true`; a transport's `capacity` is how many units it carries.
 - `NAVAL`: how close the sea must be for a coastal city, and the distances for going on board.
 - `CITY_UPGRADES`: cost, build time and bonus of each city upgrade.
-- `CITY`, `COMBAT`, `ECONOMY` and `GAME`: everything else.
+- `HONOR`, `TRADITIONS`, `HERO`: the honor a kill gives (`killShare` of the unit's cost), the traditions it buys,
+  and Heroes: their price, their aura (`auraRadius`, `auraBonus`) and which kind each unit makes (`kinds`,
+  `HERO_KINDS`). `UNITS.hero` has the Hero's HP and damage; its speed and range are those of its kind.
+- `CITY`, `COMBAT`, `ECONOMY` (including the gold a kill pays) and `GAME`: everything else.
 
 Restart the server and refresh the page after editing.
 
@@ -303,16 +394,33 @@ if they send the messages themselves.
 | S | Units selected: stop |
 | H | Units selected: hold position. They never walk, not even to chase, and only fight what comes within reach. Other units can't push them aside. A move, attack or stop order ends it. A dashed gold ring marks your units on hold |
 | Delete | Units selected: disband them. They lose 10 HP per second until they die (see Rules). Cities can't be disbanded |
+| C | One land unit selected: make it a Hero for 100 honor, like the Make Hero button (needs the tradition Cult of Heroes) |
+| O, or click the honor star | The Honor window: traditions |
 | Q / W / E / R / B | Build infantry / archers / cavalry / knight / transport: one in each selected city, as far as your gold reaches (a transport only in coastal cities) |
 | Right click your transport | Land units selected: they go on board (see Navy) |
 | U | Transports selected: unload, then click land or a city |
 | Ctrl + B / Shift + B | Units selected: remove the ships from the selection / keep only the ships (a selection that would end up empty stays as it is) |
 | Ctrl + F / Shift + F | Units selected: remove the full transports from the selection / keep only the full transports |
 | A / S / D / F / G | Cities selected: build Wall / Tower / Castle / Farm / Barracks in each selected city that doesn't have it yet. A again: Wall II where Wall I is built or queued |
+| Shift + G | Cities selected, with the tradition Brotherhood of Arms: build Barracks paid with honor instead of gold |
+| Shift + Q / W / E / R / B | Cities selected, with the tradition Eternal Glory: build that unit paid with honor (2 times its gold cost) |
 | Ctrl+1–9, 1–9 | Save / recall a control group |
 | Hold Alt | Show the attack radius of every city. Alt + drag a frame selects only your cities, even with your units inside it |
+| Space / Shift + Space | Center on the selection / jump to your city captured last. When a city of yours falls, it pings red on the minimap for a few seconds and the minimap's frame glows red |
+| Drag the minimap's top-right corner | Resize the minimap. It keeps the map's shape and grows up and to the right; the browser keeps the size for your next games. Double click the corner for the default size |
 | Arrows, screen edge, middle drag, wheel | Move and zoom the camera. Zooming keeps the point under the cursor in place. Zoomed far out, cities are small dots in their owner's colour and country names are hidden |
 | Tab / F1 | Players / help (pages: Controls, Economy) |
+| Esc (game over) | Fold the results screen into a bar at the top, to look at the map. Show results opens it again |
+
+### The results screen
+
+When the game ends, the results cover the screen. **Players**: every player by nickname, in their colour, with
+what the Players list shows plus technologies and the peak of their empire, and a graph of the game (cities,
+units, army value, gold per turn, kills, losses). Click a player for their own page: totals, graphs against the
+other players, army by unit type, buildings, and milestones by turn. **Timeline**: the map turn by turn with Play
+and a slider, the standings and what happened in each turn. The host's game records it all
+([server/history.js](server/history.js)) and sends it with the `gameover` message; a message that long goes to
+other browsers in pieces (`splitMessage` in [public/js/p2p.js](public/js/p2p.js)).
 
 ## Debug mode
 
@@ -331,7 +439,14 @@ Press **~** (the key left of 1) to open the console. ↑/↓ browse history, Tab
 | `show navigation` | Toggles the navigation grid over the map, exactly as the server's pathfinding uses it: green = walkable (mainland), other colours = walkable but a separate landmass (unreachable from the mainland), orange = around a city (paths go around it), red = not walkable. Zoomed in, cell borders are drawn and the legend names the cell under the cursor. `show none` hides it |
 | `reset hp` | Gives every unit and city in the game full HP again (all players'). The order goes to the game's host, which accepts it only in debug builds, and every player sees who used it in the message feed |
 | `gold N` | Sets every player's gold to N (0 or more, e.g. `gold 1000`). Like `reset hp`, it goes to the game's host, works only in debug builds, and every player sees who used it |
+| `honor N` | Sets every player's honor to N, like `gold N` (e.g. `honor 2000`: Cult of Heroes and ten Heroes) |
+| `slomo N` | Game speed: N times normal, from 0.1 to 10 (`slomo 4`: four times as fast; `slomo 1`: normal). Everything that runs on game time speeds up alike: moving, fighting, training, research, traditions, turns and their gold, cooldowns. The host's browser simulates N times as many steps per second (so very high speeds need a fast host); snapshots keep their normal pace. Everyone sees who changed it, and the top bar shows the speed next to the game's title. Debug builds only |
 | `help`, `clear` | List commands, clear the console |
+
+Not in the console: click any city that is not yours and its panel has an **Own** button. The city becomes yours at
+once, like a capture (its upgrades are lost, its previous owner gets its queue refunded), and is selected so you can
+build there. Like the console's game commands, it goes to the game's host, which accepts it only in debug builds;
+every player sees who used it in the message feed, and the game's statistics don't count it as a capture.
 
 What the times mean:
 - **Frame:** time between rendered frames; this is what sets the FPS.
@@ -358,8 +473,9 @@ server/data/city-positions.json  Cities moved by admins (created on the first mo
 server/data/city-coastal.json    Cities admins made coastal or inland (created on the first change)
 server/data/beach-edits.json     Coast painted as beach or cliff by admins (created on the first stroke)
 server/game.js          One match: players, commands, formations, tick, collisions, snapshots
+server/history.js       What happened in a game, for the results screen: the map and every player's numbers turn by turn, totals
 server/City.js          City: shooting, regeneration, capture, spawn points, port (coastal cities)
-server/nav.js           Land grid, line of sight, A* pathfinding around seas; seas, coasts and ships' paths
+server/nav.js           Land grid, line of sight, A* pathfinding around seas (landmark estimates); seas, coasts and ships' paths
 server/units/Unit.js    Base unit: orders, targeting, path following, combat, going on board
 server/units/Infantry.js, Archer.js, Cavalry.js   One class per unit type
 server/units/Ship.js    Base ship: sails instead of walking, docks to take units on board, lands them
@@ -368,12 +484,14 @@ server/data/navgrid.json  Generated land grid (committed)
 public/                 Browser client (vanilla JS modules, Canvas 2D, no build step)
   js/main.js            Screens: name, lobby, waiting room; starts hosting or joining a game
   js/p2p.js             Browser-to-browser links: HostSession (worker + one WebRTC channel per player), PeerSession
+  js/delta.js           Snapshots and scores as changes to the last one sent (lossless), rebuilt on the player's page
   js/host-worker.js     Web Worker that runs the game in the host's browser
   js/client.js          Snapshot interpolation, selection, commands, effects
   js/render.js          Map, territories, cities, cone units, minimap
   js/map-labels.js      Places the region names: inside their region, off the cities and each other; region outlines
   js/input.js           Mouse/keyboard, camera
   js/hud.js             Resource bar, city production panel, overlays
+  js/results.js         The results screen once the game is over: players, a player's stats, the timeline
   js/balance-editor.js  Edit button table: change unit, upgrade and city stats (admins)
   js/tooltip.js         Custom tooltips for every element with a title
   js/sprites.js         Procedural cone / ship / castle sprites, anchor badge of coastal cities
@@ -381,7 +499,7 @@ public/                 Browser client (vanilla JS modules, Canvas 2D, no build 
   js/units/*.js         One class per unit type: icon and tooltip
   map.json              Generated map data (committed)
   sounds/               Sound effects made by tools/gen-sfx.js (committed)
-tools/cities.js         The 54 regions and 210 cities (lat/lon)
+tools/cities.js         The 58 regions and 218 cities (lat/lon)
 tools/build-map.js      Builds public/map.json and server/data/navgrid.json from Natural Earth data
 tools/gen-sfx.js        Makes the sound effects in public/sounds/ with ElevenLabs
 ```
@@ -393,7 +511,9 @@ To add a unit type:
 3. Register both classes in the `index.js` next to them.
 
 The game (in the host's browser) simulates at 20 Hz. Each player receives a 10 Hz snapshot with its own units plus everything near its
-viewport, and renders about 130 ms in the past so movement interpolates smoothly.
+viewport, and renders about 130 ms in the past so movement interpolates smoothly. Snapshots and scores travel as changes
+to the last one sent on that link, and the player's page rebuilds them exactly ([public/js/delta.js](public/js/delta.js));
+direct links compress them too (deflate). A link that falls behind skips snapshots instead of queuing them.
 
 ### Sound effects
 

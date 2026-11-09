@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HostEngine } from '../server/host-engine.js';
-import { UNITS, GAME } from '../shared/config.js';
+import { UNITS, GAME, ECONOMY, HONOR, HERO, TRADITIONS } from '../shared/config.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const readJson = (...p) => JSON.parse(fs.readFileSync(path.join(ROOT, ...p), 'utf8'));
@@ -24,7 +24,13 @@ function setupEngine() {
   });
   const run = (seconds) => { for (let i = 0; i < seconds * GAME.tickRate; i++) engine.step(); };
   const kinds = (id) => inbox.get(id).map((m) => (m.t === 'event' ? `event:${m.kind}` : m.t));
-  return { engine, game: engine.game, inbox, ended, run, kinds };
+  // Everyone loads the game (the host first), and the countdown runs out: the game has started.
+  const begin = () => {
+    for (const id of [1, 0, 2]) engine.connect(id);
+    for (let i = 0; i < (GAME.startCountdown + 1) * GAME.tickRate && engine.game.prestart; i++) engine.step();
+    assert.equal(engine.game.prestart, null, 'started');
+  };
+  return { engine, game: engine.game, inbox, ended, run, kinds, begin };
 }
 
 test('players get the game when their link opens; only a reconnect says "is back"', () => {
@@ -47,11 +53,74 @@ test('players get the game when their link opens; only a reconnect says "is back
   assert.ok(!kinds(0).includes('kicked'), 'a reconnect is never kicked');
 });
 
-test('a peer\'s commands run on the host, and every player only ever sees colours', () => {
+test('the host gets no head start: nothing moves until every player has loaded and the countdown is over', () => {
   const { engine, game, inbox, run } = setupEngine();
+  const steps = (n) => { for (let i = 0; i < n; i++) engine.step(); };
+  const lefts = (id) => inbox.get(id).filter((m) => m.t === 'prestart').map((m) => m.left);
+  engine.connect(1);                                  // the host's own screen has the game at once
+  assert.deepEqual(inbox.get(1).find((m) => m.t === 'start').prestart, { loaded: 1, total: 3, left: null });
+  const host = game.players.get(1);
+  const city = game.cities.find((c) => c.owner === 1);
+  host.gold = 100;
+  run(10);                                            // the peers are still connecting
+  engine.message(1, { t: 'build', cities: [city.id], item: 'infantry' });
+  assert.equal(game.time, 0, 'the clock stands still');
+  assert.equal(host.gold, 100, 'orders are ignored');
+  assert.deepEqual(city.queue, []);
+  const snaps = inbox.get(1).filter((m) => m.t === 'snap');
+  assert.ok(snaps.length && snaps.every((s) => s.time === 0 && s.c[city.id * 3] === 1), 'the host sees its cities meanwhile');
+
+  engine.connect(0);
+  assert.deepEqual(inbox.get(1).filter((m) => m.t === 'prestart').at(-1), { t: 'prestart', loaded: 2, total: 3, left: null });
+  assert.deepEqual(inbox.get(0).find((m) => m.t === 'start').prestart, { loaded: 2, total: 3, left: null });
+  engine.connect(2);                                  // everyone has loaded: the countdown begins
+  steps(GAME.startCountdown * GAME.tickRate);
+  assert.ok(game.prestart, 'one step before the start');
+  assert.equal(game.time, 0);
+  engine.step();
+  assert.equal(game.prestart, null, 'started');
+  const seconds = Array.from({ length: GAME.startCountdown + 1 }, (_, i) => GAME.startCountdown - i);   // 10 … 0, or just 0
+  for (const id of [0, 1, 2]) {
+    assert.deepEqual(lefts(id).slice(-seconds.length), seconds, `player ${id} saw every second, then the start`);
+  }
+  engine.message(1, { t: 'build', cities: [city.id], item: 'infantry' });
+  assert.equal(host.gold, 100 - UNITS.infantry.cost, 'orders count now');
+  run(1);
+  assert.ok(game.time > 0.9, 'and the clock runs');
+});
+
+test('a player who never loads the game holds up the start for GAME.startWait seconds at most', () => {
+  const { engine, game, inbox } = setupEngine();
+  const steps = (n) => { for (let i = 0; i < n; i++) engine.step(); };
+  engine.connect(1);
+  engine.connect(0);                                  // player 2 never comes
+  steps(GAME.startWait * GAME.tickRate - 1);
+  assert.equal(game.prestartInfo().left, null, 'still waiting');
+  engine.step();
+  if (GAME.startCountdown) {          // debug builds have no countdown: they start right away
+    assert.deepEqual(game.prestartInfo(), { loaded: 2, total: 3, left: GAME.startCountdown }, 'counting down without them');
+    steps(GAME.startCountdown * GAME.tickRate);
+  }
+  assert.equal(game.prestart, null, 'started');
+  engine.connect(2);                                  // late: they join the game in progress
+  assert.equal(inbox.get(2).find((m) => m.t === 'start').prestart, null);
+});
+
+test('a player who gives up before the start is not waited for', () => {
+  const { engine, game, inbox } = setupEngine();
   engine.connect(1);
   engine.connect(0);
+  engine.message(0, { t: 'leave' });
+  assert.deepEqual(inbox.get(1).filter((m) => m.t === 'prestart').at(-1), { t: 'prestart', loaded: 1, total: 2, left: null });
   engine.connect(2);
+  engine.step();
+  if (GAME.startCountdown) assert.equal(game.prestartInfo().left, GAME.startCountdown, 'everyone left in the game has loaded it');
+  else assert.equal(game.prestart, null, 'everyone left in the game has loaded it: started (no countdown in debug builds)');
+});
+
+test('a peer\'s commands run on the host, and every player only ever sees colours', () => {
+  const { engine, game, inbox, run, begin } = setupEngine();
+  begin();
   const peer = game.players.get(0);
   const city = game.cities.find((c) => c.owner === 0);
   peer.gold = 100;
@@ -95,4 +164,94 @@ test('an admin makes a city inland or coastal: the host sends everyone the new p
   assert.equal(engine.map.cities[lisbon.id].coastal, false);
   engine.setCoastal(lisbon.id, null);
   assert.ok(ports().includes(lisbon.id), 'and coastal again');
+});
+
+// Walkable spots out of reach of every city, at least 400 km apart (the cities are dealt at random).
+function openFields(game, n) {
+  const out = [], b = game.bounds;
+  for (let x = b.x0 + 50; x < b.x1 && out.length < n; x += 25) {
+    for (let y = b.y0 + 50; y < b.y1 && out.length < n; y += 25) {
+      const room = [[0, 0], [-40, 0], [40, 0], [0, -40], [0, 40]].every(([dx, dy]) => game.nav.walkable(x + dx, y + dy));
+      if (room && game.cities.every((c) => Math.hypot(c.x - x, c.y - y) > 140) &&
+        out.every(([px, py]) => Math.hypot(px - x, py - y) > 400)) out.push([x, y]);
+    }
+  }
+  return out;
+}
+
+test("kill gold and honor reach the host's own top bar and the peers' alike", () => {
+  const { game, inbox, run, begin } = setupEngine();
+  begin();                                                   // player 1 hosts
+  const [f1, f2] = openFields(game, 2);
+  const spawn = (owner, type, [x, y], dx = 0) => game.spawnUnit({ owner, rally: null, spawnPoint: () => [x + dx, y] }, type);
+  spawn(1, 'knight', f1);                                    // the host kills a peer's infantry
+  spawn(0, 'infantry', f1, 20);
+  spawn(2, 'knight', f2);                                    // a peer kills the host's archer
+  spawn(1, 'archer', f2, 20);
+  run(15);
+  const snap = (id) => inbox.get(id).filter((m) => m.t === 'snap').at(-1);
+  assert.equal(snap(1).h, Math.floor(UNITS.infantry.cost * HONOR.killShare), 'the host');
+  assert.equal(snap(1).g, Math.floor(ECONOMY.startGold + UNITS.infantry.cost * ECONOMY.killGoldShare));
+  assert.equal(snap(2).h, Math.floor(UNITS.archer.cost * HONOR.killShare), 'the peer who killed');
+  assert.equal(snap(2).g, Math.floor(ECONOMY.startGold + UNITS.archer.cost * ECONOMY.killGoldShare));
+  assert.equal(snap(0).h, 0, 'the peer who only lost');
+  assert.equal(snap(0).g, ECONOMY.startGold);
+  assert.equal(game.players.get(2).gold, ECONOMY.startGold + 2.5, 'the half is kept, only the top bar rounds it down');
+});
+
+test('the host and a peer learn Cult of Heroes and make a Hero of the kind of their unit the same way', () => {
+  const { engine, game, inbox, run, begin } = setupEngine();
+  begin();                                                   // player 1 hosts
+  const [f1, f2] = openFields(game, 2);
+  const spawn = (owner, type, [x, y]) => game.spawnUnit({ owner, rally: null, spawnPoint: () => [x, y] }, type);
+  const units = { 1: spawn(1, 'cavalry', f1), 0: spawn(0, 'archer', f2) };
+  for (const id of [1, 0]) {
+    game.players.get(id).honor = TRADITIONS.heroes.cost + HERO.cost;
+    engine.message(id, { t: 'learn', tradition: 'heroes' });
+  }
+  run(TRADITIONS.heroes.time + 1);
+  for (const id of [1, 0]) {
+    engine.message(id, { t: 'promote', id: units[id].id });
+  }
+  run(0.2);
+  for (const id of [1, 0]) {
+    const who = id === 1 ? 'the host' : 'the peer';
+    const hero = game.units.get(units[id].id);
+    assert.equal(hero.type, 'hero', who);
+    assert.equal(hero.kind, id === 1 ? 'cavalry' : 'archer', `${who}'s Hero keeps the kind of its unit`);
+    assert.equal(game.players.get(id).honor, 0, `${who} paid for the tradition and the Hero`);
+    const snap = inbox.get(id).filter((m) => m.t === 'snap').at(-1);
+    assert.deepEqual(snap.tr, [0], `${who}'s top bar knows the tradition`);
+    assert.ok(inbox.get(id).some((m) => m.t === 'event' && m.kind === 'promoted'), `${who} is told`);
+  }
+});
+
+test('slomo: at 4x the host simulates four times the game time, snapshots keep their pace, and everything runs faster', () => {
+  const { engine, game, inbox, begin } = setupEngine();
+  begin();
+  const snaps = () => inbox.get(0).filter((m) => m.t === 'snap');
+  // One real second, as the host's timer delivers it: 40 calls 25 ms apart.
+  const realSecond = () => { for (let i = 0; i < 40; i++) engine.advance(0.025); };
+
+  let t0 = game.time, s0 = snaps().length;
+  realSecond();
+  assert.ok(Math.abs(game.time - t0 - 1) < 0.06, 'normal speed: a second of game time per second');
+  const normal = snaps().length - s0;
+
+  game.timeScale = 4;                    // what "slomo 4" sets (debug builds only)
+  t0 = game.time; s0 = snaps().length;
+  realSecond();
+  assert.ok(Math.abs(game.time - t0 - 4) < 0.06, 'four seconds of game time in a real second');
+  assert.ok(Math.abs(snaps().length - s0 - normal) <= 1, 'and about as many snapshots as at normal speed');
+  assert.equal(snaps().at(-1).ts, 4, 'they carry the speed, so browsers keep their clock in step');
+
+  // Research and traditions run on game time: 30 s ones are done in under 8 real seconds.
+  const host = game.players.get(1);
+  host.gold = 1000;
+  host.honor = TRADITIONS.heroes.cost;
+  engine.message(1, { t: 'research', tech: 'seafaring' });
+  engine.message(1, { t: 'learn', tradition: 'heroes' });
+  for (let i = 0; i < 8; i++) realSecond();
+  assert.equal(host.tech.seafaring, 1, 'researched');
+  assert.ok(host.traditions.includes('heroes'), 'learned');
 });

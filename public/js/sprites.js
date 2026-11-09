@@ -1,7 +1,8 @@
 // Procedurally drawn, cached sprites: unit cones with type icons, ships, castles and the anchor
 // badge of coastal cities. Sprites are 64x64 logical px, rendered at 2x for crisp scaling.
 import { UNIT_CLASSES } from './units/index.js';
-import { UPGRADE_TYPES, UNIT_TYPES } from '/shared/config.js';
+import { UPGRADE_TYPES, UNIT_TYPES, TRADITIONS } from '/shared/config.js';
+import { drawTradition, drawTraditionSmall } from './tradition-icons.js';
 
 const RES = 2;
 const SIZE = 64;
@@ -13,6 +14,7 @@ export const CONE = { cx: 32, by: 46, rx: 22, ry: 10, apex: 25 };
 export const CASTLE_ANCHOR = { x: 32, y: 47 };
 
 const unitCache = new Map();
+const glowCache = new Map();
 const castleCache = new Map();
 const urlCache = new Map();
 
@@ -36,24 +38,44 @@ function makeCanvas() {
 }
 
 // ------------------------------------------------------------------ icons
-// Each unit class (js/units/*.js) draws its own emblem in a 100x100 box.
-export function drawIcon(ctx, type, cx, cy, size) {
+// Each unit class (js/units/*.js) draws its own emblem in a 100x100 box. `variant`: a Hero's kind
+// (HERO_KINDS), which sets its mark behind the crown.
+export function drawIcon(ctx, type, cx, cy, size, variant = null) {
   const UnitClass = UNIT_CLASSES[type];
   ctx.save();
   ctx.translate(cx - size / 2, cy - size / 2);
   ctx.scale(size / 100, size / 100);
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  UnitClass.drawIcon(ctx, true);
-  UnitClass.drawIcon(ctx, false);
+  UnitClass.drawIcon(ctx, true, variant);
+  UnitClass.drawIcon(ctx, false, variant);
   ctx.restore();
 }
 
 // ------------------------------------------------------------------ unit cone
+// A unit standing firm (tradition Last Stand: outnumbered, taking less damage): its own sprite with a soft
+// red glow around it, cone, emblem or ship alike. The unit itself keeps its colours.
+export function standFirmSprite(color, type, variant = null) {
+  const key = `${color}${type}${variant || ''}`;
+  let c = glowCache.get(key);
+  if (c) return c;
+  const base = unitSprite(color, type, variant);
+  c = document.createElement('canvas');
+  c.width = base.width; c.height = base.height;
+  const ctx = c.getContext('2d');
+  ctx.shadowColor = 'rgba(240,30,30,0.95)';
+  ctx.shadowBlur = 4 * RES;
+  ctx.drawImage(base, 0, 0);
+  ctx.drawImage(base, 0, 0);            // twice: a stronger glow
+  glowCache.set(key, c);
+  return c;
+}
+
 // A unit's sprite: a cone, or a boat for ships. Both map the unit's position to CONE's base
 // centre (the waterline of a boat) and are about as wide as CONE.rx * 2 at the same size.
-export function unitSprite(color, type) {
-  const key = color + type;
+// `variant`: a Hero's kind (its emblem, see drawIcon).
+export function unitSprite(color, type, variant = null) {
+  const key = `${color}${type}${variant || ''}`;
   let c = unitCache.get(key);
   if (c) return c;
   if (UNIT_CLASSES[type].naval) {
@@ -104,7 +126,7 @@ export function unitSprite(color, type) {
   ctx.lineWidth = 2;
   ctx.beginPath(); ctx.ellipse(cx, by, rx - 1.5, ry - 1.5, 0, 0.25, Math.PI - 0.25); ctx.stroke();
 
-  drawIcon(ctx, type, cx, ay - 2, 30);
+  drawIcon(ctx, type, cx, ay - 2, 30, variant);
   unitCache.set(key, c);
   return c;
 }
@@ -512,12 +534,12 @@ export function upgradeIconURL(key, color) {
   return u;
 }
 
-// Data URL of a unit sprite (used for HUD buttons).
-export function unitIconURL(color, type) {
-  const key = color + type;
+// Data URL of a unit sprite (used for HUD buttons). `variant`: a Hero's kind.
+export function unitIconURL(color, type, variant = null) {
+  const key = `${color}${type}${variant || ''}`;
   let u = urlCache.get(key);
   if (!u) {
-    u = unitSprite(color, type).toDataURL();
+    u = unitSprite(color, type, variant).toDataURL();
     urlCache.set(key, u);
   }
   return u;
@@ -525,12 +547,13 @@ export function unitIconURL(color, type) {
 
 // Data URL of a unit type's emblem alone: the marker drawn over its cone (or on a ship's sail),
 // without the cone. The selection panel's unit icons, where many small cones are hard to tell apart.
-export function unitEmblemURL(type) {
-  const key = `emblem|${type}`;
+// `variant`: a Hero's kind.
+export function unitEmblemURL(type, variant = null) {
+  const key = `emblem|${type}|${variant || ''}`;
   let u = urlCache.get(key);
   if (!u) {
     const [c, ctx] = makeCanvas();
-    drawIcon(ctx, type, SIZE / 2, SIZE / 2, 56);
+    drawIcon(ctx, type, SIZE / 2, SIZE / 2, 56, variant);
     u = c.toDataURL();
     urlCache.set(key, u);
   }
@@ -571,6 +594,34 @@ function drawPerson(ctx, x, y, s, color) {
   ctx.strokeStyle = INK;
   ctx.lineWidth = 1.6;
   ctx.stroke(p);
+}
+
+// A tradition's picture (data URL): a heraldic shield in the player's colour (tradition-icons.js).
+export function traditionIconURL(key, color) {
+  const cacheKey = `tradition|${key}|${color}`;
+  let u = urlCache.get(cacheKey);
+  if (u) return u;
+  const [c, ctx] = makeCanvas();
+  drawTradition(ctx, key, color, !!TRADITIONS[key]?.ultimate);
+  u = c.toDataURL();
+  urlCache.set(cacheKey, u);
+  return u;
+}
+
+// A tradition's small picture (data URL) for 22-24 px: Players list and results (tradition-icons.js).
+// Drawn on a 48 px canvas, close to the size it is shown at, so it stays crisp.
+export function traditionSmallIconURL(key, color) {
+  const cacheKey = `tradition-small|${key}|${color}`;
+  let u = urlCache.get(cacheKey);
+  if (u) return u;
+  const c = document.createElement('canvas');
+  c.width = c.height = 48;
+  const ctx = c.getContext('2d');
+  ctx.scale(48 / SIZE, 48 / SIZE);
+  drawTraditionSmall(ctx, key, color, !!TRADITIONS[key]?.ultimate);
+  u = c.toDataURL();
+  urlCache.set(cacheKey, u);
+  return u;
 }
 
 // The picture of a technology in the Tech window (data URL), in the player's colour:
