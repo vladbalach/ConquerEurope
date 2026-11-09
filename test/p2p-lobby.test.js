@@ -118,6 +118,18 @@ test('players without a direct link play through the server relay', async () => 
   assert.equal(host.you !== bId, true);
 });
 
+test('a player who gave up is revealed at the end too, for the results screen', async () => {
+  const { a, b, c, cId } = await startedGame('p2p leaver');
+  c.send({ t: 'leave' });
+  await new Promise((r) => setTimeout(r, 150));
+  a.send({ t: 'gameEnded', winner: a.inbox.find((m) => m.t === 'host').you });
+  const r = await b.waitFor('reveal');
+  const leaver = r.players.find((p) => p.id === cId);
+  assert.equal(leaver?.name, NAMES[2], 'their nickname, with their game id');
+  assert.ok(/^#/.test(leaver.color));
+  assert.equal(r.players.length, 3);
+});
+
 test('when the host leaves, the game is over for everyone', async () => {
   const { a, b, c } = await startedGame('p2p two');
   a.send({ t: 'leave' });

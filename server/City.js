@@ -16,6 +16,9 @@ export class City {
     this.owner = -1;
     this.hp = CITY.hp;
     this.queue = [];        // production: unit types and upgrade names
+    // Honor paid for each queue entry, by index (Barracks with Brotherhood of Arms, units with Eternal
+    // Glory): what a cancel or a capture gives back instead of gold. 0 or missing: paid in gold.
+    this.queueHonor = [];
     this.progress = 0;
     this.rally = null;           // { x, y } on land: where new units go
     this.seaRally = null;        // { x, y } on the sea: where new ships go (coastal cities)
@@ -116,23 +119,27 @@ export class City {
     this.owner = newOwner;
     this.hp = CITY.captureHp;
     this.queue = [];
+    this.queueHonor = [];
     this.progress = 0;
     this.rally = null;
     this.seaRally = null;
     this.target = 0;
   }
 
-  // A spot on land just outside the walls, preferably facing the rally point.
+  // A spot on the city's own landmass just outside the walls, preferably facing the rally point.
+  // Not just any land: across a narrow strait that spot can be on an island the city doesn't stand on.
   spawnPoint(unitSize) {
     const nav = this.game.nav;
+    const home = nav.nearestWalkable(this.x, this.y, 60);
+    const land = home ? nav.landmass(home[0], home[1]) : 0;
     const d = CITY.size + unitSize + 2;
     const base = this.rally ? Math.atan2(this.rally.y - this.y, this.rally.x - this.x) : Math.random() * Math.PI * 2;
     for (let k = 0; k < 16; k++) {
       const ang = base + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (Math.PI / 8) + (Math.random() - 0.5) * 0.3;
       const x = this.x + Math.cos(ang) * d, y = this.y + Math.sin(ang) * d;
-      if (nav.walkable(x, y)) return [x, y];
+      if (land ? nav.landmass(x, y) === land : nav.walkable(x, y)) return [x, y];
     }
-    return nav.nearestWalkable(this.x, this.y, 60) || [this.x, this.y];
+    return home || [this.x, this.y];
   }
 
   // A spot on the water of the port for a new ship, a little apart from the ships already there.

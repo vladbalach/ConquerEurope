@@ -24,13 +24,18 @@ export class HostEngine {
     this.send = send;
     this.onEnded = onEnded || (() => {});
     this.game = Game.hosted({ id: gameId, title, map, nav: this.nav, roster, hostId, options });
+    // Pathfinding tables (about half a second): now, while players are still loading, not on the first order.
+    this.nav.buildLandmarks();
     this.reportedEnd = false;
     this.timer = 0;
+    this.waitSteps = 0;                 // steps before the start, for the snapshots sent meanwhile
+    this.acc = 0;                       // game seconds owed to the simulation (see advance)
   }
 
   // ---------------------------------------------------------------- players
   // A player's link is open (the host's own screen, or a peer that connected): they get the
-  // full game state. Reconnecting after a drop says "is back" to everyone.
+  // full game state. Reconnecting after a drop says "is back" to everyone. Before the start, a
+  // first connection means one more player has loaded the game (see Game.stepPrestart).
   connect(id) {
     const g = this.game, p = g.players.get(id);
     if (!p) return;
@@ -40,6 +45,7 @@ export class HostEngine {
       p.client = client;
       p.connected = true;
       g.broadcastRoom();
+      if (g.prestart) g.sendPrestart();
     } else if (p.connected) {
       p.client = client;                // a new link replaced the old one
     } else {
@@ -59,6 +65,7 @@ export class HostEngine {
     if (!p || !msg || typeof msg.t !== 'string') return;
     if (msg.t === 'leave') {
       this.game.removePlayer(from);
+      if (this.game.prestart) this.game.sendPrestart();   // one player fewer to wait for
       return;
     }
     this.game.handleCommand(p, msg);
@@ -107,19 +114,28 @@ export class HostEngine {
     });
     this.game.updatePorts();            // the seas and coasts come from the new land grid
     this.game.sendPorts(true);          // with the shore: the land grid is new
+    this.nav.buildLandmarks();          // for the new land grid
   }
 
   // ---------------------------------------------------------------- loop
-  // One simulation step, with snapshots and scores as the server sent them.
+  // One simulation step, with snapshots and scores as the server sent them. Before the start the
+  // game stands still, but players still get snapshots: their cities, gold, a city that fell
+  // neutral because its player left.
   step() {
     const g = this.game;
-    if (g.status === 'running') {
+    if (g.status === 'running' && g.prestart) {
+      g.stepPrestart();
+      if (++this.waitSteps % GAME.snapshotEvery === 0) g.sendSnapshots();
+    } else if (g.status === 'running') {
       const t0 = performance.now();
       g.tick(DT);
       g.perf.tickMs += performance.now() - t0;
       g.perf.ticks++;
-      if (g.tickCount % GAME.snapshotEvery === 0) g.sendSnapshots();
-      if (g.tickCount % GAME.tickRate === 0) g.sendScores();
+      // Faster than normal (slomo): snapshots and scores keep their pace in real time, not in ticks,
+      // so a faster game doesn't send more data.
+      const scale = Math.max(1, g.timeScale);
+      if (g.tickCount % Math.round(GAME.snapshotEvery * scale) === 0) g.sendSnapshots();
+      if (g.tickCount % Math.round(GAME.tickRate * scale) === 0) g.sendScores();
     }
     if (g.status === 'ended' && !this.reportedEnd) {
       this.reportedEnd = true;
@@ -127,16 +143,24 @@ export class HostEngine {
     }
   }
 
+  // `realSeconds` passed: run the fixed steps they are worth, times the game speed (Game.timeScale,
+  // developer console "slomo"). At most a quarter of a second of real time at once, so a tab that
+  // stalled doesn't make the game race to catch up.
+  advance(realSeconds) {
+    const scale = this.game.timeScale || 1;
+    this.acc = Math.min(this.acc + realSeconds * scale, 0.25 * Math.max(1, scale));
+    while (this.acc >= DT) {
+      this.acc -= DT;
+      this.step();
+    }
+  }
+
   start() {
-    let last = performance.now(), acc = 0;
+    let last = performance.now();
     this.timer = setInterval(() => {
       const now = performance.now();
-      acc = Math.min(acc + (now - last) / 1000, 0.25);
+      this.advance((now - last) / 1000);
       last = now;
-      while (acc >= DT) {
-        acc -= DT;
-        this.step();
-      }
     }, 1000 / GAME.tickRate / 2);
   }
 

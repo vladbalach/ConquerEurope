@@ -25,6 +25,15 @@ const SEA_CHANNELS = [
 const HEURISTIC_WEIGHT = 1.2;      // >1 trades a little path optimality for much faster searches
 const MAX_EXPANSIONS = 400000;
 const SEARCHES_PER_TICK = 8;       // background re-plans per tick; player commands are never throttled
+const EXPANSIONS_PER_TICK = 40000; // ...and the A* work they may take together (every search counts, one may overrun it)
+const SEARCH_COST = 1000;          // the least a search counts as: the work around the A* (line of sight, the string pulled tight)
+// A* estimates the way left with landmarks (ALT): the walking distance from a few far-apart cells of every
+// landmass and sea to every cell of it. Going round a sea, the straight line says far too little, and the
+// search floods half the continent; the landmarks know about the detour. Built on the first search.
+const LANDMARKS = 8;               // per landmass and sea
+const LANDMARK_MIN_CELLS = 2000;   // smaller landmasses and seas have none (the straight line is good enough there)
+const LM_STEP = 5, LM_DIAG = 7;    // table units of a straight and a diagonal step: 7 / 5 < √2, so never too long
+const LM_NONE = 0xffff;            // no distance (a cell without landmarks, or both land and sea)
 const CACHE_TTL = 8;               // seconds
 const CACHE_CELL = 4;              // starts within the same 4x4 block of cells share cached paths
 const OBSTACLE_COST = 6;           // path cost multiplier for cells next to a city's walls
@@ -92,13 +101,54 @@ export class NavGrid {
     this.heapSize = 0;
     this.cache = new Map();
     this.budget = SEARCHES_PER_TICK;
+    this.expansionBudget = EXPANSIONS_PER_TICK;
+    this.lastExpansions = 0;
+    this.landmarks = null;               // the landmark tables (buildLandmarks), on the first search
+    // Neighbours as index offsets (DIRS order), and back: dirAt[b - a + w + 1] is the direction from a to b.
+    this.offsets = DIRS.map(([di, dj]) => dj * this.w + di);
+    this.dirAt = new Int8Array(2 * this.w + 3).fill(-1);
+    this.offsets.forEach((o, d) => { this.dirAt[o + this.w + 1] = d; });
+    this.landSteps = this.stepMasks((a, b) => this.stepOk(a, b), (c) => this.poly[c] > 0);
     this.labelLandmasses();
     this.labelSeas();
+    this.seaSteps = this.stepMasks((a, b) => this.seaStepOk(a, b), (c) => this.sea[c] > 0);
     this.findCoasts();
   }
 
   beginTick() {
     this.budget = SEARCHES_PER_TICK;
+    this.expansionBudget = EXPANSIONS_PER_TICK;
+  }
+
+  // For every cell, a bit per direction (DIRS order) in which `ok` lets a unit step to the neighbour:
+  // stepOk and seaStepOk worked out once, so searches and line-of-sight checks only test a bit.
+  stepMasks(ok, from) {
+    const { w, h } = this;
+    const mask = new Uint8Array(w * h);
+    for (let c = 0; c < mask.length; c++) {
+      if (!from(c)) continue;
+      const ci = c % w, cj = (c - ci) / w;
+      let m = 0;
+      for (let d = 0; d < 8; d++) {
+        const ni = ci + DIRS[d][0], nj = cj + DIRS[d][1];
+        if (ni >= 0 && nj >= 0 && ni < w && nj < h && ok(c, nj * w + ni)) m |= 1 << d;
+      }
+      mask[c] = m;
+    }
+    return mask;
+  }
+
+  // stepOk and seaStepOk from the masks, for a cell b next to a, or a itself (false for any other cell).
+  landStep(a, b) {
+    if (a === b) return this.poly[a] > 0;
+    const d = this.dirAt[b - a + this.w + 1];
+    return d >= 0 && ((this.landSteps[a] >> d) & 1) === 1;
+  }
+
+  seaStep(a, b) {
+    if (a === b) return this.sea[a] > 0;
+    const d = this.dirAt[b - a + this.w + 1];
+    return d >= 0 && ((this.seaSteps[a] >> d) & 1) === 1;
   }
 
   // ---------------------------------------------------------------- cells
@@ -147,7 +197,7 @@ export class NavGrid {
     const a = this.cellOf(ax, ay), b = this.cellOf(bx, by);
     if (a < 0 || b < 0) return false;
     if (!this.poly[a]) return this.poly[b] > 0;      // already off the grid: let it climb back onto land
-    return this.stepOk(a, b);
+    return this.landStep(a, b);
   }
 
   // True when the straight segment stays on one connected stretch of land.
@@ -160,7 +210,7 @@ export class NavGrid {
       const t = s / steps;
       const c = this.cellOf(ax + (bx - ax) * t, ay + (by - ay) * t);
       if (c < 0) return false;
-      if (c !== prev && !this.stepOk(prev, c)) return false;
+      if (c !== prev && !this.landStep(prev, c)) return false;
       prev = c;
     }
     return true;
@@ -243,7 +293,7 @@ export class NavGrid {
   // Give every connected landmass an id so unreachable targets are detected
   // instantly instead of by searching the whole continent.
   labelLandmasses() {
-    const { w, h, poly } = this;
+    const { w, h, poly, landSteps, offsets } = this;
     const comp = (this.comp = new Int32Array(w * h));
     const stack = [];
     let next = 0;
@@ -253,12 +303,11 @@ export class NavGrid {
       stack.push(s);
       while (stack.length) {
         const cur = stack.pop();
-        const ci = cur % w, cj = (cur - ci) / w;
-        for (const [di, dj] of DIRS) {
-          const ni = ci + di, nj = cj + dj;
-          if (ni < 0 || nj < 0 || ni >= w || nj >= h) continue;
-          const n = nj * w + ni;
-          if (comp[n] || !this.stepOk(cur, n)) continue;
+        const m = landSteps[cur];
+        for (let d = 0; d < 8; d++) {
+          if (!((m >> d) & 1)) continue;
+          const n = cur + offsets[d];
+          if (comp[n]) continue;
           comp[n] = next;
           stack.push(n);
         }
@@ -609,7 +658,7 @@ export class NavGrid {
     const a = this.cellOf(ax, ay), b = this.cellOf(bx, by);
     if (a < 0 || b < 0) return false;
     if (!this.sea[a]) return this.sea[b] > 0;        // off the sea: let it get back onto the water
-    return this.seaStepOk(a, b);
+    return this.seaStep(a, b);
   }
 
   // True when the straight segment stays on the water.
@@ -622,7 +671,7 @@ export class NavGrid {
       const t = s / steps;
       const c = this.cellOf(ax + (bx - ax) * t, ay + (by - ay) * t);
       if (c < 0) return false;
-      if (c !== prev && !this.seaStepOk(prev, c)) return false;
+      if (c !== prev && !this.seaStep(prev, c)) return false;
       prev = c;
     }
     return true;
@@ -713,10 +762,90 @@ export class NavGrid {
     return top;
   }
 
+  // ---------------------------------------------------------------- landmarks (A* estimates)
+  // LANDMARKS tables of walking (or sailing) distances in table units (LM_STEP a cell): table k holds, for
+  // every cell, its distance from the k-th landmark of its landmass or sea. Landmarks are picked far apart
+  // (each the cell farthest from those before it). For two cells of the same landmass, the difference of
+  // their distances from a landmark is never more than the way between them (the triangle inequality), and
+  // round a sea it is far closer to it than the straight line. Stored by cell: lm[c * LANDMARKS + k].
+  buildLandmarks() {
+    if (this.landmarks) return;
+    const { w, h, comp, sea } = this;
+    const n = w * h;
+    const table = new Uint16Array(n * LANDMARKS).fill(LM_NONE);
+    const dist = new Int32Array(n);
+    const nearest = new Int32Array(n);       // distance from the nearest landmark so far
+    // Land and sea separately: a strait channel is both, and its cells keep no distance.
+    for (const [ids, mask, other] of [[comp, this.landSteps, sea], [sea, this.seaSteps, comp]]) {
+      let count = 0;
+      for (let c = 0; c < n; c++) if (ids[c] > count) count = ids[c];
+      const size = new Int32Array(count + 1), first = new Int32Array(count + 1).fill(-1);
+      for (let c = 0; c < n; c++) {
+        const id = ids[c];
+        if (!id) continue;
+        size[id]++;
+        if (first[id] < 0) first[id] = c;
+      }
+      // Only landmasses (seas) big enough get landmarks: `cells` are theirs.
+      const big = [];
+      for (let id = 1; id <= count; id++) if (size[id] >= LANDMARK_MIN_CELLS) big.push(id);
+      if (!big.length) continue;
+      const isBig = new Uint8Array(count + 1);
+      for (const id of big) isBig[id] = 1;
+      const cells = [];
+      for (let c = 0; c < n; c++) if (isBig[ids[c]]) cells.push(c);
+      // The first landmark of each is the cell farthest from any cell of it (its first one); every
+      // next one the cell farthest from the landmarks before it.
+      this.distances(big.map((id) => first[id]), mask, nearest);
+      const far = new Int32Array(count + 1);
+      for (let k = 0; k < LANDMARKS; k++) {
+        far.fill(-1);
+        for (const c of cells) {
+          const id = ids[c], f = far[id];
+          if (nearest[c] < 0x7fffffff && (f < 0 || nearest[c] > nearest[f])) far[id] = c;
+        }
+        this.distances(big.map((id) => far[id]).filter((c) => c >= 0), mask, dist);
+        for (const c of cells) {
+          const d = dist[c];
+          if (!other[c] && d < LM_NONE) table[c * LANDMARKS + k] = d;
+          if (k === 0 || d < nearest[c]) nearest[c] = d;
+        }
+      }
+    }
+    this.landmarks = table;
+  }
+
+  // Distances (table units) from the nearest of `sources` over the steps of `mask`, into `dist`
+  // (0x7fffffff where none reaches). Dijkstra with buckets: steps cost LM_STEP or LM_DIAG.
+  distances(sources, mask, dist) {
+    const INF = 0x7fffffff, offsets = this.offsets;
+    dist.fill(INF);
+    const cost = DIRS.map((d) => (d[2] === 1 ? LM_STEP : LM_DIAG));
+    const buckets = Array.from({ length: 8 }, () => []);   // by distance % 8: a step adds at most 7
+    let pending = 0;
+    for (const s of sources) { dist[s] = 0; buckets[0].push(s); pending++; }
+    for (let cur = 0; pending > 0; cur++) {
+      const b = buckets[cur & 7];
+      for (let i = 0; i < b.length; i++) {
+        const c = b[i];
+        pending--;
+        if (dist[c] !== cur) continue;          // reached by a shorter way since
+        const m = mask[c];
+        for (let d = 0; d < 8; d++) {
+          if (!((m >> d) & 1)) continue;
+          const nb = c + offsets[d], nd = cur + cost[d];
+          if (nd < dist[nb]) { dist[nb] = nd; buckets[nd & 7].push(nb); pending++; }
+        }
+      }
+      b.length = 0;
+    }
+  }
+
   // Waypoints from (sx, sy) towards (tx, ty), excluding the destination itself.
   // Returns [] when the straight line is clear, null when unreachable.
   // `sea`: a ship's path over the water instead of a walk over land.
   findPath(sx, sy, tx, ty, sea = false) {
+    this.lastExpansions = 0;
     const clear = sea ? (ax, ay, bx, by) => this.seaClear(ax, ay, bx, by) : (ax, ay, bx, by) => this.clear(ax, ay, bx, by);
     if (clear(sx, sy, tx, ty)) return [];
     const sp = sea ? this.nearestSea(sx, sy, 30) : this.nearestWalkable(sx, sy, 30);
@@ -727,20 +856,38 @@ export class NavGrid {
     const s = this.cellOf(sp[0], sp[1]), t = this.cellOf(tp[0], tp[1]);
     if (s === t) return [];
 
-    const w = this.w, h = this.h, g = this.g, parent = this.parent;
+    this.buildLandmarks();
+    const w = this.w, g = this.g, parent = this.parent;
     // Extra cost: next to city walls on land, within a city's range at sea.
     const seen = this.seen, closed = this.closed, obst = sea ? this.danger : this.obstacle;
     const penalty = sea ? DANGER_COST : OBSTACLE_COST;
+    const mask = sea ? this.seaSteps : this.landSteps, offsets = this.offsets;
     if (++this.stamp === 0xffffffff) { seen.fill(0); closed.fill(0); this.stamp = 1; }
     const stamp = this.stamp;
     const ti = t % w, tj = (t - ti) / w;
-    const heur = (i, j) => {
-      const dx = Math.abs(i - ti), dy = Math.abs(j - tj);
-      return HEURISTIC_WEIGHT * (dx + dy + (SQRT2 - 2) * Math.min(dx, dy));
+    // The estimate: the straight (octile) distance, or what the landmarks of the destination's landmass
+    // (sea) say when that is more.
+    const lm = this.landmarks, K = LANDMARKS;
+    const ak = [], at = [];
+    for (let k = 0; k < K; k++) {
+      if (lm[t * K + k] !== LM_NONE) { ak.push(k); at.push(lm[t * K + k]); }
+    }
+    const na = ak.length;
+    const heur = (c) => {
+      const ci = c % w, dx = Math.abs(ci - ti), dy = Math.abs((c - ci) / w - tj);
+      let e = dx + dy + (SQRT2 - 2) * (dx < dy ? dx : dy);
+      const base = c * K;
+      for (let i = 0; i < na; i++) {
+        const v = lm[base + ak[i]];
+        if (v === LM_NONE) continue;
+        const d = (v > at[i] ? v - at[i] : at[i] - v) / LM_STEP;
+        if (d > e) e = d;
+      }
+      return HEURISTIC_WEIGHT * e;
     };
     this.heapSize = 0;
     g[s] = 0; parent[s] = -1; seen[s] = stamp;
-    this.heapPush(s, heur(s % w, (s - (s % w)) / w));
+    this.heapPush(s, heur(s));
     let found = false, expansions = 0;
     while (this.heapSize) {
       const cur = this.heapPop();
@@ -748,19 +895,20 @@ export class NavGrid {
       closed[cur] = stamp;
       if (cur === t) { found = true; break; }
       if (++expansions > MAX_EXPANSIONS) break;
-      const ci = cur % w, cj = (cur - ci) / w;
-      for (const [di, dj, cost] of DIRS) {
-        const ni = ci + di, nj = cj + dj;
-        if (ni < 0 || nj < 0 || ni >= w || nj >= h) continue;
-        const n = nj * w + ni;
-        if (closed[n] === stamp || !(sea ? this.seaStepOk(cur, n) : this.stepOk(cur, n))) continue;
-        const ng = g[cur] + (obst && obst[n] ? cost * penalty : cost);
+      const m = mask[cur], gc = g[cur];
+      for (let d = 0; d < 8; d++) {
+        if (!((m >> d) & 1)) continue;
+        const n = cur + offsets[d];
+        if (closed[n] === stamp) continue;
+        const cost = d < 4 ? 1 : SQRT2;
+        const ng = gc + (obst && obst[n] ? cost * penalty : cost);
         if (seen[n] !== stamp || ng < g[n]) {
           seen[n] = stamp; g[n] = ng; parent[n] = cur;
-          this.heapPush(n, ng + heur(ni, nj));
+          this.heapPush(n, ng + heur(n));
         }
       }
     }
+    this.lastExpansions = expansions;
     if (!found) return null;
 
     // Keep only the cells where the direction changes, then pull the string tight.
@@ -784,11 +932,12 @@ export class NavGrid {
     return out;
   }
 
-  // Cached search for unit AI. Returns undefined when this tick's search budget
-  // is used up (try again next tick). `force` skips the budget (player commands).
-  // `fresh` ignores cached results (a unit that got stuck on a cached route).
-  // `sea`: a ship's path (findPath).
+  // Cached search for unit AI. Returns undefined when this tick's search budget (a number of searches,
+  // and of A* expansions, which player commands use up too) is spent: try again next tick. `force`
+  // skips the budget (player commands). `fresh` ignores cached results (a unit that got stuck on a
+  // cached route). `sea`: a ship's path (findPath).
   findPathCached(sx, sy, tx, ty, force = false, fresh = false, sea = false) {
+    this.lastExpansions = 0;                 // stays 0 for a cached path
     const now = performance.now() / 1000;    // real time: the cache is shared by all games
     const si = Math.floor((sx - this.x0) / (this.cell * CACHE_CELL));
     const sj = Math.floor((sy - this.y0) / (this.cell * CACHE_CELL));
@@ -800,10 +949,11 @@ export class NavGrid {
       return hit.path;
     }
     if (!force) {
-      if (this.budget <= 0) return undefined;
+      if (this.budget <= 0 || this.expansionBudget <= 0) return undefined;
       this.budget--;
     }
     const path = this.findPath(sx, sy, tx, ty, sea);
+    this.expansionBudget -= Math.max(this.lastExpansions, SEARCH_COST);
     if (this.cache.size > 3000) this.cache.clear();
     this.cache.set(key, { path, time: now });
     return path;

@@ -87,6 +87,7 @@
     <div id="topbar" class="hud">
       <div class="stat" id="stat-turn"><span class="hourglass"></span><small>Turns</small><b id="hud-turn">0</b><small id="hud-turn-next"></small></div>
       <div class="stat" id="stat-gold"><span class="coin"></span><b id="hud-gold">0</b><small id="hud-income"></small></div>
+      <div class="stat" id="stat-honor"><span class="honor"></span><b id="hud-honor">0</b></div>
       <div class="stat" id="stat-cities" title="Cities held, and how many win the game"><span class="tower"></span><b id="hud-cities">0</b><small id="hud-win"></small></div>
       <div class="stat" title="Units you command"><span class="army"></span><b id="hud-units">0</b></div>
       <div class="title" id="hud-title"></div>
@@ -105,7 +106,12 @@
 
     <div id="feed" class="feed"></div>
 
-    <div id="minimap-wrap" class="hud"><canvas id="minimap"></canvas></div>
+    <div id="minimap-wrap" class="hud">
+      <canvas id="minimap"></canvas>
+      <div id="minimap-grip" class="minimap-grip" title="Drag to resize the minimap · double click: default size">
+        <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M5 2 L16 13 M9 2 L16 9 M13 2 L16 5"/></svg>
+      </div>
+    </div>
     <div id="panel" class="hud panel"></div>
     <div id="build-col" class="build-col" hidden>
       <div id="upgrade-box" class="build-box"></div>
@@ -133,19 +139,24 @@
         <tr><td>S</td><td>Units selected: stop</td></tr>
         <tr><td>H</td><td>Units selected: hold position (fight only what is within reach; any new order ends it)</td></tr>
         <tr><td>Delete</td><td>Units selected: disband (they lose HP until they die; cities can't be disbanded)</td></tr>
+        <tr><td>C</td><td>One land unit selected: make it a Hero for honor (needs the tradition Cult of Heroes), like the Make Hero button</td></tr>
         <tr><td>Q / W / E / R / B</td><td>Build infantry / archers / cavalry / knight / transport in every selected city (ships only in coastal cities, marked with an anchor)</td></tr>
         <tr><td>Right click your transport</td><td>Units selected: they go on board. The transport must be near a coast; it sails to their shore and they gather there (8 places, only the units that fit go). Your transports light up while units are selected. Right-click more transports with the same selection to share it out; select the units again to send them to another transport instead</td></tr>
         <tr><td>Ctrl + B · Shift + B</td><td>Units selected: remove the ships from the selection · keep only the ships</td></tr>
         <tr><td>Ctrl + F · Shift + F</td><td>Units selected: remove the full transports from the selection · keep only the full transports</td></tr>
         <tr><td>U</td><td>Transports selected: unload. Click any land or city: the transport sails to the nearest coast, lands everyone and they march there (they attack an enemy city). Right click or Esc cancels. Quicker: right-click land or an enemy city with the loaded transports selected</td></tr>
         <tr><td>A / S / D / F / G</td><td>Cities selected: build Wall / Tower / Castle / Farm / Barracks in every selected city. A again: Wall II</td></tr>
+        <tr><td>Shift + G</td><td>Cities selected: build Barracks paid with honor instead of gold (needs the tradition Brotherhood of Arms)</td></tr>
+        <tr><td>Shift + Q / W / E / R / B</td><td>Cities selected: build that unit paid with honor, 2 times its gold cost (needs the tier II tradition Eternal Glory)</td></tr>
         <tr><td>Ctrl + 1–9, then 1–9</td><td>Save / recall control group (press twice to jump)</td></tr>
         <tr><td>Hold Alt</td><td>Show the attack radius of every city · Alt + drag selects only your cities, not units</td></tr>
-        <tr><td>Space</td><td>Center on selection</td></tr>
+        <tr><td>Space · Shift + Space</td><td>Center on selection · jump to your city captured last (a captured city of yours also pings red on the minimap)</td></tr>
+        <tr><td>Drag the minimap's top-right corner</td><td>Resize the minimap (kept for your next games) · double click the corner: default size</td></tr>
         <tr><td>F2</td><td>Select all your units</td></tr>
         <tr><td>Arrows · screen edge · middle drag</td><td>Scroll the map</td></tr>
         <tr><td>Mouse wheel</td><td>Zoom</td></tr>
         <tr><td>T</td><td>Technologies: Sea (Seafaring: ships, boarding and landing) and Rebellion (what you can do as a liberator)</td></tr>
+        <tr><td>O · click the silver star</td><td>Honor: traditions you learn with the honor your kills earn, such as Heroes</td></tr>
         <tr><td>Tab</td><td>Players · F1 this help · Esc deselect</td></tr>
       </table>
       <p class="muted small">Capture a city by bringing its HP to zero. Units walk only on land and find their own way around seas; to reach islands such as Britain or Sicily, carry them over in transports. Ships sail only on the sea and are built in coastal cities; they take units on board and land them only on beaches, the sandy stretches of coast (the rest is cliffs). Units regenerate HP after a few seconds out of combat.</p>
@@ -156,13 +167,16 @@
     </div>
 
     <div id="tech" class="overlay hud" hidden></div>
-    <div id="banner" class="banner" hidden></div>
-    <div id="gameover" class="overlay hud" hidden>
-      <h2 id="gameover-title"></h2>
-      <p id="gameover-text" class="muted"></p>
-      <ul id="gameover-players" class="reveal" hidden></ul>
-      <button type="button" id="gameover-leave" class="primary">Back to lobby</button>
+    <div id="honor" class="overlay hud" hidden></div>
+    <!-- Top centre: who is close to winning (everyone sees it), then the banner below it. -->
+    <div id="top-center" class="top-center">
+      <div id="race" class="race" hidden></div>
+      <div id="banner" class="banner" hidden></div>
     </div>
+    <!-- Before a game starts: players loading it, then the countdown. -->
+    <div id="prestart" class="prestart" hidden></div>
+    <!-- Once the game is over: every player's stats and the timeline (results.js). Full screen, or a bar at the top. -->
+    <div id="results" class="results" hidden></div>
   </section>
 
   <div id="toast" class="toast" hidden></div>

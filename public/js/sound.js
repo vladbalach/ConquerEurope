@@ -2,7 +2,12 @@
 // the player has clicked or pressed a key on it, so audio starts on the first of those; until
 // then playSound() does nothing. The files are made with tools/gen-sfx.js, which also sets how
 // loud each one is: they play at volume 1 unless a caller asks for less.
-const FILES = { tick: '/sounds/tick.wav', 'city-lost': '/sounds/city-lost.wav' };
+const FILES = {
+  tick: '/sounds/tick.wav',
+  'city-lost': '/sounds/city-lost.wav',
+  'tradition-learned': '/sounds/tradition-learned.wav',   // Honor window: a tradition learned
+  'tech-learned': '/sounds/tech-learned.wav',             // Tech window: research complete
+};
 
 let ctx = null;
 const buffers = new Map();

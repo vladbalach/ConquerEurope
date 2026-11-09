@@ -4,7 +4,8 @@
 // This file and everything it imports also run in the host player's browser (served as /sim/),
 // where the game is simulated for browser-to-browser play: no Node-only modules here.
 import {
-  UNITS, CITY, CITY_UPGRADES, PRODUCTION_ITEMS, GAME, ECONOMY, DISBAND, LIBERATOR, TECH_TYPES, PLAYER_COLORS, DEBUG, NAVAL,
+  UNITS, CITY, CITY_UPGRADES, PRODUCTION_ITEMS, GAME, ECONOMY, DISBAND, LIBERATOR, TECH_TYPES, PLAYER_COLORS, DEBUG, NAVAL, HONOR,
+  TRADITIONS, TRADITION_TYPES, HERO, HERO_KINDS, HEALER,
 } from '../shared/config.js';
 import {
   noTech, nextLevel, techAvailable, liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring,
@@ -14,6 +15,8 @@ import { higherGrades } from '../shared/upgrades.js';
 import { City, markCityObstacles } from './City.js';
 import { regionCities, regionHolder } from '../shared/regions.js';
 import { createUnit } from './units/index.js';
+import { STAND_FIRM_FLAG, HERO_KIND_SHIFT, CARGO_SHIFT } from '../shared/protocol.js';
+import { History } from './history.js';
 
 // Secret token a player rejoins with.
 function randomToken() {
@@ -25,14 +28,21 @@ function randomToken() {
 const itemDef = (item) => (PRODUCTION_ITEMS.includes(item) ? UNITS[item] || CITY_UPGRADES[item] : null);
 
 const GRID_CELL = 40;              // spatial hash cell (km) for neighbour queries
+const COLLISION_MARGIN = 12;       // km a unit may be pushed in one resolveCollisions and still be found by its neighbours
 const VIEW_MARGIN = 150;           // km around a player's viewport that is included in snapshots
 const CLUSTER_RADIUS = 150;        // units this close share one path in a group move
+const JOIN_POINTS = 3;             // ...and join it at one of its first points that they can see
+// A* work that group moves may spend on short ways to it for units that can't, beyond the search work of a
+// tick (NavGrid.expansionBudget): shared by all the orders of a tick, so several at once don't add up.
+const JOIN_EXPANSIONS = 40000;
 const COMMANDS_PER_SECOND = 20;    // per player; protects the server from command spam
 const MAX_DEBUG_GOLD = 1e9;        // developer console "gold N": the most it may set
+const MIN_SPEED = 0.1, MAX_SPEED = 10;   // developer console "slomo N": game speed limits
 const SHIP_SPACING = 26;           // distance between ships in a group move
 const LANDING_STEP = 8;             // km between the places tried when units step ashore
 const LANDING_RETRY = 0.5;          // seconds between two tries to land the units still on board
 const DOCK_MARGIN = 2;              // km of water left between two docked ships
+const STAND_CHECK = 0.5;            // seconds between two Last Stand checks of a unit (Game.checkStandFirm)
 const r1 = (v) => Math.round(v * 10) / 10;
 
 // A player's state at the start: gold, counters, connection.
@@ -44,10 +54,15 @@ function newPlayer(id, client) {
     // liberation; the next mark is allowed once the turn counter reaches both liberateAt (after a
     // liberation) and influenceAt (one mark per turn). smuggle: cities smuggled from (separate marks).
     liberator: false, liberateAt: 0, influence: [], influenceAt: 0, smuggle: [],
-    // Technologies (shared/tech.js): levels, and the one being researched { tech, time, progress, cost }.
-    tech: noTech(), research: null,
+    // Technologies (shared/tech.js): levels, the level being researched { tech, level, time, progress, cost },
+    // and the levels queued after it [{ tech, level, cost }], each paid when queued.
+    tech: noTech(), research: null, researchQueue: [],
     commandTokens: COMMANDS_PER_SECOND,
     kills: 0, losses: 0,         // gold value of enemy units destroyed / own units lost
+    honor: 0,                    // earned by kills (HONOR.killShare of each unit's cost); private, shown in the top bar
+    // Traditions (Honor window): the ones learned, the one being learned { tradition, time, progress, cost },
+    // and the ones queued after it [{ tradition, cost }], each paid when queued.
+    traditions: [], learning: null, learnQueue: [],
   };
 }
 
@@ -86,6 +101,9 @@ export class Game {
     this.id = id;
     this.title = title;
     this.status = 'lobby';            // lobby | running | ended
+    // A hosted game before its start (see Game.hosted): { wait, countdown } in ticks, countdown null
+    // while players are still loading. Nothing moves and orders are ignored until it is null.
+    this.prestart = null;
     // Victory rules the host picks in the waiting room (shared/options.js).
     this.options = sanitizeOptions(options, map.cities.length);
     this.players = new Map();         // slot id (0..19) -> player
@@ -112,8 +130,14 @@ export class Game {
     this.winner = -1;
     this.startedWith = 0;
     this.pendingDeaths = [];
+    // Game speed (developer console "slomo N"): game time runs this many times as fast as real time. The
+    // host's loop (HostEngine.advance) runs that many more fixed steps per second, so everything that
+    // counts game time (moving, fighting, building, research, traditions, turns, cooldowns) speeds up alike.
+    this.timeScale = 1;
     this.endedAt = 0;
     this.emptySince = 0;
+    // What happened, turn by turn, for the results screen once the game is over (server/history.js).
+    this.history = new History();
   }
 
   // The player who holds every city of this region, or -1 (their cities there pay more gold).
@@ -158,7 +182,50 @@ export class Game {
     game.status = 'running';
     for (const p of game.players.values()) game.giveStartingCities(p);
     game.startedWith = game.players.size;
+    // The host's own screen has the game at once, the others only once their link opens: wait for
+    // them, so the host gets no head start.
+    game.prestart = { wait: GAME.startWait * GAME.tickRate, countdown: null };
     return game;
+  }
+
+  // ------------------------------------------------------------ the start of a hosted game
+  // One step (one tick of real time) of the start: wait until every player has loaded the game (or
+  // GAME.startWait is over, for a player who never comes), then count GAME.startCountdown down.
+  // Every player is told how many have loaded, then each second of the countdown, then the start.
+  stepPrestart() {
+    const s = this.prestart;
+    if (!s) return;
+    if (s.countdown === null) {
+      s.wait--;
+      if (s.wait > 0 && [...this.players.values()].some((p) => !p.everConnected)) return;
+      s.countdown = GAME.startCountdown * GAME.tickRate;
+      if (s.countdown <= 0) this.prestart = null;      // no countdown (debug builds): start at once
+      this.sendPrestart();
+      return;
+    }
+    s.countdown--;
+    if (s.countdown <= 0) {
+      this.prestart = null;
+      this.sendPrestart();
+    } else if (s.countdown % GAME.tickRate === 0) {
+      this.sendPrestart();
+    }
+  }
+
+  // For the players: { loaded, total, left } (left: whole seconds of the countdown, null while
+  // players are still loading), or null once the game has started.
+  prestartInfo() {
+    const s = this.prestart;
+    if (!s) return null;
+    const list = [...this.players.values()];
+    return {
+      loaded: list.filter((p) => p.everConnected).length, total: list.length,
+      left: s.countdown === null ? null : Math.ceil(s.countdown / GAME.tickRate),
+    };
+  }
+
+  sendPrestart() {
+    this.broadcast({ t: 'prestart', ...(this.prestartInfo() || { left: 0 }) });
   }
 
   // A player who dropped out of a running game can come back: by their secret token,
@@ -214,9 +281,10 @@ export class Game {
     if (!p) return;
     this.players.delete(id);
     if (this.status !== 'lobby') {
+      this.history.event(this, id, 'left');
       for (const c of this.cities) {
         if (c.owner !== id) continue;
-        c.owner = -1; c.queue = []; c.progress = 0; c.rally = null; c.seaRally = null;
+        c.owner = -1; c.queue = []; c.queueHonor = []; c.progress = 0; c.rally = null; c.seaRally = null;
       }
       for (const [uid, u] of this.units) if (u.owner === id) this.units.delete(uid);
       this.broadcast({ t: 'event', kind: 'left', player: id });
@@ -268,15 +336,20 @@ export class Game {
   }
 
   // A city that is no longer coastal can't launch the ships in its queue: they are cancelled and
-  // their gold goes back to the owner.
+  // what was paid for them (gold, or honor) goes back to the owner.
   refreshPort(c) {
     c.updatePort();
     if (c.seaRally && (!c.port || this.nav.seaAt(c.seaRally.x, c.seaRally.y) !== c.port.sea)) c.seaRally = null;
     if (c.port || !c.queue.some((item) => UNITS[item]?.naval)) return;
     const owner = this.players.get(c.owner);
     if (UNITS[c.queue[0]]?.naval) c.progress = 0;
-    for (const item of c.queue) if (UNITS[item]?.naval && owner) owner.gold += UNITS[item].cost;
-    c.queue = c.queue.filter((item) => !UNITS[item]?.naval);
+    const queue = [], honor = [];
+    c.queue.forEach((item, i) => {
+      if (!UNITS[item]?.naval) { queue.push(item); honor.push(c.queueHonor[i] || 0); }
+      else this.giveBack(owner, item, c.queueHonor[i]);
+    });
+    c.queue = queue;
+    c.queueHonor = honor;
   }
 
   // For the browsers: [city id, port x, port y] of every coastal city.
@@ -339,6 +412,7 @@ export class Game {
     p.client.send({
       t: 'start', you: p.id, title: this.title, options: this.options, players: this.playerList(), ports: this.portList(),
       beaches: this.nav.beachData(true),        // where ships can take units on board and land them
+      prestart: this.prestartInfo(),            // not started yet: waiting for players, or counting down
     });
   }
 
@@ -352,6 +426,10 @@ export class Game {
       eliminated: p.eliminated, cities: p.cityCount, units: p.unitCount, kills: p.kills, losses: p.losses,
       liberator: p.liberator, liberateAt: p.liberateAt, influence: p.influence, influenceAt: p.influenceAt,
       smuggle: p.smuggle, tech: p.tech,
+      // Traditions are public; so is an ultimate one being learned: which (null: none) and the seconds left.
+      traditions: p.traditions,
+      ultimate: p.learning && TRADITIONS[p.learning.tradition].ultimate ? p.learning.tradition : null,
+      ultimateLeft: p.learning && TRADITIONS[p.learning.tradition].ultimate ? Math.ceil(p.learning.time - p.learning.progress) : 0,
     }));
   }
 
@@ -409,6 +487,7 @@ export class Game {
 
   handleCommand(player, msg) {
     if (this.status !== 'running') return;
+    if (this.prestart && msg.t !== 'view') return;     // nobody gives orders before the start
     const num = (v) => typeof v === 'number' && Number.isFinite(v);
     if (msg.t !== 'view') {
       if (player.commandTokens < 1) return;
@@ -484,17 +563,28 @@ export class Game {
         // One unit or upgrade in each listed city, in order, as far as the gold reaches. An upgrade
         // queues its next grade in each city (Wall I, or Wall II where Wall I is built or queued),
         // and is skipped where every grade is; a ship is skipped in cities that are not coastal.
-        // Ships need the Seafaring technology.
+        // Ships need the Seafaring technology. `honor`: paid with honor instead of gold, as far as the
+        // honor reaches (honorPrice: Barracks with Brotherhood of Arms, units with Eternal Glory).
         const item = msg.item;
         if (!itemDef(item) || (UNITS[item]?.naval && !hasSeafaring(player.tech))) return;
+        const honor = msg.honor === true;
+        if (honor && this.honorPrice(player, item) === null) return;
         for (const c of this.ownedCities(player, msg)) {
           if (c.queue.length >= ECONOMY.maxQueue) continue;
           const key = CITY_UPGRADES[item] ? c.nextUpgrade(item) : item;
           if (!key || !c.canBuild(key)) continue;
-          const { cost } = itemDef(key);
-          if (player.gold < cost) continue;   // grades differ in cost: a cheaper one may still fit
-          player.gold -= cost;
+          let paidHonor = 0;
+          if (honor) {
+            paidHonor = this.honorPrice(player, key);
+            if (paidHonor === null || player.honor < paidHonor) continue;
+            player.honor -= paidHonor;
+          } else {
+            const { cost } = itemDef(key);
+            if (player.gold < cost) continue;   // grades differ in cost: a cheaper one may still fit
+            player.gold -= cost;
+          }
           c.queue.push(key);
+          c.queueHonor[c.queue.length - 1] = paidHonor;
         }
         return;
       }
@@ -504,12 +594,12 @@ export class Game {
         if (!c || c.owner !== player.id || !Number.isInteger(msg.index)) return;
         if (msg.index < 0 || msg.index >= c.queue.length) return;
         const [item] = c.queue.splice(msg.index, 1);
-        player.gold += itemDef(item).cost;
+        this.giveBack(player, item, c.queueHonor.splice(msg.index, 1)[0]);
         for (const key of higherGrades(item)) {
           const i = c.queue.indexOf(key);   // always after `item`: it was queued later
           if (i < 0) continue;
           c.queue.splice(i, 1);
-          player.gold += itemDef(key).cost;
+          this.giveBack(player, key, c.queueHonor.splice(i, 1)[0]);
         }
         if (msg.index === 0) c.progress = 0;
         return;
@@ -533,7 +623,20 @@ export class Game {
         this.startResearch(player, msg.tech);
         return;
       case 'cancelResearch':
-        this.cancelResearch(player);
+        // `tech` and `level`: that level, queued or running (none: the one running).
+        this.cancelResearch(player, msg.tech, msg.level);
+        return;
+      case 'learn':
+        this.startLearning(player, msg.tradition);
+        return;
+      case 'cancelLearn':
+        // `tradition`: that one, queued or being learned (none: the one being learned).
+        this.cancelLearning(player, msg.tradition);
+        return;
+      case 'promote':
+        // Make Hero / Make Healer: one of your plain land units becomes a Hero (tradition Cult of Heroes)
+        // or, with `to: 'healer'`, a Healer (Order of Mercy), for honor.
+        if (Number.isInteger(msg.id)) this.promote(player, msg.id, msg.to === 'healer' ? 'healer' : 'hero');
         return;
       case 'resetHp':
         // Developer console "reset hp" (debug builds only, like the rest of the debug tools).
@@ -542,6 +645,18 @@ export class Game {
       case 'setGold':
         // Developer console "gold N" (debug builds only).
         if (DEBUG && num(msg.gold)) this.setGold(player.id, msg.gold);
+        return;
+      case 'setHonor':
+        // Developer console "honor N" (debug builds only).
+        if (DEBUG && num(msg.honor)) this.setHonor(player.id, msg.honor);
+        return;
+      case 'setSpeed':
+        // Developer console "slomo N" (debug builds only).
+        if (DEBUG && num(msg.speed)) this.setSpeed(player.id, msg.speed);
+        return;
+      case 'takeCity':
+        // "Own" on a city's panel (debug builds only): the city becomes the sender's.
+        if (DEBUG && Number.isInteger(msg.city)) this.takeCity(player, msg.city);
         return;
       case 'rally': {
         // Right-click with cities selected. On land: the rally point of the units they train. On the
@@ -614,7 +729,7 @@ export class Game {
       if (c.owner === p.id || !this.liberable(c)) continue;
       this.captureCity(c, p.id, true);
       taken++;
-      this.recount();           // city counts for the next protection check (and a possible win)
+      this.recount();           // city counts for the next protection check
     }
     if (taken) {
       this.revive(p);
@@ -627,6 +742,7 @@ export class Game {
   // Back in the game: no longer a liberator, and their marks are gone, so other liberators may
   // mark those cities (a city carries one mark of each kind).
   revive(p) {
+    if (p.liberator) this.history.event(this, p.id, 'back');
     p.liberator = false;
     p.influence = [];
     p.smuggle = [];
@@ -643,20 +759,44 @@ export class Game {
   }
 
   // ------------------------------------------------------------ technologies
-  // Research is paid up front and runs on game time; one at a time. Rebellion technologies exist
-  // only with Death: Liberator (techAvailable).
+  // Research is paid up front and runs on game time, one level at a time. Ordering more while one runs
+  // queues them (paid at once too); each starts when the one before it is done. Rebellion technologies
+  // exist only with Death: Liberator (techAvailable).
   startResearch(p, key) {
-    if (!TECH_TYPES.includes(key) || p.research || p.eliminated || !techAvailable(key, this.options)) return;
-    const next = nextLevel(key, p.tech[key]);
+    if (!TECH_TYPES.includes(key) || p.eliminated || !techAvailable(key, this.options)) return;
+    const next = nextLevel(key, this.plannedLevel(p, key));
     if (!next || p.gold < next.cost) return;
     p.gold -= next.cost;
-    p.research = { tech: key, time: next.time, progress: 0, cost: next.cost };
+    if (p.research) p.researchQueue.push({ tech: key, level: next.level, cost: next.cost });
+    else p.research = { tech: key, level: next.level, time: next.time, progress: 0, cost: next.cost };
   }
 
-  cancelResearch(p) {
-    if (!p.research) return;
-    p.gold += p.research.cost;
-    p.research = null;
+  // The level of `key` once the research running and the queue are done.
+  plannedLevel(p, key) {
+    return [p.research, ...p.researchQueue].reduce((n, e) => (e && e.tech === key ? n + 1 : n), p.tech[key]);
+  }
+
+  // Cancels a level (running or queued) and the higher levels of that technology queued after it, as
+  // they need it: their gold comes back. The one running cancelled, the next in the queue starts.
+  cancelResearch(p, key = p.research?.tech, level = p.research?.level) {
+    if (!TECH_TYPES.includes(key) || !Number.isInteger(level)) return;
+    const gone = (e) => e.tech === key && e.level >= level;
+    for (const e of p.researchQueue.filter(gone)) p.gold += e.cost;
+    p.researchQueue = p.researchQueue.filter((e) => !gone(e));
+    if (p.research && gone(p.research)) {
+      p.gold += p.research.cost;
+      p.research = null;
+      this.nextResearch(p);
+    }
+  }
+
+  // The next level in the queue starts (paid when it was queued).
+  nextResearch(p) {
+    const e = p.researchQueue.shift();
+    if (!e) return;
+    const next = nextLevel(e.tech, e.level - 1);
+    if (next) p.research = { ...e, time: next.time, progress: 0 };
+    else { p.gold += e.cost; this.nextResearch(p); }    // no such level any more (balance changed): refunded
   }
 
   advanceResearch(dt) {
@@ -667,8 +807,10 @@ export class Game {
       if (r.progress < r.time) continue;
       p.tech = { ...p.tech, [r.tech]: p.tech[r.tech] + 1 };
       p.research = null;
+      this.history.researched(this, p.id, r.tech, p.tech[r.tech], r.cost);
       if (p.client) p.client.send({ t: 'event', kind: 'researched', tech: r.tech, level: p.tech[r.tech] });
       this.sendScores();        // levels are public: they change what liberators can do
+      this.nextResearch(p);
     }
   }
 
@@ -695,6 +837,176 @@ export class Game {
     const gold = Math.round(Math.min(MAX_DEBUG_GOLD, Math.max(0, amount)));
     for (const p of this.players.values()) p.gold = gold;
     this.broadcast({ t: 'event', kind: 'goldSet', player: by, gold });
+  }
+
+  // Every player's honor set to the same amount (developer console, debug builds only).
+  setHonor(by, amount) {
+    const honor = Math.round(Math.min(MAX_DEBUG_GOLD, Math.max(0, amount)));
+    for (const p of this.players.values()) p.honor = honor;
+    this.broadcast({ t: 'event', kind: 'honorSet', player: by, honor });
+  }
+
+  // The game speed (developer console "slomo N", debug builds only): N times normal, from MIN_SPEED to
+  // MAX_SPEED (the host's browser has to simulate that many more steps). Everyone is told.
+  setSpeed(by, speed) {
+    this.timeScale = Math.round(Math.min(MAX_SPEED, Math.max(MIN_SPEED, speed)) * 100) / 100;
+    this.broadcast({ t: 'event', kind: 'speedSet', player: by, speed: this.timeScale });
+  }
+
+  // A city becomes `p`'s at once, like a capture (debug builds only: the "Own" button on a city's
+  // panel). Not for spectators. Everyone is told; the game's statistics don't count it.
+  takeCity(p, ci) {
+    const c = this.cities[ci];
+    if (!c || c.owner === p.id || p.eliminated) return;
+    this.captureCity(c, p.id, false, true);
+  }
+
+  // ------------------------------------------------------------ honor: traditions and heroes
+  // Traditions are paid in honor up front and learned on game time, one at a time (alongside any
+  // research). Learning more while one is learned queues them (paid at once too); each starts when the
+  // one before it is done. Cancelling gives the honor back.
+  startLearning(p, key) {
+    if (!TRADITION_TYPES.includes(key) || p.eliminated || this.plansTradition(p, key)) return;
+    const def = TRADITIONS[key];
+    if (p.honor < def.cost || (def.ultimate && !this.readyForUltimate(p, true))) return;
+    p.honor -= def.cost;
+    if (p.learning) p.learnQueue.push({ tradition: key, cost: def.cost });
+    else this.beginLearning(p, key, def.cost);
+  }
+
+  beginLearning(p, key, cost) {
+    p.learning = { tradition: key, time: TRADITIONS[key].time, progress: 0, cost };
+    // Nobody is told; the Players list (public) shows the countdown of an ultimate one from now on.
+    if (TRADITIONS[key].ultimate) this.sendScores();
+  }
+
+  // Learned, being learned or queued?
+  plansTradition(p, key) {
+    return p.traditions.includes(key) || p.learning?.tradition === key || p.learnQueue.some((e) => e.tradition === key);
+  }
+
+  // Cancels a tradition, being learned or queued: its honor comes back. A tier I one takes the queued
+  // tier II ones with it, as they need it. The one being learned cancelled, the next in the queue starts.
+  cancelLearning(p, key = p.learning?.tradition) {
+    if (!TRADITION_TYPES.includes(key)) return;
+    const gone = (e) => e.tradition === key || (!TRADITIONS[key].ultimate && TRADITIONS[e.tradition].ultimate);
+    for (const e of p.learnQueue.filter(gone)) p.honor += e.cost;
+    p.learnQueue = p.learnQueue.filter((e) => !gone(e));
+    if (p.learning && p.learning.tradition === key) {
+      p.honor += p.learning.cost;
+      p.learning = null;
+      if (TRADITIONS[key].ultimate) this.sendScores();     // its countdown leaves the Players list
+      this.nextLearning(p);
+    }
+  }
+
+  // The next tradition in the queue starts (paid when it was queued).
+  nextLearning(p) {
+    const e = p.learnQueue.shift();
+    if (e) this.beginLearning(p, e.tradition, e.cost);
+  }
+
+  // The ultimate (tier II) traditions open once every tier I tradition is learned. `planned`: or being
+  // learned, or queued (so ahead of a tier II one queued now).
+  readyForUltimate(p, planned = false) {
+    return TRADITION_TYPES.every((k) => TRADITIONS[k].ultimate || (planned ? this.plansTradition(p, k) : p.traditions.includes(k)));
+  }
+
+  // Everyone is told when a player has learned an ultimate tradition (starting or cancelling it is only
+  // seen in the Players list, as its countdown).
+  announceUltimate(p, key) {
+    this.broadcast({ t: 'event', kind: 'ultimate', player: p.id, tradition: key, state: 'learned' });
+    this.sendScores();
+  }
+
+  // Has player `id` learned tradition `key`?
+  hasTradition(id, key) {
+    const p = this.players.get(id);
+    return !!p && p.traditions.includes(key);
+  }
+
+  // Last Stand (tradition): a unit stands firm while the enemy units within TRADITIONS.lastStand.radius of it
+  // are at least `odds` times as many as its owner's units there, itself included. Then it takes damageCut
+  // less damage (Unit.receiveDamage) and the snapshot flags it (STAND_FIRM_FLAG). Ships count and are
+  // counted; units on board don't. Each unit checks every STAND_CHECK seconds, at its own moment, so the
+  // work is spread over the ticks. Uses the unit grid of this tick.
+  checkStandFirm() {
+    const def = TRADITIONS.lastStand;
+    for (const u of this.units.values()) {
+      if (this.time < u.standCheckAt) continue;
+      u.standCheckAt = this.time + STAND_CHECK;
+      if (!this.hasTradition(u.owner, 'lastStand')) { u.standFirm = false; continue; }
+      let own = 0, enemies = 0;
+      this.unitGrid.forEachNear(u.x, u.y, def.radius + COLLISION_MARGIN, (o) => {
+        if (o.hp <= 0 || Math.hypot(o.x - u.x, o.y - u.y) > def.radius) return;
+        if (o.owner === u.owner) own++;
+        else enemies++;
+      });
+      u.standFirm = enemies >= def.odds * own;
+    }
+  }
+
+  advanceLearning(dt) {
+    for (const p of this.players.values()) {
+      const l = p.learning;
+      if (!l) continue;
+      l.progress += dt;
+      if (l.progress < l.time) continue;
+      p.traditions = [...p.traditions, l.tradition];
+      p.learning = null;
+      this.history.learned(this, p.id, l.tradition, l.cost);
+      this.tell(p, { kind: 'learned', tradition: l.tradition });
+      if (TRADITIONS[l.tradition].ultimate) this.announceUltimate(p, l.tradition);
+      else this.sendScores();             // traditions are public (Players list)
+      this.nextLearning(p);
+    }
+  }
+
+  // One of your plain land units becomes a Hero or a Healer (`to`) where it stands, keeping its id (so it
+  // stays selected), its orders and its share of HP (Unit.takeOver). Not a ship, not a unit being
+  // disbanded, not a Hero or Healer already. Each needs its tradition and costs honor. A Hero keeps the
+  // speed and range of its kind (HERO.kinds: a knight makes a cavalry Hero).
+  promote(p, id, to) {
+    const rule = to === 'healer' ? { tradition: 'mercy', cost: HEALER.cost } : { tradition: 'heroes', cost: HERO.cost };
+    if (!p.traditions.includes(rule.tradition) || p.honor < rule.cost) return;
+    const u = this.units.get(id);
+    if (!u || u.owner !== p.id || u.naval || u.stats.promoted || u.disbanding || u.hp <= 0) return;
+    p.honor -= rule.cost;
+    const made = createUnit(to, this, u.id, u.owner, u.x, u.y);
+    if (to === 'hero') made.kind = HERO.kinds[u.type] || 'infantry';
+    made.takeOver(u);
+    this.units.set(u.id, made);             // same key: the unit keeps its place in the list
+    this.history.promoted(p.id, to, rule.cost);
+    this.tell(p, { kind: 'promoted', unit: made.id, from: u.type, to });
+  }
+
+  // Healers (Order of Mercy): every land unit of a Healer's owner within HEALER.radius of it, the Healer
+  // too, regains HEALER.hpPerSecond HP per second, in combat too. Several Healers don't add up. Not
+  // ships, not units being disbanded. Uses the unit grid of this tick; the units that went on board
+  // this tick are still in it, so they are checked against the map.
+  heal(dt) {
+    const healed = new Set();
+    for (const h of this.units.values()) {
+      if (h.type !== 'healer') continue;
+      this.unitGrid.forEachNear(h.x, h.y, HEALER.radius + 12, (u) => {
+        if (u.owner !== h.owner || u.naval || u.disbanding || healed.has(u) || !this.units.has(u.id)) return;
+        if (Math.hypot(u.x - h.x, u.y - h.y) <= HEALER.radius) healed.add(u);
+      });
+    }
+    for (const u of healed) u.hp = Math.min(u.maxHp, u.hp + HEALER.hpPerSecond * dt);
+  }
+
+  // Heroes (Cult of Heroes), all the time: every land unit of a Hero's owner within HERO.auraRadius of
+  // it, the Hero too, is `inspired` and deals HERO.auraBonus more damage (Unit.damage). Several Heroes
+  // don't add up. Run each tick on the fresh unit grid, before the units fight.
+  inspire() {
+    for (const u of this.units.values()) u.inspired = false;
+    for (const h of this.units.values()) {
+      if (h.type !== 'hero') continue;
+      this.unitGrid.forEachNear(h.x, h.y, HERO.auraRadius + 12, (u) => {
+        if (u.owner === h.owner && !u.naval && Math.hypot(u.x - h.x, u.y - h.y) <= HERO.auraRadius) u.inspired = true;
+      });
+    }
   }
 
   // Send a group to (tx, ty) in formation. Nearby units share one path; units on
@@ -725,13 +1037,24 @@ export class Game {
       const path = nav.findPathCached(leader.x, leader.y, dest[0], dest[1], true);
       if (path === null) continue;
       const slots = this.formation(cluster, dest[0], dest[1]);
+      // Each unit joins the shared route at the farthest of its first waypoints that it can see. One
+      // that sees none of them (a city or the coast in between) gets a way of its own now: to the
+      // route's start (the units near it share that search: findPathCached), or to its place when
+      // the leader walks straight there. Only while JOIN_EXPANSIONS last: after that, units plan
+      // their own route over the next ticks.
       for (const u of cluster) {
         let [sx, sy] = slots.get(u);
         if (nav.landmass(sx, sy) !== land) [sx, sy] = nav.nearestWalkable(sx, sy, 60, land) || dest;
-        const route = path.length && nav.clear(u.x, u.y, path[0][0], path[0][1])
-          ? { pts: path, idx: 0, gx: sx, gy: sy, time: this.time }
-          : null;                                // plans its own route on the next tick
-        u.orderMove(sx, sy, amove, route);
+        let pts = null;                          // without: plans its own route on the next tick
+        for (let k = Math.min(path.length, JOIN_POINTS) - 1; k >= 0 && !pts; k--) {
+          if (nav.clear(u.x, u.y, path[k][0], path[k][1])) pts = k ? path.slice(k) : path;
+        }
+        if (!pts && nav.expansionBudget > -JOIN_EXPANSIONS && (path.length || !nav.clear(u.x, u.y, sx, sy))) {
+          const [jx, jy] = path.length ? path[0] : [sx, sy];
+          const join = nav.findPathCached(u.x, u.y, jx, jy, true);
+          if (join) pts = path.length ? join.concat(path) : join;
+        }
+        u.orderMove(sx, sy, amove, pts && pts.length ? { pts, idx: 0, gx: sx, gy: sy, time: this.time } : null);
       }
     }
   }
@@ -1031,6 +1354,7 @@ export class Game {
 
   // ------------------------------------------------------------ simulation
   tick(dt) {
+    if (!this.history.started) this.history.begin(this);   // the map as the game really starts
     this.time += dt;
     this.tickCount++;
     this.nav.beginTick();
@@ -1038,8 +1362,12 @@ export class Game {
     for (const p of this.players.values()) {
       p.commandTokens = Math.min(COMMANDS_PER_SECOND, p.commandTokens + COMMANDS_PER_SECOND * dt);
     }
-    if (this.time >= this.nextTurnAt) this.endTurn();
+    if (this.time >= this.nextTurnAt) {
+      this.endTurn();
+      if (this.status !== 'running') return;    // someone held the target to the end of the turn
+    }
     this.advanceResearch(dt);
+    this.advanceLearning(dt);
 
     for (const c of this.cities) {
       if (c.owner < 0 || !c.queue.length) continue;
@@ -1047,22 +1375,36 @@ export class Game {
       const item = c.queue[0];
       const upgrade = CITY_UPGRADES[item];
       if (!p || (!upgrade && p.unitCount >= ECONOMY.maxUnitsPerPlayer)) continue;   // unit limit pauses units only
-      // Progress counts base build seconds; Barracks make units (not upgrades or ships) advance faster.
-      c.progress += upgrade || UNITS[item].naval ? dt : dt * c.trainRate;
+      // Progress counts base build seconds; Barracks make units (not upgrades or ships) advance faster,
+      // and Brotherhood of Arms makes a Barracks itself build faster (paid with gold or honor alike).
+      let rate = 1;
+      if (item === 'barracks') {
+        if (p.traditions.includes('brotherhood')) rate = TRADITIONS.brotherhood.barracksBuildSpeed;
+      } else if (!upgrade && !UNITS[item].naval) rate = c.trainRate;
+      c.progress += dt * rate;
       if (c.progress >= itemDef(item).buildTime) {
+        const paidHonor = c.queueHonor[0] || 0;
         c.queue.shift();
+        c.queueHonor.shift();
         c.progress = 0;
+        // What it cost (in gold, or in honor), for the results screen.
+        this.history.honorSpent(p.id, paidHonor);
+        const gold = paidHonor ? 0 : itemDef(item).cost;
         if (upgrade) {
           c.addUpgrade(item);
+          this.history.built(p.id, item, gold);
         } else {
           this.spawnUnit(c, item);
           p.unitCount++;
+          this.history.trained(p.id, item, gold);
         }
       }
     }
 
     this.unitGrid.clear();
     for (const u of this.units.values()) this.unitGrid.insert(u);
+    this.checkStandFirm();
+    this.inspire();
 
     for (const u of this.units.values()) {
       u.px = u.x;
@@ -1104,6 +1446,7 @@ export class Game {
     }
 
     for (const u of this.units.values()) u.regenerate(dt);
+    this.heal(dt);                    // Healers, after the dead are gone: nobody is healed back to life
     for (const c of this.cities) c.regenerate(dt);
 
     this.recount();
@@ -1114,8 +1457,14 @@ export class Game {
   // neutral city is only a loss for the victim).
   // A disbanded unit (Delete key) is always a loss. It is a kill only for the last player who
   // hit it, and only if that hit was within DISBAND.killCreditSeconds before it died.
+  // Every kill pays the killer a share of the unit's cost in gold (ECONOMY.killGoldShare) and
+  // gives them honor for it too (HONOR.killShare of its cost: as much as it adds to their Kills).
+  // A Hero is worth the gold of the unit it was made from (Unit.takeOver).
+  // Honored Dead (tradition): a unit that fell gives its owner TRADITIONS.honoredDead.lossShare of its
+  // value in honor. It fell unless it was disbanded; a disbanded one still fell when it counts as an
+  // enemy's kill (hit by another player in its last seconds).
   recordDeath(u) {
-    const value = UNITS[u.type].cost;
+    const value = u.value ?? UNITS[u.type].cost;
     const loser = this.players.get(u.owner);
     if (loser) loser.losses += value;
     let killerId = u.lastHitOwner;
@@ -1124,12 +1473,24 @@ export class Game {
       killerId = hit && this.time - hit.time <= DISBAND.killCreditSeconds ? hit.owner : -1;
     }
     const killer = killerId !== u.owner ? this.players.get(killerId) : null;
-    if (killer) killer.kills += value;
+    const fell = !u.disbanding || !!killer;
+    if (loser && fell && loser.traditions.includes('honoredDead')) {
+      loser.honor += value * TRADITIONS.honoredDead.lossShare;
+      this.history.honoredDead(loser.id, value * TRADITIONS.honoredDead.lossShare);
+    }
+    this.history.died(u.owner, u.type, killer ? killer.id : -1, value * ECONOMY.killGoldShare, value * HONOR.killShare);
+    if (!killer) return;
+    killer.kills += value;
+    killer.gold += value * ECONOMY.killGoldShare;
+    killer.honor += value * HONOR.killShare;
   }
 
-  // Every turn each city pays its owner (more with a Farm, and more when the owner holds its
-  // whole region); the gold arrives all at once.
+  // The end of a turn first decides whether someone has won (checkCityVictory). If not, each city
+  // pays its owner (more with a Farm, and more when the owner holds its whole region); the gold
+  // arrives all at once.
   endTurn() {
+    this.checkCityVictory();
+    if (this.status !== 'running') return;
     this.turn++;
     this.nextTurnAt += ECONOMY.turnSeconds;
     const income = new Map(), fromRegions = new Map();
@@ -1143,12 +1504,14 @@ export class Game {
     const smugglers = [...this.players.values()].filter((p) => p.liberator && p.smuggle.length)
       .map((p) => ({ id: p.id, tech: p.tech, cities: p.smuggle }));
     const smuggled = smugglingFlows(smugglers, (ci) => this.cities[ci].owner, (ci) => this.cities[ci].goldPerTurn);
+    const paid = new Map();
     for (const p of this.players.values()) {
       if (p.eliminated) continue;
       // A liberator has no cities: they get a fixed amount instead (more with Supporters).
       const gain = smuggled.gain.get(p.id) || 0, loss = smuggled.loss.get(p.id) || 0;
       const gold = p.liberator ? liberatorIncome(p.tech) + gain : (income.get(p.id) || 0) - loss;
       p.gold += gold;
+      paid.set(p.id, gold);
       if (p.client) {
         p.client.send({
           t: 'event', kind: 'turn', turn: this.turn, income: gold, regionBonus: fromRegions.get(p.id) || 0,
@@ -1156,6 +1519,7 @@ export class Game {
         });
       }
     }
+    this.history.turnEnded(this, paid);
   }
 
   spawnUnit(city, type) {
@@ -1179,67 +1543,170 @@ export class Game {
 
   // Units are circles that never overlap, nobody is ever pushed into the water, and no ship is
   // pushed onto land. Ships only bump into ships, land units only into land units and cities.
+  // There are thousands of units close together, so this works on flat arrays (positions, radii,
+  // weights) and its own hash grid instead of the unit objects, and writes the positions back at the end.
   resolveCollisions() {
-    const nav = this.nav;
-    const canGo = (u, x, y) => (u.naval ? nav.canSail(u.x, u.y, x, y) : nav.canStep(u.x, u.y, x, y));
-    const tryMove = (u, x, y) => {
-      if (!canGo(u, x, y)) return false;
-      u.x = x; u.y = y;
+    const nav = this.nav, n = this.units.size;
+    if (!n) return;
+    const B = this.collisionBuffers(n);
+    const { list, X, Y, R, W, ID, SEA } = B;
+    let maxR = 0, i = 0;
+    for (const u of this.units.values()) {
+      list[i] = u;
+      X[i] = u.x; Y[i] = u.y;
+      const r = u.r;
+      R[i] = r;
+      if (r > maxR) maxR = r;
+      // Fighting units hold their ground and units on Hold don't budge; walkers flow around them.
+      W[i] = u.holding ? 0 : u.attacking ? 0.25 : 1;
+      ID[i] = u.id;
+      SEA[i] = u.naval ? 1 : 0;
+      i++;
+    }
+    // Grid cells big enough that a unit's neighbours lie in the 3 x 3 cells around it, even after the
+    // pushes of this call (COLLISION_MARGIN km).
+    const { x0, y0, x1, y1 } = this.bounds;
+    const size = 2 * maxR + COLLISION_MARGIN;
+    const gw = Math.ceil((x1 - x0) / size) + 1, gh = Math.ceil((y1 - y0) / size) + 1;
+    const gx = (x) => Math.min(gw - 1, Math.max(0, Math.floor((x - x0) / size)));
+    const gy = (y) => Math.min(gh - 1, Math.max(0, Math.floor((y - y0) / size)));
+    const { start, order, cellOf } = B.grid(gw * gh);
+    for (let k = 0; k < n; k++) { const c = gy(Y[k]) * gw + gx(X[k]); cellOf[k] = c; start[c + 1]++; }
+    for (let c = 0; c < gw * gh; c++) start[c + 1] += start[c];
+    const fill = B.fill;
+    fill.set(start.subarray(0, gw * gh));
+    for (let k = 0; k < n; k++) order[fill[cellOf[k]]++] = k;
+
+    const canGo = (k, x, y) => (SEA[k] ? nav.canSail(X[k], Y[k], x, y) : nav.canStep(X[k], Y[k], x, y));
+    const tryMove = (k, x, y) => {
+      if (!canGo(k, x, y)) return false;
+      X[k] = x; Y[k] = y;
       return true;
     };
+    const cityCells = this.cityGrid.cells;
     for (let iter = 0; iter < 2; iter++) {
-      for (const a of this.units.values()) {
-        this.unitGrid.forEachNear(a.x, a.y, a.r + 12, (b) => {
-          if (b.id <= a.id || a.naval !== b.naval || !this.units.has(b.id)) return;
-          const dx = b.x - a.x, dy = b.y - a.y;
-          const min = a.r + b.r;
-          const d2 = dx * dx + dy * dy;
-          if (d2 >= min * min) return;
-          let d = Math.sqrt(d2), nx, ny;
-          if (d < 1e-4) {
-            const ang = Math.random() * Math.PI * 2;
-            nx = Math.cos(ang); ny = Math.sin(ang); d = 0;
-          } else {
-            nx = dx / d; ny = dy / d;
+      for (let a = 0; a < n; a++) {
+        const ca = gx(X[a]), ra = gy(Y[a]);
+        for (let row = Math.max(0, ra - 1); row <= Math.min(gh - 1, ra + 1); row++) {
+          for (let col = Math.max(0, ca - 1); col <= Math.min(gw - 1, ca + 1); col++) {
+            const c = row * gw + col;
+            for (let s = start[c], e = start[c + 1]; s < e; s++) {
+              const b = order[s];
+              if (ID[b] <= ID[a] || SEA[a] !== SEA[b]) continue;
+              const dx = X[b] - X[a], dy = Y[b] - Y[a];
+              const min = R[a] + R[b];
+              const d2 = dx * dx + dy * dy;
+              if (d2 >= min * min) continue;
+              let d = Math.sqrt(d2), nx, ny;
+              if (d < 1e-4) {
+                const ang = Math.random() * Math.PI * 2;
+                nx = Math.cos(ang); ny = Math.sin(ang); d = 0;
+              } else {
+                nx = dx / d; ny = dy / d;
+              }
+              const overlap = min - d;
+              const wa = W[a], wb = W[b];
+              const sa = wa + wb > 0 ? wa / (wa + wb) : 0.5, sb = 1 - sa;
+              const ax = X[a] - nx * overlap * sa, ay = Y[a] - ny * overlap * sa;
+              const bx = X[b] + nx * overlap * sb, by = Y[b] + ny * overlap * sb;
+              const aOk = canGo(a, ax, ay), bOk = canGo(b, bx, by);
+              if (aOk && bOk) {
+                X[a] = ax; Y[a] = ay; X[b] = bx; Y[b] = by;
+              } else if (bOk) {
+                if (!tryMove(b, X[b] + nx * overlap, Y[b] + ny * overlap)) tryMove(b, bx, by);
+              } else if (aOk) {
+                if (!tryMove(a, X[a] - nx * overlap, Y[a] - ny * overlap)) tryMove(a, ax, ay);
+              }
+            }
           }
-          const overlap = min - d;
-          // Fighting units hold their ground and units on Hold don't budge; walkers flow around them.
-          const wa = a.holding ? 0 : a.attacking ? 0.25 : 1, wb = b.holding ? 0 : b.attacking ? 0.25 : 1;
-          const sa = wa + wb > 0 ? wa / (wa + wb) : 0.5, sb = 1 - sa;
-          const ax = a.x - nx * overlap * sa, ay = a.y - ny * overlap * sa;
-          const bx = b.x + nx * overlap * sb, by = b.y + ny * overlap * sb;
-          const aOk = canGo(a, ax, ay), bOk = canGo(b, bx, by);
-          if (aOk && bOk) {
-            a.x = ax; a.y = ay; b.x = bx; b.y = by;
-          } else if (bOk) {
-            if (!tryMove(b, b.x + nx * overlap, b.y + ny * overlap)) tryMove(b, bx, by);
-          } else if (aOk) {
-            if (!tryMove(a, a.x - nx * overlap, a.y - ny * overlap)) tryMove(a, ax, ay);
+        }
+        if (!SEA[a]) {
+          // City walls (the cities' own grid, as Grid.forEachNear walks it).
+          const reach = CITY.size + R[a];
+          const cx0 = Math.floor((X[a] - reach) / GRID_CELL), cx1 = Math.floor((X[a] + reach) / GRID_CELL);
+          const cy0 = Math.floor((Y[a] - reach) / GRID_CELL), cy1 = Math.floor((Y[a] + reach) / GRID_CELL);
+          for (let cx = cx0; cx <= cx1; cx++) {
+            for (let cy = cy0; cy <= cy1; cy++) {
+              const cities = cityCells.get(Grid.key(cx, cy));
+              if (!cities) continue;
+              for (const city of cities) {
+                const dx = X[a] - city.x, dy = Y[a] - city.y;
+                const min = city.r + R[a];
+                const d = Math.hypot(dx, dy);
+                if (d >= min || d < 1e-4) continue;
+                tryMove(a, city.x + (dx / d) * min, city.y + (dy / d) * min);
+              }
+            }
           }
-        });
-        if (!a.naval) this.cityGrid.forEachNear(a.x, a.y, CITY.size + a.r, (c) => {
-          const dx = a.x - c.x, dy = a.y - c.y;
-          const min = c.r + a.r;
-          const d = Math.hypot(dx, dy);
-          if (d >= min || d < 1e-4) return;
-          tryMove(a, c.x + (dx / d) * min, c.y + (dy / d) * min);
-        });
-        a.x = this.clampX(a.x);
-        a.y = this.clampY(a.y);
+        }
+        X[a] = this.clampX(X[a]);
+        Y[a] = this.clampY(Y[a]);
       }
+    }
+    for (let k = 0; k < n; k++) {
+      const u = list[k];
+      u.x = X[k]; u.y = Y[k];
+      list[k] = null;
     }
   }
 
-  // The previous owner gets back the gold for every queued unit that was not finished.
-  // `liberated`: taken by a liberator rather than by force.
-  captureCity(c, newOwner, liberated = false) {
+  // Typed arrays for resolveCollisions, kept between ticks and grown when there are more units.
+  // grid(cells): the hash grid's arrays, `start` cleared (start[c]..start[c + 1]: cell c's units in `order`).
+  collisionBuffers(n) {
+    let B = this.collision;
+    if (!B || B.X.length < n) {
+      const cap = Math.max(256, 2 * n);
+      B = this.collision = {
+        list: new Array(cap).fill(null),
+        X: new Float64Array(cap), Y: new Float64Array(cap), R: new Float64Array(cap), W: new Float64Array(cap),
+        ID: new Int32Array(cap), SEA: new Uint8Array(cap), order: new Int32Array(cap), cellOf: new Int32Array(cap),
+        start: new Int32Array(1), fill: new Int32Array(1),
+        grid(cells) {
+          if (this.start.length < cells + 1) { this.start = new Int32Array(cells + 1); this.fill = new Int32Array(cells + 1); }
+          this.start.fill(0, 0, cells + 1);
+          return this;
+        },
+      };
+    }
+    return B;
+  }
+
+  // A cancelled (or lost) queue item goes back to the player as it was paid: the honor paid for it
+  // (`paidHonor`, from City.queueHonor), or else its gold. Returns { gold, honor }.
+  giveBack(player, item, paidHonor) {
+    const back = paidHonor > 0 ? { gold: 0, honor: paidHonor } : { gold: itemDef(item).cost, honor: 0 };
+    if (player) { player.gold += back.gold; player.honor += back.honor; }
+    return back;
+  }
+
+  // What this player pays in honor for this item (a unit type or the upgrade key it queues), or null
+  // when honor can't pay for it: Barracks with Brotherhood of Arms, any trained unit with Eternal Glory.
+  honorPrice(p, item) {
+    if (item === 'barracks' && p.traditions.includes('brotherhood')) return TRADITIONS.brotherhood.barracksHonor;
+    const unit = UNITS[item];
+    if (unit && !unit.promoted && p.traditions.includes('eternalGlory')) return unit.cost * TRADITIONS.eternalGlory.unitHonorFactor;
+    return null;
+  }
+
+  // The previous owner gets back what they paid for everything still in the queue (gold, or honor
+  // for a Barracks bought with it). `liberated`: taken by a liberator rather than by force.
+  // `debug`: given by the "Own" button (debug builds): not counted in the game's statistics.
+  captureCity(c, newOwner, liberated = false, debug = false) {
     const prev = c.owner;
     const loser = this.players.get(prev);
-    const refund = loser ? c.queue.reduce((sum, item) => sum + itemDef(item).cost, 0) : 0;
-    if (loser) loser.gold += refund;
+    let refund = 0, refundHonor = 0;
+    if (loser) {
+      c.queue.forEach((item, i) => {
+        const back = this.giveBack(loser, item, c.queueHonor[i]);
+        refund += back.gold;
+        refundHonor += back.honor;
+      });
+    }
     c.capture(newOwner);
+    if (!debug) this.history.captured(prev, newOwner, liberated);
     this.broadcast({
-      t: 'event', kind: 'capture', city: c.id, from: prev, to: newOwner, refund, ...(liberated ? { liberated: true } : {}),
+      t: 'event', kind: 'capture', city: c.id, from: prev, to: newOwner, refund,
+      ...(refundHonor ? { refundHonor } : {}), ...(liberated ? { liberated: true } : {}), ...(debug ? { debug: true } : {}),
     });
   }
 
@@ -1267,19 +1734,32 @@ export class Game {
           p.liberator = true;
           p.gold = 0;
           fell = true;
+          this.history.event(this, p.id, 'fell');
           this.broadcast({ t: 'event', kind: 'liberator', player: p.id });
         } else if (!dead && p.liberator) {
           this.revive(p);
         }
       } else if (!p.eliminated && dead) {
         p.eliminated = true;
+        this.history.event(this, p.id, 'out');
         this.broadcast({ t: 'event', kind: 'eliminated', player: p.id });
       }
     }
     if (fell) this.sendScores();
-    // Whoever holds the target number of cities wins. When the countdown brings the target down to
-    // several players at once, the one with the most cities wins; if they hold exactly as many,
-    // the game goes on until one of them pulls ahead.
+    // The last player standing wins at once (holding the target is only checked at the end of a
+    // turn: checkCityVictory). Liberators are never eliminated: while one of them is left, the game goes on.
+    const alive = [...this.players.values()].filter((p) => !p.eliminated);
+    if (this.startedWith >= 2 && alive.length === 1) this.end(alive[0].id);
+    else if (alive.length === 0) this.end(-1);
+  }
+
+  // At the end of every turn: whoever holds the target number of cities of the turn that is ending
+  // wins. Reaching it during the turn is not enough: a player who lost cities again before the
+  // turn ended has not won, and the game goes on. When several players hold the target, the one
+  // with the most cities wins; if they hold exactly as many, the game goes on to the next turn.
+  checkCityVictory() {
+    this.recount();
+    if (this.status !== 'running') return;
     const need = this.citiesToWin();
     let best = null, tied = false;
     for (const p of this.players.values()) {
@@ -1287,21 +1767,25 @@ export class Game {
       if (!best || p.cityCount > best.cityCount) { best = p; tied = false; }
       else if (p.cityCount === best.cityCount) tied = true;
     }
-    if (best && !tied) { this.end(best.id); return; }
-    // Liberators are never eliminated: while one of them is left, the game goes on.
-    const alive = [...this.players.values()].filter((p) => !p.eliminated);
-    if (this.startedWith >= 2 && alive.length === 1) this.end(alive[0].id);
-    else if (alive.length === 0) this.end(-1);
+    if (best && !tied) this.end(best.id);
   }
 
   end(winnerId) {
     this.status = 'ended';
     this.winner = winnerId;
     this.endedAt = Date.now();
-    const w = this.players.get(winnerId);
+    this.history.finish(this, winnerId);
     this.sendSnapshots();   // final state, since ended games stop ticking
     this.sendScores();      // status is 'ended': the list now carries every nickname with its colour
-    this.broadcast({ t: 'gameover', winner: winnerId, name: w ? w.name : null, players: this.playerList() });
+    this.broadcast(this.gameOverMessage());
+  }
+
+  // Who won, everyone revealed, and what happened during the game (the results screen).
+  gameOverMessage() {
+    const w = this.players.get(this.winner);
+    return {
+      t: 'gameover', winner: this.winner, name: w ? w.name : null, players: this.playerList(), history: this.history.toJSON(),
+    };
   }
 
   // ------------------------------------------------------------ networking
@@ -1331,11 +1815,13 @@ export class Game {
         if (u.owner !== p.id && !inView(u.x, u.y)) continue;
         // Your own units with orders queued (Shift): where they go, one point per order, for the map.
         if (u.owner === p.id && u.queue.length) plans.push([u.id, ...u.planPoints()]);
-        // Flags: 1 attacking, 2 moving, 4 disbanding, 8 on hold; ships: how many units are on board,
-        // from bit 5 (32) up.
-        let flags = (u.attacking ? 1 : 0) | (u.wantMove > 0 ? 2 : 0) | (u.disbanding ? 4 : 0) | (u.holding ? 8 : 0);
+        // Flags: 1 attacking, 2 moving, 4 disbanding, 8 on hold, 32 standing firm (Last Stand). From bit
+        // HERO_KIND_SHIFT: a Hero's kind; from bit CARGO_SHIFT up: a ship's cargo count (shared/protocol.js).
+        let flags = (u.attacking ? 1 : 0) | (u.wantMove > 0 ? 2 : 0) | (u.disbanding ? 4 : 0) | (u.holding ? 8 : 0) |
+          (u.standFirm ? STAND_FIRM_FLAG : 0);
+        if (u.type === 'hero') flags |= Math.max(0, HERO_KINDS.indexOf(u.kind)) << HERO_KIND_SHIFT;
         if (u.naval) {
-          flags |= u.cargo.length << 5;
+          flags |= u.cargo.length << CARGO_SHIFT;
           // Your own transports: who is on board (type and HP), for the panel.
           if (u.owner === p.id && u.cargo.length) cargo.push([u.id, u.cargo.flatMap((c) => [c.t, Math.ceil(c.hp)])]);
           // Your own ships taking units on board (0) or landing them (1): their dock and the shore
@@ -1355,15 +1841,22 @@ export class Game {
       const q = [];
       for (const c of this.cities) {
         if (c.owner !== p.id || (!c.queue.length && !c.rally && !c.seaRally)) continue;
+        // Last: the honor paid for each queue entry, or 0 when all of it was paid in gold.
         q.push([c.id, r1(c.progress), c.queue.map((item) => PRODUCTION_ITEMS.indexOf(item)),
           c.rally ? r1(c.rally.x) : null, c.rally ? r1(c.rally.y) : null,
-          c.seaRally ? r1(c.seaRally.x) : null, c.seaRally ? r1(c.seaRally.y) : null]);
+          c.seaRally ? r1(c.seaRally.x) : null, c.seaRally ? r1(c.seaRally.y) : null,
+          c.queueHonor.some((h) => h > 0) ? c.queue.map((_, i) => c.queueHonor[i] || 0) : 0]);
       }
       p.client.send({
-        t: 'snap', time, u: us, c: cityArr, s: shots, d: deaths, g: Math.floor(p.gold), q, b: cargo, w: plans, k: docks,
-        turn: this.turn, next: this.nextTurnAt, ...debug,
-        // Your research (private): technology id and seconds done.
+        t: 'snap', time, u: us, c: cityArr, s: shots, d: deaths, g: Math.floor(p.gold), h: Math.floor(p.honor), q, b: cargo, w: plans, k: docks,
+        turn: this.turn, next: this.nextTurnAt, ...debug, ...(this.timeScale !== 1 ? { ts: this.timeScale } : {}),
+        // Your research (private): technology id and seconds done; the levels queued after it (ids, in order).
         r: p.research ? [TECH_TYPES.indexOf(p.research.tech), r1(p.research.progress)] : null,
+        ...(p.researchQueue.length ? { rq: p.researchQueue.map((e) => TECH_TYPES.indexOf(e.tech)) } : {}),
+        // Honor (private): traditions learned (ids), the one being learned [id, seconds done], the queued ones.
+        tr: p.traditions.map((k) => TRADITION_TYPES.indexOf(k)),
+        tl: p.learning ? [TRADITION_TYPES.indexOf(p.learning.tradition), r1(p.learning.progress)] : null,
+        ...(p.learnQueue.length ? { lq: p.learnQueue.map((e) => TRADITION_TYPES.indexOf(e.tradition)) } : {}),
       });
     }
     this.pendingDeaths.length = 0;

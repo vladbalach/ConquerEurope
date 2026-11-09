@@ -77,7 +77,7 @@ export function describeDeath(options) {
 // The victory rule in a sentence, for the waiting room and the game.
 export function describeOptions(options) {
   const o = options || DEFAULT_OPTIONS;
-  const hold = `Hold ${o.winCities} cities to win.`;
+  const hold = `Hold ${o.winCities} cities at the end of a turn to win.`;
   const countdown = o.countdown === 'none' ? ''
     : o.countdown === 'start' ? ' The target drops by one city at the end of every turn.'
       : ` Once turn ${o.countdownTurn} is over, the target drops by one city at the end of every turn.`;

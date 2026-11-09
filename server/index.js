@@ -3,6 +3,8 @@ import http from 'node:http';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { Game } from './game.js';
@@ -71,6 +73,54 @@ const MIME = {
   '.wav': 'audio/wav', '.mp3': 'audio/mpeg',
 };
 
+// Text files go gzipped to browsers that take it (about 3 times smaller). Every file has an ETag:
+// browsers ask again on each load ('no-cache', so changes show at once) and get "304 Not Modified",
+// without the file, when it didn't change.
+const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.json', '.svg']);
+const gzipped = new Map();               // ETag -> gzipped file
+const fileTag = (st) => `W/"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
+const textTag = (text) => `W/"${crypto.createHash('sha1').update(text).digest('base64url')}"`;
+
+function unchanged(req, tag) {
+  const have = req.headers['if-none-match'];
+  return !!have && have.split(',').some((t) => t.trim() === tag);
+}
+
+function sendFile(req, res, ext, tag, body) {
+  const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache', ETag: tag };
+  if (COMPRESSIBLE.has(ext)) headers.Vary = 'Accept-Encoding';
+  if (unchanged(req, tag)) {
+    res.writeHead(304, headers).end();
+    return;
+  }
+  if (COMPRESSIBLE.has(ext) && body.length > 1024 && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
+    let gz = gzipped.get(tag);
+    if (!gz) {
+      if (gzipped.size >= 500) gzipped.clear();      // files changed many times: start over
+      gz = zlib.gzipSync(body);
+      gzipped.set(tag, gz);
+    }
+    headers['Content-Encoding'] = 'gzip';
+    body = gz;
+  }
+  res.writeHead(200, headers).end(body);
+}
+
+// A file from disk; not read at all when the browser has it already.
+function sendFromDisk(req, res, file, notFound) {
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile()) { notFound(); return; }
+    const tag = fileTag(st);
+    if (unchanged(req, tag)) { sendFile(req, res, path.extname(file), tag, null); return; }
+    fs.readFile(file, (err2, data) => {
+      if (err2) notFound();
+      else sendFile(req, res, path.extname(file), tag, data);
+    });
+  });
+}
+
+let mapTag = { json: null, tag: null };  // the map changes when admins move cities (Edit map)
+
 const server = http.createServer((req, res) => {
   let urlPath;
   try {
@@ -81,11 +131,7 @@ const server = http.createServer((req, res) => {
   }
   // The land grid, for the host's browser that simulates a game (and "show navigation").
   if (urlPath === '/navgrid.json') {
-    fs.readFile(NAV_FILE, (err, data) => {
-      if (err) { res.writeHead(500).end(); return; }
-      res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-cache' });
-      res.end(data);
-    });
+    sendFromDisk(req, res, NAV_FILE, () => res.writeHead(500).end());
     return;
   }
   let base = PUBLIC;
@@ -103,8 +149,9 @@ const server = http.createServer((req, res) => {
   }
   // The map comes from memory: it includes cities admins have moved (Edit map).
   if (urlPath === '/map.json') {
-    res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-cache' });
-    res.end(editor.mapJson());
+    const json = editor.mapJson();
+    if (mapTag.json !== json) mapTag = { json, tag: textTag(json) };
+    sendFile(req, res, '.json', mapTag.tag, json);
     return;
   }
   // Debug builds only: the navigation grid for the console's "show navigation".
@@ -119,17 +166,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(403).end();
     return;
   }
-  fs.readFile(file, (err, data) => {
-    if (err) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' }).end('Not found');
-      return;
-    }
-    res.writeHead(200, {
-      'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
-      'Cache-Control': 'no-cache',
-    });
-    res.end(data);
-  });
+  sendFromDisk(req, res, file, () => res.writeHead(404, { 'Content-Type': 'text/plain' }).end('Not found'));
 });
 
 // ------------------------------------------------------------------ lobby
@@ -217,6 +254,8 @@ function leaveCurrent(client) {
     // Giving up a running game: the player's page has told the host already. When the host
     // leaves, the game is over for everyone.
     if (g.status === 'running' && p.id === g.hostId) endHosted(g, -1, 'The host left the game.');
+    // Kept for the end of the game, when everyone is revealed, those who gave up too.
+    if (g.status === 'running') (g.departed || (g.departed = [])).push({ id: p.id, name: p.name, color: p.color });
     g.players.delete(p.id);
   }
   client.game = null;
@@ -264,7 +303,7 @@ function endHosted(g, winner, reason = null) {
   g.status = 'ended';
   g.winner = winner;
   g.endedAt = Date.now();
-  const players = [...g.players.values()].map((p) => ({ id: p.id, name: p.name, color: p.color }));
+  const players = [...g.players.values(), ...(g.departed || [])].map((p) => ({ id: p.id, name: p.name, color: p.color }));
   for (const p of g.players.values()) {
     if (p.client) p.client.send({ t: 'reveal', winner, players, reason });
   }

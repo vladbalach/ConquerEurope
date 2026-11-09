@@ -1,1 +1,73 @@
-{}
+{
+  "units": {
+    "infantry": {
+      "hp": 200,
+      "damage": 12,
+      "hpRegen": 1.4
+    },
+    "archer": {
+      "hp": 50,
+      "moveSpeed": 28,
+      "hpRegen": 0.8
+    },
+    "cavalry": {
+      "hp": 140,
+      "damage": 14,
+      "hpRegen": 1,
+      "cost": 15,
+      "buildTime": 6
+    },
+    "knight": {
+      "hp": 500,
+      "damage": 90,
+      "hpRegen": 2,
+      "cost": 140,
+      "buildTime": 7
+    },
+    "transport": {
+      "hp": 300,
+      "hpRegen": 1,
+      "buildTime": 5
+    },
+    "hero": {
+      "hp": 500,
+      "damage": 30,
+      "hpRegen": 2
+    },
+    "healer": {
+      "hp": 250,
+      "damage": 10,
+      "hpRegen": 1.4
+    }
+  },
+  "upgrades": {
+    "wall": {
+      "buildTime": 3,
+      "hp": 200
+    },
+    "wall2": {
+      "buildTime": 5,
+      "hp": 300
+    },
+    "tower": {
+      "cost": 10,
+      "buildTime": 8,
+      "rangePercent": 60
+    },
+    "castle": {
+      "buildTime": 8,
+      "damage": 30
+    },
+    "farm": {
+      "cost": 40,
+      "buildTime": 15
+    }
+  },
+  "city": {
+    "all": {
+      "hp": 200,
+      "hpRegen": 10,
+      "captureHp": 80
+    }
+  }
+}

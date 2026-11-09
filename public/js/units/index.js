@@ -5,8 +5,10 @@ import { Archer } from './Archer.js';
 import { Cavalry } from './Cavalry.js';
 import { Knight } from './Knight.js';
 import { Transport } from './Transport.js';
+import { Hero } from './Hero.js';
+import { Healer } from './Healer.js';
 
-const BY_NAME = { infantry: Infantry, archer: Archer, cavalry: Cavalry, knight: Knight, transport: Transport };
+const BY_NAME = { infantry: Infantry, archer: Archer, cavalry: Cavalry, knight: Knight, transport: Transport, hero: Hero, healer: Healer };
 
 export const UNIT_CLASSES = UNIT_TYPES.map((type) => {
   if (!BY_NAME[type]) throw new Error(`No client unit class for type "${type}"`);

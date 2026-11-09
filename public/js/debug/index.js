@@ -104,6 +104,38 @@ export function createDebug({ getGame = () => null } = {}) {
     con.log(`gold: sent to the game. Every player gets ${gold.toLocaleString('en-US')} gold.`);
   });
 
+  con.register('slomo', 'slomo N: game speed, N times normal (0.1 to 10; slomo 1 is normal)', (args) => {
+    const n = Number(args[0]);
+    if (!args[0] || !Number.isFinite(n) || n <= 0) {
+      con.log('Usage: slomo N   (N from 0.1 to 10, e.g. slomo 4 for four times as fast, slomo 1 for normal)', 'err');
+      return;
+    }
+    const game = getGame();
+    if (!game || game.ended) {
+      con.log('slomo: works only in a running game', 'err');
+      return;
+    }
+    const speed = Math.round(Math.min(10, Math.max(0.1, n)) * 100) / 100;
+    game.link.send({ t: 'setSpeed', speed });
+    con.log(`slomo: sent to the game. Speed ${speed}×${speed !== n ? ` (limited from ${n})` : ''}.`);
+  });
+
+  con.register('honor', "honor N: set every player's honor to N (traditions, Heroes)", (args) => {
+    const n = Number(args[0]);
+    if (!args[0] || !Number.isFinite(n) || n < 0) {
+      con.log('Usage: honor N   (N = 0 or more, e.g. honor 2000)', 'err');
+      return;
+    }
+    const game = getGame();
+    if (!game || game.ended) {
+      con.log('honor: works only in a running game', 'err');
+      return;
+    }
+    const honor = Math.round(Math.min(n, 1e9));
+    game.link.send({ t: 'setHonor', honor });
+    con.log(`honor: sent to the game. Every player gets ${honor.toLocaleString('en-US')} honor.`);
+  });
+
   // A visible reminder that this is a debug build, and a line in the in-game help.
   const badge = document.createElement('div');
   badge.className = 'dev-badge';
@@ -113,7 +145,8 @@ export function createDebug({ getGame = () => null } = {}) {
   if (helpTable) {
     const row = helpTable.insertRow();
     row.insertCell().textContent = '~';
-    row.insertCell().textContent = 'Developer console (debug builds): stat fps, stat unit, stat unitgraph, show navigation, reset hp, gold N';
+    row.insertCell().textContent = 'Developer console (debug builds): stat fps, stat unit, stat unitgraph, show navigation, reset hp, gold N, ' +
+      'honor N, slomo N. Any city\'s panel also has an Own button: the city becomes yours';
   }
 
   return {

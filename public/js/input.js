@@ -2,6 +2,7 @@
 import { UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES } from '/shared/config.js';
 
 const DRAG_THRESHOLD = 5;
+const BOUNCE_MS = 50;            // let go and pressed again quicker than this: the button bounced, it is still the same press
 const BRUSH_PX = 16;             // Edit map: radius of the beach brush on screen...
 const BRUSH_MIN_KM = 8;          // ...but never less: the grid's shore cells lie up to ~7 km off the drawn coast
 const BRUSH_SEND_MS = 250;       // how often a beach brush stroke is sent while painting
@@ -15,6 +16,8 @@ export class Input {
     this.canvas = game.canvas;
     this.mouse = { x: -1, y: -1, inside: false };
     this.drag = null;
+    this.lastRelease = null;     // the left press let go last, and when: { d, t }
+    this.pressDragged = false;   // that press became a frame (or moved a city), so it was no click
     this.pan = null;
     this.keys = new Set();
     this.attackKey = false;      // A held: right-click becomes attack-move
@@ -59,6 +62,9 @@ export class Input {
 
     const mini = document.getElementById('minimap');
     on(mini, 'mousedown', (e) => this.onMiniDown(e));
+    const grip = document.getElementById('minimap-grip');
+    on(grip, 'mousedown', (e) => this.onGripDown(e));
+    on(grip, 'dblclick', () => this.g.renderer.resetMiniWidth());
   }
 
   destroy() {
@@ -232,6 +238,20 @@ export class Input {
         return;
       }
     }
+    // A worn mouse button can lose contact for a few ms while the hand is already moving: let go, then
+    // pressed again further on. Without this the frame would start over from there, past where you pressed.
+    const prev = this.lastRelease;
+    this.lastRelease = null;
+    if (prev && e.timeStamp - prev.t < BOUNCE_MS) {
+      const d = prev.d;
+      d.x1 = sx;
+      d.y1 = sy;
+      if (Math.hypot(d.x1 - d.x0, d.y1 - d.y0) > DRAG_THRESHOLD) d.active = true;
+      this.drag = d;
+      this.g.debug?.console.log(`Mouse button bounced (pressed again ${Math.round(e.timeStamp - prev.t)} ms after ` +
+        'letting go): the frame goes on from the first press', 'dim');
+      return;
+    }
     this.drag = { x0: sx, y0: sy, x1: sx, y1: sy, active: false, shift: e.shiftKey };
   }
 
@@ -327,6 +347,7 @@ export class Input {
     if (e.button === 0 && this.cityDrag) {
       const d = this.cityDrag;
       this.cityDrag = null;
+      this.pressDragged = d.active;
       // A drag moves the city (Edit map); a press without moving is an ordinary click.
       if (d.active && this.g.mapEdit) this.g.moveCity(d.city, d.x, d.y);
       else this.click(d.sx, d.sy, d.shift);
@@ -336,6 +357,8 @@ export class Input {
     if (e.button !== 0 || !this.drag) return;
     const d = this.drag;
     this.drag = null;
+    this.lastRelease = { d, t: e.timeStamp };
+    this.pressDragged = d.active;
     const g = this.g;
     if (d.active) {
       const r = g.renderer;
@@ -395,6 +418,8 @@ export class Input {
   // Double-click one of your units: every unit of that type on screen. One of your cities:
   // every one of your cities on screen. Shift adds them to the selection.
   onDblClick(e) {
+    // The browser counts a click then a quick press-and-drag as a double click; the frame already picked.
+    if (this.pressDragged) return;
     const g = this.g;
     const r = g.renderer;
     const u = this.pickUnit(e.offsetX, e.offsetY, true);
@@ -477,6 +502,34 @@ export class Input {
     window.addEventListener('mouseup', up);
   }
 
+  // Drag the minimap's top-right corner to resize it. It grows from its bottom-left corner and keeps
+  // the map's shape: the corner follows the cursor along its diagonal. The browser keeps the width
+  // for the next games (render.js keepMiniWidth).
+  onGripDown(e) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const r = this.g.renderer, grip = e.currentTarget;
+    const w0 = r.miniW, ratio = r.miniH / r.miniW, x0 = e.clientX, y0 = e.clientY;
+    let moved = false;                   // a click alone (or the double click) keeps no width
+    grip.classList.add('dragging');
+    document.body.classList.add('resizing-minimap');      // the resize cursor wherever the mouse goes
+    const move = (ev) => {
+      // The cursor's move projected on the corner's path: right and up grow it, left and down shrink it.
+      const dx = ev.clientX - x0, dy = ev.clientY - y0;
+      moved = true;
+      r.setMiniWidth(w0 + (dx - dy * ratio) / (1 + ratio * ratio));
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      grip.classList.remove('dragging');
+      document.body.classList.remove('resizing-minimap');
+      if (moved) r.keepMiniWidth();
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  }
+
   setAttackKey(on) {
     if (this.attackKey === on) return;
     this.attackKey = on;
@@ -535,11 +588,14 @@ export class Input {
     // Physical keys (e.code), so hotkeys work the same with any keyboard layout.
     // Build keys come from each unit's `hotkey` in shared/config.js.
     const unit = UNIT_TYPES.find((type) => UNITS[type].hotkey && e.code === `Key${UNITS[type].hotkey}`);
-    if (unit) { g.build(unit); return; }
+    // Eternal Glory: Shift + the key (or the Honor side of the switch in the Units box) pays with honor.
+    if (unit) { g.build(unit, (e.shiftKey || g.hud.payHonor) && g.hasTradition('eternalGlory')); return; }
     // With cities selected, A/S/D/F order upgrades; with units selected, A and S keep their unit meaning.
     if (g.selectedCities.size) {
       const upgrade = UPGRADE_TYPES.find((key) => CITY_UPGRADES[key].hotkey && e.code === `Key${CITY_UPGRADES[key].hotkey}`);
-      if (upgrade) { g.build(upgrade); return; }
+      // Shift + G: Barracks paid with honor, once Brotherhood of Arms is learned (otherwise as G).
+      const withHonor = upgrade === 'barracks' && e.shiftKey && g.hasTradition('brotherhood');
+      if (upgrade) { g.build(upgrade, withHonor); return; }
     }
     switch (e.code) {
       case 'KeyA': this.setAttackKey(true); break;
@@ -548,7 +604,13 @@ export class Input {
       case 'KeyH': g.commandHold(); break;
       case 'KeyU': if (g.selectedTransports().length) g.startUnload(); break;
       case 'KeyT': g.hud.toggleTech(); break;
-      case 'Space': e.preventDefault(); g.centerOnSelection(); break;
+      case 'KeyO': g.hud.toggleHonor(); break;
+      case 'KeyC': if (g.selection.size) g.promote('hero'); break;   // Make Hero, as the button in the unit panel
+      case 'Space':                      // Shift: your city captured last
+        e.preventDefault();
+        if (e.shiftKey) g.showLostCity();
+        else g.centerOnSelection();
+        break;
       default:
     }
   }

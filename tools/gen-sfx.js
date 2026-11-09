@@ -29,6 +29,22 @@ const SOUNDS = {
     keep: 0.9,
     level: 0.035,
   },
+  // You learned a tradition in the Honor window (public/js/client.js).
+  'tradition-learned': {
+    text: 'A deep low male choir humming one solemn sacred chord in a stone cathedral, gentle reverb, no instruments',
+    seconds: 2.0,
+    keep: 1.6,
+    level: 0.035,
+  },
+  // Your research is complete (Tech window; public/js/client.js).
+  // Only the signature: naming anything else, even as "no ...", tends to put it in the take.
+  'tech-learned': {
+    text: 'A quill pen signing a name on paper, ending with a flourish and a firm final dot, close-up, only the ' +
+      'writing, nothing else, no music, no background noise',
+    seconds: 1.6,
+    keep: 1.4,
+    level: 0.03,
+  },
 };
 
 const API = 'https://api.elevenlabs.io/v1/sound-generation?output_format=wav_32000';

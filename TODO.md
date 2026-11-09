@@ -5,7 +5,7 @@
 Not now. The server will change dramatically for this, possibly a rewrite in C++.
 
 Where we are today:
-- Units are capped at `ECONOMY.maxUnitsPerPlayer` = 500 per player (up to 10,000 in a full 20-player game, so the cap no longer protects the server).
+- Units are capped at `ECONOMY.maxUnitsPerPlayer` = 1000 per player (up to 20,000 in a full 20-player game, so the cap no longer protects the server).
 - Everything runs on one thread.
 - A* across Europe takes 6–35 ms per search (up to ~85 ms).
 - Background re-plans are limited to 8 searches per tick.
@@ -32,7 +32,7 @@ Where we are today:
   - parallel map regions if one thread is not enough;
   - one worker per game.
 - [ ] **Network:**
-  - binary snapshots, sending only units that changed;
+  - binary snapshots (they already go as changes, compressed: public/js/delta.js);
   - near the camera 10 Hz, elsewhere less often;
   - armies shown as single markers when zoomed out;
   - encoding in workers.

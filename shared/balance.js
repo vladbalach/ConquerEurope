@@ -5,8 +5,8 @@
 // server saves them as overrides in server/data/balance.json so they survive restarts.
 import { UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES } from './config.js';
 
-// Editable fields. `only`: the field exists only where config.js defines it (e.g. archer block
-// for infantry). `optional`: may be added to any row, missing counts as 0 (upgrade effects).
+// Editable fields. `only`: the field exists only where config.js defines it (e.g. capacity
+// for transports). `optional`: may be added to any row, missing counts as 0 (upgrade effects).
 const UNIT_FIELDS = [
   { key: 'hp', label: 'HP', min: 1, max: 100000 },
   { key: 'damage', label: 'Damage/s', min: 0, max: 10000 },
@@ -16,7 +16,6 @@ const UNIT_FIELDS = [
   { key: 'hpRegen', label: 'Regen/s', min: 0, max: 10000 },
   { key: 'cost', label: 'Cost', min: 0, max: 100000 },
   { key: 'buildTime', label: 'Build s', min: 0.1, max: 3600 },
-  { key: 'archerDamageReduction', label: 'Archer block', min: 0, max: 1, only: true, hint: 'share of archer damage blocked, 0–1' },
   { key: 'capacity', label: 'Capacity', min: 0, max: 100, only: true, hint: 'units a transport carries' },
 ];
 

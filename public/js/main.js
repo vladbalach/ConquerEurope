@@ -378,20 +378,22 @@ const GAME_MESSAGES = {
     if (!joined) return;
     const link = session ? session.link : net;
     if (game && game.gameId === joined.gameId && game.you === msg.you) {
-      game.link = link;                // reconnected to the host
+      game.hostLink = link;            // reconnected to the host
       game.setPlayers(msg.players);
       game.onPorts(msg);
+      game.onPrestart(msg.prestart);   // the game may have started meanwhile
       return;
     }
     if (game) game.destroy();
     show('screen-game');
     game = new GameClient({
       map, net, link, gameId: joined.gameId, you: msg.you, title: msg.title, options: msg.options, players: msg.players,
-      ports: msg.ports, beaches: msg.beaches, onLeave: leaveGame, debug, admin: isAdmin, mapState,
+      ports: msg.ports, beaches: msg.beaches, onLeave: leaveGame, debug, admin: isAdmin, mapState, prestart: msg.prestart,
     });
     if (session && session.relay) game.hud.feed('No direct connection to the host: your game goes through the server.');
   },
   room(msg) { if (game) game.setPlayers(msg.players); },
+  prestart(msg) { if (game) game.onPrestart(msg); },      // players loading, the countdown, the start
   snap(msg) { if (game) game.onSnap(msg); },
   event(msg) { if (game) game.onEvent(msg); },
   score(msg) { if (game) game.setPlayers(msg.players); },

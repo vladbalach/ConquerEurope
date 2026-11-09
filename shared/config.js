@@ -36,7 +36,6 @@ export const UNITS = {
     cost: 12,
     buildTime: 6,
     hotkey: 'Q',
-    archerDamageReduction: 0.10,   // share of incoming archer damage that is blocked
   },
   archer: {
     name: 'Archers',
@@ -91,10 +90,36 @@ export const UNITS = {
     hotkey: 'B',
     capacity: 8,
   },
+  // Hero and Healer (`promoted`): never trained in a city. Any plain land unit of yours becomes one for
+  // honor, once you have the tradition (Cult of Heroes: see HERO; Order of Mercy: see HEALER). No cost,
+  // build time or hotkey; they keep the gold value of the unit they were made from in the Kills and Losses stats.
+  // A Hero has no speed or range of its own: it keeps those of the kind it was made from (HERO.kinds).
+  hero: {
+    name: 'Hero',
+    promoted: true,
+    hero: true,
+    hp: 300,
+    damage: 15,
+    size: 8,
+    hpRegen: 1,
+  },
+  healer: {
+    name: 'Healer',
+    promoted: true,
+    healer: true,
+    hp: 120,
+    damage: 5,
+    attackRange: 0,
+    moveSpeed: 26,     // as infantry
+    size: 7,
+    hpRegen: 0.7,
+  },
 };
 
 // Order matters: it is the unit type id used on the network and in sprites.
-export const UNIT_TYPES = ['infantry', 'archer', 'cavalry', 'knight', 'transport'];
+export const UNIT_TYPES = ['infantry', 'archer', 'cavalry', 'knight', 'transport', 'hero', 'healer'];
+// The unit types cities train (all but the ones made from other units: Hero, Healer).
+export const TRAINED_UNITS = UNIT_TYPES.filter((type) => !UNITS[type].promoted);
 
 // ------------------------------------------------------------------ navy
 //  The coast is where land meets the sea: transports take units on board there and land them.
@@ -145,7 +170,7 @@ export const CITY_UPGRADES = {
 export const UPGRADE_TYPES = ['wall', 'wall2', 'tower', 'castle', 'farm', 'barracks'];
 
 // Everything a city can produce. The index is the item id used on the network.
-export const PRODUCTION_ITEMS = [...UNIT_TYPES, ...UPGRADE_TYPES];
+export const PRODUCTION_ITEMS = [...TRAINED_UNITS, ...UPGRADE_TYPES];
 
 // ------------------------------------------------------------------ combat
 export const COMBAT = {
@@ -172,8 +197,70 @@ export const ECONOMY = {
   turnSeconds: 60,            // length of one turn; gold is paid once at the end of every turn
   goldPerCityPerTurn: 10,     // gold each city you hold pays per turn
   regionBonusPerCity: 2,      // hold every city of a region: each of them pays this much more per turn
+  killGoldShare: 0.25,        // a kill pays the killer this share of the destroyed unit's cost (12 gold unit: 3 gold)
   maxQueue: 10,               // production queue length per city
-  maxUnitsPerPlayer: 500,
+  maxUnitsPerPlayer: 1000,
+};
+
+// ------------------------------------------------------------------ honor
+//  A resource earned only by fighting: every kill (the same kills as in the Players list) gives the
+//  killer honor, as much as the destroyed unit is worth in gold (so honor grows with the Kills column).
+//  Shown in the top bar; click it (or press O) for the Honor window, where traditions are learned with it.
+export const HONOR = {
+  killShare: 1,               // honor per gold of the destroyed unit's cost (1: a 150 gold knight gives 150 honor)
+};
+
+//  Traditions: learned once, for good, in the Honor window. Paid in honor when learning starts; it takes
+//  `time` seconds of game time. One at a time (separate from technologies); cancelling gives the honor back.
+//    heroes        any of your land units can be made a Hero (see HERO)
+//    mercy         any of your land units can be made a Healer (see HEALER)
+//    brotherhood   Barracks (CITY_UPGRADES.barracks) can be paid with barracksHonor honor instead of their
+//                  gold cost: the same building and effect. Either way, they build barracksBuildSpeed times faster
+//    honoredDead   every unit of yours that falls gives you lossShare of its cost in honor (the value in the
+//                  Losses column). Disbanded units only when an enemy hit them in their last
+//                  DISBAND.killCreditSeconds, as for kills; so do the units on board a ship that sank that way.
+//  Tier II traditions (`ultimate`; the Honor window tags them Tier II) open only once every tier I tradition
+//  is learned; they don't need each other. While someone learns one, the Players list shows its countdown;
+//  every player is told once it is learned.
+//    eternalGlory  every unit a city trains can be paid with unitHonorFactor times its gold cost in honor.
+//    lastStand     every unit of yours deals damageBonus more damage (it adds up with a Hero's). A unit with
+//                  at least `odds` times as many enemy units as units of yours (itself included) within
+//                  `radius` km of it takes damageCut less damage, and glows red meanwhile (Game.checkStandFirm).
+//  Which traditions a player has, and the countdown of an ultimate one being learned, are public (Players list).
+export const TRADITIONS = {
+  heroes: { name: 'Cult of Heroes', cost: 1500, time: 30 },
+  mercy: { name: 'Order of Mercy', cost: 1500, time: 30 },
+  brotherhood: { name: 'Brotherhood of Arms', cost: 1500, time: 30, barracksHonor: 30, barracksBuildSpeed: 2 },
+  honoredDead: { name: 'Honored Dead', cost: 1500, time: 30, lossShare: 0.25 },
+  eternalGlory: { name: 'Eternal Glory', cost: 4000, time: 120, ultimate: true, unitHonorFactor: 2 },
+  lastStand: { name: 'Last Stand', cost: 4000, time: 120, ultimate: true, damageBonus: 0.3, damageCut: 0.3, radius: 80, odds: 2 },
+};
+// Order matters: it is the tradition id used on the network.
+export const TRADITION_TYPES = ['heroes', 'mercy', 'brotherhood', 'honoredDead', 'eternalGlory', 'lastStand'];
+
+//  Heroes (tradition Cult of Heroes). Select one of your land units and press Make Hero: for `cost` honor
+//  it becomes a Hero (UNITS.hero) where it stands, with its orders and its share of HP. It has the HP and
+//  damage of a Hero, but the speed and attack range of its kind: `kinds` maps the unit it was made from to
+//  one of HERO_KINDS (a knight makes a cavalry Hero). All the time, every land unit of its owner within
+//  auraRadius km of a Hero, the Hero too, deals auraBonus more damage (Game.inspire). Several Heroes don't
+//  add up.
+export const HERO = {
+  cost: 100,
+  auraRadius: 80,
+  auraBonus: 0.1,
+  kinds: { infantry: 'infantry', archer: 'archer', cavalry: 'cavalry', knight: 'cavalry' },
+};
+// Order matters: a Hero's kind is sent as its index here, in the unit flags (shared/protocol.js).
+export const HERO_KINDS = ['infantry', 'archer', 'cavalry'];
+
+//  Healers (tradition Order of Mercy). Select one of your plain land units and press Make Healer: for
+//  `cost` honor it becomes a Healer (UNITS.healer) where it stands, like a Hero. Every land unit of its
+//  owner within `radius` km of a Healer, the Healer too, regains hpPerSecond HP every second, in combat
+//  too, on top of its own regeneration. Several Healers don't add up. Not ships, nor units being disbanded.
+export const HEALER = {
+  cost: 80,
+  radius: 60,
+  hpPerSecond: 3,
 };
 
 // ------------------------------------------------------------------ liberators
@@ -237,9 +324,14 @@ export const GAME = {
   maxPlayers: 20,
   startCities: 10,            // random cities every player starts with
   winCities: 120,             // cities needed to win: the default; the host can change it (shared/options.js)
+  closeToWinCities: 25,       // everyone is told at the top of the screen when a player is this close to the target (or closer)
   formationSpacing: 17,       // distance between units in a group move
   tickRate: 20,               // simulation ticks per second
   snapshotEvery: 2,           // send a network snapshot every N ticks
+  // The start of a game run in the host's browser: it waits until every player has loaded it (at most
+  // startWait seconds, for a player who never connects), then counts down; only then does anything move.
+  startWait: 30,              // a player's page gives up reaching the host after about 22 s (public/js/p2p.js)
+  startCountdown: DEBUG ? 0 : 10,   // seconds; none in debug builds: the game starts once everyone has loaded it
 };
 
 // ------------------------------------------------------------------ colours
