@@ -1,10 +1,13 @@
 // Land grid built by tools/build-map.js, with line-of-sight checks and A*
-// pathfinding so units walk around seas. Land units cannot cross water at all:
+// pathfinding so units walk around seas and mountains. Land units cannot cross water at all:
 // places on another landmass (Britain, Sicily, Zealand, ...) are unreachable.
 //
 // Every cell stores the landmass polygon it lies in (0 = water). Neighbouring
 // cells are linked only when they share a polygon or their polygons share a
 // land border, so even straits narrower than a cell cannot be crossed.
+//
+// Mountains (shared/mountains.js) are land cells nobody walks on: units go round them, or through
+// the passes between the ranges. They are still land, so they never become sea for ships.
 //
 // Ships use the same grid the other way round: they sail on water cells (the seas), and the
 // coast is a land cell next to a sea cell. That is where transports take units on board and
@@ -13,6 +16,7 @@
 // Also runs in the host player's browser (browser-to-browser play), so no Node-only imports.
 
 import { forEachCoastPiece, nearestCell } from '../shared/coastline.js';
+import { decodeMask, MOUNTAIN_RULES } from '../shared/mountains.js';
 
 const SQRT2 = Math.SQRT2;
 const MIN_SEA_CELLS = 400;         // connected water smaller than this (10,000 km²: lakes) can't be sailed
@@ -22,6 +26,7 @@ const SEA_CHANNELS = [
   [[1207, 1213], [1222, 1196], [1239, 1169]],     // Dardanelles: Aegean -> Sea of Marmara
   [[1419, 1066], [1420, 1055], [1423, 1043]],     // Bosporus: Sea of Marmara -> Black Sea
 ];
+const MOUNTAIN_BLOCK = 8;          // cells: the blocks lineOfFire looks at before the cells
 const HEURISTIC_WEIGHT = 1.2;      // >1 trades a little path optimality for much faster searches
 const MAX_EXPANSIONS = 400000;
 const SEARCHES_PER_TICK = 8;       // background re-plans per tick; player commands are never throttled
@@ -39,27 +44,6 @@ const CACHE_CELL = 4;              // starts within the same 4x4 block of cells 
 const OBSTACLE_COST = 6;           // path cost multiplier for cells next to a city's walls
 const OBSTACLE_GRACE = 20;         // km around a destination where obstacles are ignored (attacking a city)
 const DANGER_COST = 4;             // sea path cost multiplier for water within a city's range
-// Beaches (markBeaches): about BEACH_SHARE of the coast; the rest is cliffs.
-const BEACH_SHARE = 0.26;          // of the shore cells: about 22% of the drawn coastline
-const SHELTER_CELLS = 3;           // how far around a coast cell the land is counted (cells): bays score high
-const SHELTER_WEIGHT = 0.5;        // shelter against noise in a coast cell's score
-const BEACH_NOISE_KM = 25;         // size of the noise's features: how long beach and cliff stretches run
-const BEACH_SMOOTH_CELLS = 1;      // scores are averaged over the coast this many cells around
-const HARBOUR_RANGE = 30;          // km: the coast this close to a city is always a beach
-const MIN_BEACH_ISLAND = 40;       // cells (1,000 km²): smaller landmasses without a city get no beach
-
-// A fixed pseudo-random number in [0, 1) for a lattice point, and smooth noise between them.
-function hash2(i, j) {
-  let x = (Math.imul(i, 374761393) + Math.imul(j, 668265263)) | 0;
-  x = Math.imul(x ^ (x >>> 13), 1274126177);
-  return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
-}
-function valueNoise(u, v) {
-  const i = Math.floor(u), j = Math.floor(v), fu = u - i, fv = v - j;
-  const su = fu * fu * (3 - 2 * fu), sv = fv * fv * (3 - 2 * fv);
-  const a = hash2(i, j), b = hash2(i + 1, j), c = hash2(i, j + 1), d = hash2(i + 1, j + 1);
-  return a + (b - a) * su + (c - a) * sv + (a - b - c + d) * su * sv;
-}
 
 const DIRS = [
   [1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1],
@@ -89,6 +73,15 @@ export class NavGrid {
       pos += len;
     }
     this.touch = new Set(data.touches.map(([a, b]) => a * 65536 + b));
+    // Walkable land (ground): land without mountains.
+    this.mountain = decodeMask(data.mountains, n);
+    this.ground = new Uint8Array(n);
+    for (let c = 0; c < n; c++) this.ground[c] = this.poly[c] > 0 && !this.mountain[c] ? 1 : 0;
+    // Mountain cells per block of MOUNTAIN_BLOCK x MOUNTAIN_BLOCK cells: a line of fire far from any
+    // mountains (most of the map) is clear without looking at its cells (lineOfFire).
+    this.blockW = Math.ceil(this.w / MOUNTAIN_BLOCK);
+    this.mountainBlocks = new Uint16Array(this.blockW * Math.ceil(this.h / MOUNTAIN_BLOCK));
+    for (let c = 0; c < n; c++) if (this.mountain[c]) this.mountainBlocks[this.blockOf(c)]++;
 
     // A* scratch space, reused between searches (stamps avoid clearing).
     this.g = new Float32Array(n);
@@ -104,11 +97,13 @@ export class NavGrid {
     this.expansionBudget = EXPANSIONS_PER_TICK;
     this.lastExpansions = 0;
     this.landmarks = null;               // the landmark tables (buildLandmarks), on the first search
+    this.mountainLand = null;            // the landmass round each mountain cell (labelMountains), when first asked
+    this.openLandIds = null;             // the landmasses as they are without mountains (openLand), when first asked
     // Neighbours as index offsets (DIRS order), and back: dirAt[b - a + w + 1] is the direction from a to b.
     this.offsets = DIRS.map(([di, dj]) => dj * this.w + di);
     this.dirAt = new Int8Array(2 * this.w + 3).fill(-1);
     this.offsets.forEach((o, d) => { this.dirAt[o + this.w + 1] = d; });
-    this.landSteps = this.stepMasks((a, b) => this.stepOk(a, b), (c) => this.poly[c] > 0);
+    this.landSteps = this.stepMasks((a, b) => this.stepOk(a, b), (c) => this.ground[c] === 1);
     this.labelLandmasses();
     this.labelSeas();
     this.seaSteps = this.stepMasks((a, b) => this.seaStepOk(a, b), (c) => this.sea[c] > 0);
@@ -140,7 +135,7 @@ export class NavGrid {
 
   // stepOk and seaStepOk from the masks, for a cell b next to a, or a itself (false for any other cell).
   landStep(a, b) {
-    if (a === b) return this.poly[a] > 0;
+    if (a === b) return this.ground[a] === 1;
     const d = this.dirAt[b - a + this.w + 1];
     return d >= 0 && ((this.landSteps[a] >> d) & 1) === 1;
   }
@@ -166,11 +161,54 @@ export class NavGrid {
 
   walkable(x, y) {
     const c = this.cellOf(x, y);
-    return c >= 0 && this.poly[c] > 0;
+    return c >= 0 && this.ground[c] === 1;
   }
 
-  // Two land cells (any distance apart) whose polygons are the same or share a border.
+  // Mountains at (x, y)?
+  mountainAt(x, y) {
+    const c = this.cellOf(x, y);
+    return c >= 0 && this.mountain[c] === 1;
+  }
+
+  blockOf(c) {
+    const i = c % this.w;
+    return Math.floor((c - i) / this.w / MOUNTAIN_BLOCK) * this.blockW + Math.floor(i / MOUNTAIN_BLOCK);
+  }
+
+  // Can a shot fly straight from (ax, ay) to (bx, by): no mountains under the line? Arrows, shells and city
+  // guns don't fly over them. Cheap: where no block the line crosses has a mountain cell (most of the map),
+  // the answer comes without looking at cells; otherwise every cell the line passes through is looked at
+  // (a walk from cell to cell along it, so it never slips past the corner of a mountain cell).
+  lineOfFire(ax, ay, bx, by) {
+    const { cell, x0, y0, w, h } = this;
+    const B = MOUNTAIN_BLOCK * cell, bw = this.blockW, blocks = this.mountainBlocks;
+    const i0 = Math.max(0, Math.floor((Math.min(ax, bx) - x0) / B)), i1 = Math.min(bw - 1, Math.floor((Math.max(ax, bx) - x0) / B));
+    const j0 = Math.max(0, Math.floor((Math.min(ay, by) - y0) / B));
+    const j1 = Math.min(blocks.length / bw - 1, Math.floor((Math.max(ay, by) - y0) / B));
+    let near = false;
+    for (let j = j0; j <= j1 && !near; j++) for (let i = i0; i <= i1; i++) if (blocks[j * bw + i]) { near = true; break; }
+    if (!near) return true;
+    let i = Math.floor((ax - x0) / cell), j = Math.floor((ay - y0) / cell);
+    const ti = Math.floor((bx - x0) / cell), tj = Math.floor((by - y0) / cell);
+    const dx = bx - ax, dy = by - ay, si = dx > 0 ? 1 : -1, sj = dy > 0 ? 1 : -1;
+    // How far along the line (0..1) it next crosses a column edge and a row edge, and the steps between.
+    let nx = dx ? ((i + (dx > 0 ? 1 : 0)) * cell + x0 - ax) / dx : Infinity;
+    let ny = dy ? ((j + (dy > 0 ? 1 : 0)) * cell + y0 - ay) / dy : Infinity;
+    const ex = dx ? cell / Math.abs(dx) : Infinity, ey = dy ? cell / Math.abs(dy) : Infinity;
+    for (let n = Math.abs(ti - i) + Math.abs(tj - j); n >= 0; n--) {
+      if (i >= 0 && j >= 0 && i < w && j < h && this.mountain[j * w + i]) return false;
+      if (nx < ny) { nx += ex; i += si; } else { ny += ey; j += sj; }
+    }
+    return true;
+  }
+
+  // Two walkable land cells (any distance apart) whose polygons are the same or share a border.
   linked(a, b) {
+    return this.ground[a] === 1 && this.ground[b] === 1 && this.polyLinked(a, b);
+  }
+
+  // Two land cells, mountains or not, whose polygons are the same or share a border.
+  polyLinked(a, b) {
     const pa = this.poly[a], pb = this.poly[b];
     if (!pa || !pb) return false;
     return pa === pb || this.touch.has(pa < pb ? pa * 65536 + pb : pb * 65536 + pa);
@@ -178,14 +216,14 @@ export class NavGrid {
 
   // Can a unit step from cell a to the neighbouring cell b (8-way)?
   stepOk(a, b) {
-    if (a === b) return this.poly[a] > 0;
+    if (a === b) return this.ground[a] === 1;
     const w = this.w;
     const ai = a % w, aj = (a - ai) / w, bi = b % w, bj = (b - bi) / w;
     const di = bi - ai, dj = bj - aj;
     if (di < -1 || di > 1 || dj < -1 || dj > 1) return false;
     if (!this.linked(a, b)) return false;
     if (di && dj) {
-      // No squeezing diagonally past a corner of water.
+      // No squeezing diagonally past a corner of water or mountains.
       const c1 = aj * w + bi, c2 = bj * w + ai;
       return this.linked(a, c1) && this.linked(c1, b) && this.linked(a, c2) && this.linked(c2, b);
     }
@@ -196,16 +234,18 @@ export class NavGrid {
   canStep(ax, ay, bx, by) {
     const a = this.cellOf(ax, ay), b = this.cellOf(bx, by);
     if (a < 0 || b < 0) return false;
-    if (!this.poly[a]) return this.poly[b] > 0;      // already off the grid: let it climb back onto land
+    // Already off the walkable land: let it climb back onto it. One caught in the mountains (the map was
+    // rebuilt under it) may cross them to get out, but never steps into the water.
+    if (!this.ground[a]) return this.ground[b] === 1 || (this.mountain[a] === 1 && this.poly[b] > 0);
     return this.landStep(a, b);
   }
 
-  // True when the straight segment stays on one connected stretch of land.
+  // True when the straight segment stays on one connected stretch of walkable land.
   los(ax, ay, bx, by) {
     const d = Math.hypot(bx - ax, by - ay);
     const steps = Math.ceil(d / (this.cell * 0.5));
     let prev = this.cellOf(ax, ay);
-    if (prev < 0 || !this.poly[prev]) return false;
+    if (prev < 0 || !this.ground[prev]) return false;
     for (let s = 1; s <= steps; s++) {
       const t = s / steps;
       const c = this.cellOf(ax + (bx - ax) * t, ay + (by - ay) * t);
@@ -292,13 +332,14 @@ export class NavGrid {
 
   // Give every connected landmass an id so unreachable targets are detected
   // instantly instead of by searching the whole continent.
+  // Mountains are no landmass (0), like water.
   labelLandmasses() {
-    const { w, h, poly, landSteps, offsets } = this;
+    const { w, h, ground, landSteps, offsets } = this;
     const comp = (this.comp = new Int32Array(w * h));
     const stack = [];
     let next = 0;
-    for (let s = 0; s < poly.length; s++) {
-      if (!poly[s] || comp[s]) continue;
+    for (let s = 0; s < ground.length; s++) {
+      if (!ground[s] || comp[s]) continue;
       comp[s] = ++next;
       stack.push(s);
       while (stack.length) {
@@ -333,10 +374,232 @@ export class NavGrid {
     return { cell: this.cell, x0: this.x0, y0: this.y0, w: this.w, h: this.h, comp: runs.join(','), obstacles };
   }
 
-  // Landmass id at (x, y); 0 for water or outside the map.
+  // Landmass id at (x, y); 0 for water, mountains or outside the map.
   landmass(x, y) {
     const c = this.cellOf(x, y);
     return c >= 0 ? this.comp[c] : 0;
+  }
+
+  // Like landmass(), but in the mountains the landmass they stand in: a unit caught in them (the map was
+  // rebuilt under it) belongs to that landmass and walks out onto it.
+  landOf(x, y) {
+    const c = this.cellOf(x, y);
+    if (c < 0) return 0;
+    if (!this.mountain[c]) return this.comp[c];
+    if (!this.mountainLand) this.labelMountains();
+    return this.mountainLand[c];
+  }
+
+  // The landmass round every mountain cell: spread from the walkable land next to the mountains across
+  // them, between cells whose polygons are linked (tools/build-map.js leaves no mountains between two
+  // landmasses: it walls none in). Worked out the first time it is needed.
+  labelMountains() {
+    const { mountain, comp } = this;
+    const land = (this.mountainLand = new Int32Array(mountain.length));
+    const queue = [];
+    for (let c = 0; c < mountain.length; c++) {
+      if (!mountain[c]) continue;
+      for (const n of this.sides(c)) {
+        if (n >= 0 && comp[n] && this.polyLinked(c, n)) { land[c] = comp[n]; queue.push(c); break; }
+      }
+    }
+    for (let q = 0; q < queue.length; q++) {
+      const c = queue[q];
+      for (const n of this.sides(c)) {
+        if (n < 0 || !mountain[n] || land[n] || !this.polyLinked(c, n)) continue;
+        land[n] = land[c];
+        queue.push(n);
+      }
+    }
+  }
+
+  // The four cells beside cell c (-1 past the grid's edge).
+  sides(c) {
+    const { w } = this, i = c % w, n = this.poly.length;
+    return [i > 0 ? c - 1 : -1, i < w - 1 ? c + 1 : -1, c >= w ? c - w : -1, c + w < n ? c + w : -1];
+  }
+
+  // ---------------------------------------------------------------- editing mountains
+  // Admins paint mountains in Edit map (server/map-editor.js), and the build fills walled-in valleys and
+  // cuts passes (openWalls): the grid follows at once.
+
+  // May painted mountains stand on cell c? Land, not within MOUNTAIN_RULES.cityGap of any of `cities`
+  // ({ x, y }). Unlike the built ones they may reach the water: an admin can close a road along the coast,
+  // and the coast under them is cliffs.
+  mountainAllowed(c, cities) {
+    if (!this.poly[c]) return false;
+    const [x, y] = this.center(c);
+    for (const t of cities) if (Math.hypot(t.x - x, t.y - y) <= MOUNTAIN_RULES.cityGap) return false;
+    return true;
+  }
+
+  // The land cells whose centre lies within r km of (x, y).
+  cellsNear(x, y, r) {
+    const { w, h, cell } = this, out = [];
+    const i0 = Math.max(0, Math.floor((x - r - this.x0) / cell)), i1 = Math.min(w - 1, Math.floor((x + r - this.x0) / cell));
+    const j0 = Math.max(0, Math.floor((y - r - this.y0) / cell)), j1 = Math.min(h - 1, Math.floor((y + r - this.y0) / cell));
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const c = j * w + i, [cx, cy] = this.center(c);
+        if (this.poly[c] && Math.hypot(cx - x, cy - y) <= r) out.push(c);
+      }
+    }
+    return out;
+  }
+
+  // Mountains on (on) or off at these land cells; returns the cells that changed. The steps round them,
+  // the landmasses and the coasts listed by landmass follow, and the beaches when the edit reached the
+  // coast (no ship docks under mountains). About 15 ms whatever the size of the stroke (the landmasses are
+  // labelled anew), some 10 ms more when it reached the coast. The landmark tables stay: with more mountains they still
+  // never say more than the way really is (only less), with fewer they may say a little more, which costs
+  // a path at most a little of its shortness until the next map rebuild makes new ones.
+  editMountains(cells, on) {
+    const { w, h } = this, v = on ? 1 : 0, changed = [];
+    for (const c of cells) {
+      if (!(c >= 0 && c < this.poly.length) || !this.poly[c] || this.mountain[c] === v) continue;
+      this.mountain[c] = v;
+      this.ground[c] = 1 - v;
+      this.mountainBlocks[this.blockOf(c)] += v ? 1 : -1;
+      changed.push(c);
+    }
+    if (!changed.length) return changed;
+    // A diagonal step looks at the cells beside it: the steps of the cells round a changed one change too.
+    for (const c of changed) {
+      const ci = c % w, cj = (c - ci) / w;
+      for (let j = Math.max(0, cj - 1); j <= Math.min(h - 1, cj + 1); j++) {
+        for (let i = Math.max(0, ci - 1); i <= Math.min(w - 1, ci + 1); i++) this.landSteps[j * w + i] = this.landMask(j * w + i);
+      }
+    }
+    this.labelLandmasses();
+    // The coast lists under the new landmass ids; the beaches anew when the edit reached the coast.
+    this.listCoasts();
+    if (!this.beach) this.landing = this.coasts;
+    else if (changed.some((c) => this.isCoast[c])) this.beachesChanged();
+    else this.listLanding();
+    this.mountainLand = null;
+    this.cache.clear();
+    return changed;
+  }
+
+  // The steps a unit may take from cell c (stepMasks, for one cell).
+  landMask(c) {
+    if (!this.ground[c]) return 0;
+    const { w, h } = this, ci = c % w, cj = (c - ci) / w;
+    let m = 0;
+    for (let d = 0; d < 8; d++) {
+      const ni = ci + DIRS[d][0], nj = cj + DIRS[d][1];
+      if (ni >= 0 && nj >= 0 && ni < w && nj < h && this.stepOk(c, nj * w + ni)) m |= 1 << d;
+    }
+    return m;
+  }
+
+  // The landmasses as they are without mountains: an id for every piece of land joined by steps between
+  // linked polygons. Sideways steps are enough: a diagonal one needs the cells beside it to be land too.
+  openLand() {
+    if (this.openLandIds) return this.openLandIds;
+    const { poly } = this, ids = new Int32Array(poly.length), stack = [];
+    let next = 0;
+    for (let s = 0; s < poly.length; s++) {
+      if (!poly[s] || ids[s]) continue;
+      ids[s] = ++next;
+      stack.push(s);
+      while (stack.length) {
+        const c = stack.pop();
+        for (const n of this.sides(c)) {
+          if (n < 0 || ids[n] || !this.polyLinked(c, n)) continue;
+          ids[n] = next;
+          stack.push(n);
+        }
+      }
+    }
+    return (this.openLandIds = ids);
+  }
+
+  // The land mountains cut off: of every landmass as it is without them, the walkable pieces but the
+  // biggest, as [{ id: their landmass id, size: cells }] (none when no land is walled in).
+  cutOff() {
+    const open = this.openLand(), comp = this.comp;
+    const size = new Map(), landOf = new Map(), biggest = new Map();
+    for (let c = 0; c < comp.length; c++) {
+      const id = comp[c];
+      if (!id) continue;
+      if (!size.has(id)) { size.set(id, 0); landOf.set(id, open[c]); }
+      size.set(id, size.get(id) + 1);
+    }
+    for (const [id, n] of size) {
+      const b = biggest.get(landOf.get(id));
+      if (b === undefined || n > size.get(b)) biggest.set(landOf.get(id), id);
+    }
+    return [...size].filter(([id]) => biggest.get(landOf.get(id)) !== id).map(([id, n]) => ({ id, size: n }));
+  }
+
+  // The cells of the land cut off (cutOff), as a Set.
+  cutOffCells() {
+    const ids = new Set(this.cutOff().map(({ id }) => id)), out = new Set();
+    if (ids.size) for (let c = 0; c < this.comp.length; c++) if (ids.has(this.comp[c])) out.add(c);
+    return out;
+  }
+
+  // No land may be walled in by mountains: a piece cut off (cutOff) smaller than rules.pocket without any
+  // of `cities` on it becomes mountain too (a valley nobody could reach); any other gets a pass, the
+  // shortest way through the mountains to the rest of its land, cleared rules.passWidth cells to either
+  // side. Pieces without a city that hold a cell of `keepOpen` (a Set: cells an admin cleared, a hole
+  // erased in a range) are left as they are. Returns { filled, cleared } (cells) and how many pockets
+  // and passes.
+  openWalls(cities, rules = MOUNTAIN_RULES, keepOpen = null) {
+    const { w, h } = this, filled = [], cleared = [];
+    let pockets = 0, passes = 0;
+    const left = new Set();             // pieces left open (keepOpen), by a cell of theirs
+    for (let round = 0; ; round++) {
+      const withCity = new Set(cities.map((t) => this.comp[this.cellOf(t.x, t.y)]));
+      const kept = new Set([...left].map((c) => this.comp[c]));
+      const cut = this.cutOff().filter(({ id }) => !kept.has(id) || withCity.has(id));
+      if (!cut.length) break;
+      if (round === 20) throw new Error('Mountains: land still walled in after 20 rounds of passes');
+      const open = this.openLand(), fill = [], clear = [];
+      for (const { id, size } of cut) {
+        const piece = [];
+        for (let c = 0; c < this.comp.length; c++) if (this.comp[c] === id) piece.push(c);
+        if (keepOpen && !withCity.has(id) && piece.some((c) => keepOpen.has(c))) {
+          left.add(piece[0]);
+          continue;
+        }
+        if (size < rules.pocket && !withCity.has(id)) {
+          fill.push(...piece);
+          pockets++;
+          continue;
+        }
+        // Breadth first through the mountains, from the piece to any other walkable land of its landmass.
+        const from = new Map(piece.map((c) => [c, -1])), queue = [...piece];
+        let reached = -1;
+        for (let q = 0; q < queue.length && reached < 0; q++) {
+          const cur = queue[q];
+          for (const n of this.sides(cur)) {
+            if (n < 0 || from.has(n) || !this.polyLinked(cur, n)) continue;
+            from.set(n, cur);
+            if (this.mountain[n]) { queue.push(n); continue; }
+            reached = n;
+            break;
+          }
+        }
+        if (reached < 0) throw new Error('Mountains: no way out of walled-in land');
+        // Cleared round both ends too: a diagonal step can be blocked by mountains on its corners alone.
+        const r = rules.passWidth;
+        for (let c = reached; c >= 0; c = from.get(c)) {
+          const ci = c % w, cj = (c - ci) / w;
+          for (let j = Math.max(0, cj - r); j <= Math.min(h - 1, cj + r); j++) {
+            for (let i = Math.max(0, ci - r); i <= Math.min(w - 1, ci + r); i++) {
+              const k = j * w + i;
+              if (this.mountain[k] && open[k] === open[c]) clear.push(k);
+            }
+          }
+        }
+        passes++;
+      }
+      filled.push(...this.editMountains(fill, true));
+      cleared.push(...this.editMountains(clear, false));
+    }
+    return { filled, cleared, pockets, passes };
   }
 
   // Closest walkable point (cell centre) to (x, y), or null if none within maxDist.
@@ -432,13 +695,16 @@ export class NavGrid {
   // The coast: land cells next to a sea cell, listed per landmass and sea, each with the sea cell a
   // transport docks at (an orthogonal neighbour when there is one). Ships take units on board and land
   // them only on beaches (this.landing, see markBeaches): until those are marked, anywhere on the coast.
+  // The coast cells are every land cell next to the sea, mountains or not (coastPairs: cell, the water cell
+  // it docks at, the sea); listCoasts files those units stand on under their landmass. Mountains an admin
+  // painted on the coast take it out of the lists, and their beaches with it (beachesChanged).
   findCoasts() {
-    const { w, h, comp, sea } = this;
+    const { w, h, poly, sea } = this;
     const n = w * h;
-    const lists = new Map();
+    const pairs = [];
     const added = [];
     for (let c = 0; c < n; c++) {
-      if (!comp[c]) continue;
+      if (!poly[c]) continue;
       const ci = c % w, cj = (c - ci) / w;
       added.length = 0;
       for (const [di, dj] of DIRS) {
@@ -447,19 +713,32 @@ export class NavGrid {
         const m = nj * w + ni, s = sea[m];
         if (!s || added.includes(s)) continue;
         added.push(s);
-        const key = comp[c] * 65536 + s;
-        if (!lists.has(key)) lists.set(key, []);
-        lists.get(key).push(c, m);
+        pairs.push(c, m, s);
       }
     }
-    this.coasts = new Map([...lists].map(([k, v]) => [k, Int32Array.from(v)]));
+    this.coastPairs = Int32Array.from(pairs);
     this.isCoast = new Uint8Array(n);
-    for (const list of this.coasts.values()) for (let k = 0; k < list.length; k += 2) this.isCoast[list[k]] = 1;
+    for (let k = 0; k < pairs.length; k += 3) this.isCoast[pairs[k]] = 1;
+    this.listCoasts();
     this.shore = null;
     this.landing = this.coasts;
     this.beach = null;
     this.beachCode = '';
     this.shoreCode = '';
+  }
+
+  // The coast by landmass and sea (landmass * 65536 + sea -> [land cell, water cell, ...]): the coast cells
+  // units stand on, which are not mountains.
+  listCoasts() {
+    const lists = new Map(), p = this.coastPairs;
+    for (let k = 0; k < p.length; k += 3) {
+      const land = this.comp[p[k]];
+      if (!land) continue;
+      const key = land * 65536 + p[k + 2];
+      if (!lists.has(key)) lists.set(key, []);
+      lists.get(key).push(p[k], p[k + 1]);
+    }
+    this.coasts = new Map([...lists].map(([k, v]) => [k, Int32Array.from(v)]));
   }
 
   // The shore: the coast cells on the coastline the map draws (shared/coastline.js): for every piece of
@@ -484,92 +763,15 @@ export class NavGrid {
     this.shoreCode = steps.join(',');
   }
 
-  // Beaches: the stretches of coast where ships take units on board and land them, about BEACH_SHARE
-  // of the coast; the rest is cliffs. Sheltered coast (bays, coves: land wrapped around the water) makes
-  // a beach, open headlands make cliffs, mixed with a fixed smooth noise so long straight shores also
-  // alternate. Scores are averaged along the shore, so beaches come in stretches. The coast near a city
-  // (`towns`: [[x, y], ...], within HARBOUR_RANGE) is always a beach (its harbour), and every island gets
-  // one, except tiny ones without a city (under MIN_BEACH_ISLAND cells): those get none at all. It
-  // depends only on the grid and the cities: the same in every game and on every computer.
-  // `edits` ({ beach: [cell, ...], cliff: [cell, ...] }): coast cells an admin painted in Edit map,
-  // which win over all of that. `map`: the map as drawn; only its shore cells can be beaches (markShore).
-  markBeaches(towns, edits = null, map = null) {
+  // Beaches: the coast where ships take units on board and land them. All of the shore is beach (`map`:
+  // the map as drawn; its shore cells, markShore), every island's too, except where an admin painted
+  // cliffs in Edit map (`edits`: { beach: [cell, ...], cliff: [cell, ...] }, coast cells). It depends
+  // only on the grid and those edits: the same in every game and on every computer.
+  markBeaches(edits = null, map = null) {
     if (map) this.markShore(map);
-    const { w, h, comp } = this;
-    const n = w * h, W = w + 1;
-    // Landmasses that may have beaches: those with a city, and those big enough.
-    const size = new Map();
-    for (let c = 0; c < n; c++) if (comp[c]) size.set(comp[c], (size.get(comp[c]) || 0) + 1);
-    const settled = new Set(towns.map(([x, y]) => this.landmass(x, y)));
-    const mayHave = (c) => settled.has(comp[c]) || size.get(comp[c]) >= MIN_BEACH_ISLAND;
-    const clampI = (i) => Math.max(0, Math.min(w - 1, i)), clampJ = (j) => Math.max(0, Math.min(h - 1, j));
-    // Sums over any box of cells in O(1): prefix sums over (j + 1) * W + (i + 1).
-    const prefix = (value) => {
-      const S = new Float64Array(W * (h + 1));
-      for (let j = 0; j < h; j++) {
-        let row = 0;
-        for (let i = 0; i < w; i++) {
-          row += value(j * w + i);
-          S[(j + 1) * W + i + 1] = S[j * W + i + 1] + row;
-        }
-      }
-      return (i, j, r) => {
-        const i0 = clampI(i - r), i1 = clampI(i + r), j0 = clampJ(j - r), j1 = clampJ(j + r);
-        return [S[(j1 + 1) * W + i1 + 1] - S[j0 * W + i1 + 1] - S[(j1 + 1) * W + i0] + S[j0 * W + i0], (i1 - i0 + 1) * (j1 - j0 + 1)];
-      };
-    };
-    // The coast cells that can be beaches (the shore, when known), once each.
-    const isCoast = this.shore || this.isCoast, coastal = [];
-    for (let c = 0; c < n; c++) if (isCoast[c]) coastal.push(c);
-    // How sheltered each coast cell is (the share of land around it), mixed with the noise...
-    const landAround = prefix((c) => (comp[c] ? 1 : 0));
-    const raw = new Float64Array(n);
-    for (const c of coastal) {
-      const i = c % w, j = (c - i) / w;
-      const [land, cells] = landAround(i, j, SHELTER_CELLS);
-      const [x, y] = this.center(c);
-      raw[c] = (land / cells) * SHELTER_WEIGHT + valueNoise(x / BEACH_NOISE_KM, y / BEACH_NOISE_KM) * (1 - SHELTER_WEIGHT);
-    }
-    // ...then averaged over the coast nearby.
-    const rawAround = prefix((c) => raw[c]), coastAround = prefix((c) => isCoast[c]);
-    const score = new Float64Array(n);
-    for (const c of coastal) {
-      const i = c % w, j = (c - i) / w;
-      score[c] = rawAround(i, j, BEACH_SMOOTH_CELLS)[0] / coastAround(i, j, BEACH_SMOOTH_CELLS)[0];
-    }
-    const beach = new Uint8Array(n);
-    // Harbours: the coast near every city.
-    const reach = Math.ceil(HARBOUR_RANGE / this.cell);
-    for (const [x, y] of towns) {
-      const ci = Math.floor((x - this.x0) / this.cell), cj = Math.floor((y - this.y0) / this.cell);
-      for (let j = clampJ(cj - reach); j <= clampJ(cj + reach); j++) {
-        for (let i = clampI(ci - reach); i <= clampI(ci + reach); i++) {
-          const c = j * w + i;
-          if (!isCoast[c] || beach[c] || !mayHave(c)) continue;
-          const [cx, cy] = this.center(c);
-          if (Math.hypot(cx - x, cy - y) <= HARBOUR_RANGE) beach[c] = 1;
-        }
-      }
-    }
-    // Every island that may have beaches (on each of its seas) and has none yet gets one at its most
-    // sheltered spot: one cell, so a small island is not all beach.
-    for (const list of this.coasts.values()) {
-      if (!mayHave(list[0])) continue;
-      let best = -1;
-      for (let k = 0; k < list.length; k += 2) {
-        const c = list[k];
-        if (!isCoast[c]) continue;               // not on the drawn shore
-        if (beach[c]) { best = -2; break; }
-        if (best < 0 || score[c] > score[best]) best = c;
-      }
-      if (best >= 0) beach[best] = 1;
-    }
-    // The rest of the share: the best scores.
-    let count = 0;
-    for (const c of coastal) count += beach[c];
-    const rest = coastal.filter((c) => !beach[c] && mayHave(c)).sort((a, b) => score[b] - score[a]);
-    for (let k = 0; k < Math.round(coastal.length * BEACH_SHARE) - count && k < rest.length; k++) beach[rest[k]] = 1;
-    // What admins painted.
+    const isCoast = this.shore || this.isCoast;
+    const beach = new Uint8Array(this.w * this.h);
+    for (let c = 0; c < beach.length; c++) if (isCoast[c]) beach[c] = 1;
     for (const c of edits?.beach || []) if (isCoast[c]) beach[c] = 1;
     for (const c of edits?.cliff || []) if (isCoast[c]) beach[c] = 0;
 
@@ -610,7 +812,18 @@ export class NavGrid {
 
   // The beaches changed: where ships may dock, and the code the browsers draw them from (the beach
   // cells, sorted, as base-36 steps from the last).
+  // A beach under mountains (painted on the coast) is none: no ship docks there, and it is drawn as cliffs.
   beachesChanged() {
+    const beach = this.beach, mountain = this.mountain;
+    this.listLanding();
+    let last = 0;
+    const steps = [];
+    for (let c = 0; c < beach.length; c++) if (beach[c] && !mountain[c]) { steps.push((c - last).toString(36)); last = c; }
+    this.beachCode = steps.join(',');
+  }
+
+  // Where ships dock: the coast lists (listCoasts) without what isn't beach.
+  listLanding() {
     const beach = this.beach;
     this.landing = new Map();
     for (const [key, list] of this.coasts) {
@@ -618,10 +831,6 @@ export class NavGrid {
       for (let k = 0; k < list.length; k += 2) if (beach[list[k]]) kept.push(list[k], list[k + 1]);
       if (kept.length) this.landing.set(key, Int32Array.from(kept));
     }
-    let last = 0;
-    const steps = [];
-    for (let c = 0; c < beach.length; c++) if (beach[c]) { steps.push((c - last).toString(36)); last = c; }
-    this.beachCode = steps.join(',');
   }
 
   // The beaches as the browsers get them: the grid they lie on and the coded cells (see markBeaches).
@@ -678,10 +887,10 @@ export class NavGrid {
   }
 
   // Closest sailable point (cell centre) to (x, y), or null if none within maxDist.
-  // With `sea` set, only points of that sea count.
-  nearestSea(x, y, maxDist = 250, sea = 0) {
+  // With `sea` set, only points of that sea count; with `ok(px, py)`, only points it accepts.
+  nearestSea(x, y, maxDist = 250, sea = 0, ok = null) {
     const here = this.seaAt(x, y);
-    if (here && (!sea || here === sea)) return [x, y];
+    if (here && (!sea || here === sea) && (!ok || ok(x, y))) return [x, y];
     const ci = Math.floor((x - this.x0) / this.cell), cj = Math.floor((y - this.y0) / this.cell);
     const maxR = Math.ceil(maxDist / this.cell);
     for (let r = 1; r <= maxR; r++) {
@@ -692,7 +901,7 @@ export class NavGrid {
         if (!s || (sea && s !== sea)) return;
         const p = this.center(j * this.w + i);
         const d = Math.hypot(p[0] - x, p[1] - y);
-        if (d < bd) { bd = d; best = p; }
+        if (d < bd && d <= maxDist && (!ok || ok(p[0], p[1]))) { bd = d; best = p; }
       };
       for (let d = -r; d <= r; d++) { test(ci + d, cj - r); test(ci + d, cj + r); }
       for (let d = -r + 1; d < r; d++) { test(ci - r, cj + d); test(ci + r, cj + d); }
@@ -848,7 +1057,10 @@ export class NavGrid {
     this.lastExpansions = 0;
     const clear = sea ? (ax, ay, bx, by) => this.seaClear(ax, ay, bx, by) : (ax, ay, bx, by) => this.clear(ax, ay, bx, by);
     if (clear(sx, sy, tx, ty)) return [];
-    const sp = sea ? this.nearestSea(sx, sy, 30) : this.nearestWalkable(sx, sy, 30);
+    // From the mountains (a unit caught in them), the nearest open land of the landmass round them, however
+    // deep in it is: the unit crosses them to get there (canStep).
+    const sp = sea ? this.nearestSea(sx, sy, 30)
+      : this.mountainAt(sx, sy) ? this.nearestWalkable(sx, sy, 250, this.landOf(sx, sy)) : this.nearestWalkable(sx, sy, 30);
     if (!sp) return null;
     const tp = sea ? this.nearestSea(tx, ty, 15, this.seaAt(sp[0], sp[1]))
       : this.nearestWalkable(tx, ty, 15, this.landmass(sp[0], sp[1]));

@@ -1,7 +1,7 @@
 // Technologies (TECHS in shared/config.js): what they do for a liberator, and what they open up
-// (ships). Used by the game (server/game.js, in the host's browser) and by every player's page (HUD,
+// (ships: transports, battleships). Used by the game (server/game.js, in the host's browser) and by every player's page (HUD,
 // Tech window), so both always agree on incomes, limits and what may be ordered.
-import { TECHS, TECH_TYPES, TECH_TABS, LIBERATOR } from './config.js';
+import { TECHS, TECH_TYPES, TECH_TABS, LIBERATOR, UNITS } from './config.js';
 
 // Levels a new player has: none of anything.
 export function noTech() {
@@ -24,9 +24,16 @@ export function techAvailable(key, options) {
 
 const lvl = (tech, key) => (tech && tech[key]) || 0;
 
-// Seafaring: coastal cities build ships, and units go on board transports and land from them.
+// Seafaring: coastal cities build transports, and units go on board them and land from them.
 export function hasSeafaring(tech) {
   return lvl(tech, 'seafaring') > 0;
+}
+
+// May cities train this unit type with these technologies? A unit with a `tech` (UNITS) needs it: transports
+// Seafaring, battleships Gunnery. Anything else (land units, upgrades) needs none.
+export function canTrain(type, tech) {
+  const need = UNITS[type]?.tech;
+  return !need || lvl(tech, need) > 0;
 }
 
 // Gold a liberator gets at the end of every turn (before smuggling).

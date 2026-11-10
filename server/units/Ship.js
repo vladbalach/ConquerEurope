@@ -1,11 +1,16 @@
 // Base class for ships. They sail on the sea (the seas of NavGrid) instead of walking, and are
-// built only in coastal cities. Ships have no weapons: attack and hold orders are ignored, and
-// they never pick fights. Transport.js carries units: they come on board at a gather point on
-// the coast and are landed on the coast nearest to where the player sends them.
+// built only in coastal cities. Transport.js carries units: they come on board at a gather point on
+// the coast and are landed on the coast nearest to where the player sends them. It has no weapons:
+// attack and hold orders are ignored, and it never picks fights.
+// Ships with guns (`armed`: Battleship.js) fight like land units (Unit.update): attack orders,
+// attack-move, hold, and targets of their own. They hit what is within reach of the water: other
+// ships, and units and cities on land, which they shell from the water nearest to them.
 import { Unit } from './Unit.js';
 import { DISBAND, NAVAL, COMBAT } from '../../shared/config.js';
 
 const DOCK_REACH = 8;        // km from its dock at which a transport lands its units
+const SPOT_MARGIN = 4;       // km inside its reach that an armed ship stops to shell a target on land
+const SPOT_REFRESH = 10;     // km a target on land moves before its firing spot is looked for again
 
 export class Ship extends Unit {
   constructor(game, id, owner, x, y) {
@@ -16,6 +21,7 @@ export class Ship extends Unit {
 
   get naval() { return true; }
   get capacity() { return this.stats.capacity || 0; }
+  get armed() { return false; }
 
   // Sailing instead of walking: the sea grid for straight lines, paths and every step. Routes keep
   // out of the range of cities' guns where the sea allows (NavGrid.markDanger).
@@ -40,11 +46,13 @@ export class Ship extends Unit {
     return found;
   }
 
-  // Repairs: out of combat (COMBAT.regenDelay seconds without being hit), a ship regains
-  // NAVAL.harbourRegen HP per second in harbour, its own hpRegen elsewhere.
+  // Repairs: out of combat (COMBAT.regenDelay seconds without hitting or being hit), a ship regains its own
+  // hpRegen per second, and in harbour more: harbourFactor times its hpRegen when it has one (battleships),
+  // otherwise NAVAL.harbourRegen.
   regenerate(dt) {
     if (this.disbanding || this.hp >= this.maxHp || this.game.time - this.lastCombat <= COMBAT.regenDelay) return;
-    const rate = this.inHarbour() ? NAVAL.harbourRegen : this.stats.hpRegen;
+    const s = this.stats;
+    const rate = !this.inHarbour() ? s.hpRegen : s.harbourFactor ? s.hpRegen * s.harbourFactor : NAVAL.harbourRegen;
     this.hp = Math.min(this.maxHp, this.hp + rate * dt);
   }
 
@@ -59,6 +67,34 @@ export class Ship extends Unit {
     return found;
   }
 
+  // ---------------------------------------------------------------- targets (armed ships)
+  // Something out of reach is worth sailing for only along a clear straight line to where it can be hit
+  // from (as land units need one to walk to their target).
+  canEngage(o) {
+    if (this.canHit(o)) return true;
+    const spot = this.approach(o);
+    return !!spot && this.clearPath(this.x, this.y, spot[0], spot[1]);
+  }
+
+  // Another ship is chased (on round mountains in the way, Unit.approach); a unit or city on land is
+  // shelled from the water of this ship's sea nearest to it that lies within reach of it with a clear line
+  // of fire (no mountains in between): from anywhere in that cell of water, so from where the ship stops
+  // too. None: nowhere to shell it from. That spot is kept until the target moves SPOT_REFRESH km.
+  approach(o) {
+    if (o.naval) return super.approach(o);
+    const s = this.spot;
+    if (s && s.city === o.isCity && s.id === o.id && Math.hypot(s.x - o.x, s.y - o.y) < SPOT_REFRESH) return s.at;
+    // Its sea: where it is, or the water next to it when a push has left it on a coast cell.
+    const nav = this.game.nav, here = nav.nearestSea(this.x, this.y, 2 * nav.cell);
+    const sea = here ? nav.seaAt(here[0], here[1]) : 0;
+    const h = nav.cell / 2;
+    const clear = (x, y) => [[0, 0], [h, 0], [-h, 0], [0, h], [0, -h]].every(([dx, dy]) => nav.lineOfFire(x + dx, y + dy, o.x, o.y));
+    const p = sea ? nav.nearestSea(o.x, o.y, this.reach(o) - SPOT_MARGIN, sea, clear) : null;
+    const at = p ? [p[0], p[1], 0] : null;
+    this.spot = { city: o.isCity, id: o.id, x: o.x, y: o.y, at };
+    return at;
+  }
+
   // ---------------------------------------------------------------- orders
   // Any new order ends the boarding: units still on their way stop (see Unit.boardOrder). It also
   // forgets the anchorage the ship would have gone back to.
@@ -68,25 +104,29 @@ export class Ship extends Unit {
     this.returnTo = null;
   }
 
+  // Attack-move only for armed ships: the others just sail.
   orderMove(x, y, amove, route = null) {
-    super.orderMove(x, y, false, route);
+    super.orderMove(x, y, amove && this.armed, route);
     this.gather = null;
     this.returnTo = null;
   }
 
-  orderAttack() {}
+  orderAttack(k, id) {
+    if (this.armed) super.orderAttack(k, id);
+  }
 
   orderHold() {
-    this.makeIdle();
+    if (this.armed) super.orderHold();
+    else this.makeIdle();
   }
 
   orderBoard() {}
 
-  // Sailing and landing units end by themselves, so Shift can queue sails behind them; waiting at a
-  // dock for units to come on board does not.
+  // Sailing, attacking and landing units end by themselves, so Shift can queue sails behind them;
+  // waiting at a dock for units to come on board does not.
   get busy() {
     const k = this.order.kind;
-    return k === 'move' || k === 'unload';
+    return k === 'move' || k === 'unload' || (this.armed && (k === 'amove' || k === 'attack'));
   }
 
   // Sail to the dock (a sea cell next to the coast) and wait there while units come on board
@@ -129,6 +169,10 @@ export class Ship extends Unit {
 
   // ---------------------------------------------------------------- per tick
   update(dt) {
+    if (this.armed) {             // fights like a land unit; it never takes units on board
+      super.update(dt);
+      return;
+    }
     this.attacking = false;
     this.wantMove = 0;
     this.engaged = 0;

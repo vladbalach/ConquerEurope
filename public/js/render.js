@@ -1,10 +1,11 @@
-// Canvas renderer: cached map layer (sea, land, territories, borders, labels),
+// Canvas renderer: cached map layer (sea, land, territories, mountains, borders, labels),
 // then ports, cities, units, ships and effects on top every frame. Also draws the minimap.
 import { UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, PRODUCTION_ITEMS, ECONOMY, HERO, HEALER } from '/shared/config.js';
-import { unitSprite, standFirmSprite, castleSprite, anchorBadge, CONE, CASTLE_ANCHOR, mix } from './sprites.js';
+import { unitSprite, castleSprite, anchorBadge, CONE, CASTLE_ANCHOR, mix } from './sprites.js';
 import { regionIndex, regionLabelSizes, placeLabels, regionOutlines } from './map-labels.js';
 import { forEachCoastPiece } from '/shared/coastline.js';
-import { CARGO_SHIFT, STAND_FIRM_FLAG } from '/shared/protocol.js';
+import { buildMountains, paintMountains } from './mountains.js';
+import { CARGO_SHIFT } from '/shared/protocol.js';
 
 export const SEA = '#1f3d58';
 const LAND = '#dccfa8';
@@ -139,6 +140,7 @@ export class Renderer {
     }
     // Beaches as the game's host marks them (client.js isBeachAt): drawn as sandy stretches of coast.
     this.lines = mapLines(map, this.g.beaches ? (x, y) => this.g.isBeachAt(x, y) : null);
+    this.mountains = buildMountains(map);
     this.regions = regionIndex(map);
     this.labelSizes = regionLabelSizes(this.regions);
     this.placeCountryLabels(map);
@@ -163,6 +165,13 @@ export class Renderer {
       for (let i = 0; i < s.length; i += 4) { path.moveTo(s[i], s[i + 1]); path.lineTo(s[i + 2], s[i + 3]); }
       return path;
     });
+  }
+
+  // The map's mountains changed (an admin painted some on or off): draw them anew, here and on the minimap.
+  mountainsChanged() {
+    this.mountains = buildMountains(this.g.map);
+    this.mapKey = '';
+    this.miniVersion = -1;
   }
 
   // Country names: just above the middle of their cities, or the nearest spot in the country
@@ -371,6 +380,10 @@ export class Renderer {
       ctx.restore();
     }
     ctx.globalAlpha = 1;
+
+    // Mountains, which no unit crosses: over the territories they belong to, under the borders. Close up
+    // (the main map) with their hill signs, elsewhere only their land.
+    if (this.mountains) paintMountains(ctx, this.mountains, z, detailed ? this.viewRect() : null);
 
     // Only two kinds of border: between the cities of one region (faint) and between regions.
     const lines = this.lines;
@@ -601,7 +614,7 @@ export class Renderer {
     this.drawDocks();
     this.drawUnits(now);
     this.drawUnloadAim();
-    this.drawBeachBrush();
+    this.drawBrush();
     this.drawEffects(now);
     this.drawSelectionBox();
     this.drawMinimap(now);
@@ -918,11 +931,6 @@ export class Renderer {
       if (rpx < 2.6) {
         ctx.fillStyle = color;
         ctx.beginPath(); ctx.arc(sx, sy, Math.max(1.6, rpx), 0, Math.PI * 2); ctx.fill();
-        if (u.flags & STAND_FIRM_FLAG) { // standing firm (Last Stand): a thin red ring around the dot
-          ctx.strokeStyle = 'rgba(240,40,40,0.95)';
-          ctx.lineWidth = 1.2;
-          ctx.beginPath(); ctx.arc(sx, sy, Math.max(1.6, rpx) + 0.9, 0, Math.PI * 2); ctx.stroke();
-        }
         if (def.hero) {                  // a Hero stays recognisable as a dot: a gold ring
           ctx.strokeStyle = '#f2cc5c';
           ctx.lineWidth = 1.5;
@@ -932,9 +940,8 @@ export class Renderer {
       }
       if (u.flags & 8 && u.owner === g.you) this.drawHoldMark(sx, sy, rpx);
       const s = rpx / CONE.rx;
-      // Standing firm (Last Stand: outnumbered, taking less damage): the same sprite glowing red.
       const variant = def.hero ? g.heroKind(u) : null;      // a Hero's kind: its mark behind the crown
-      const sprite = u.flags & STAND_FIRM_FLAG ? standFirmSprite(color, u.t, variant) : unitSprite(color, u.t, variant);
+      const sprite = unitSprite(color, u.t, variant);
       if (def.naval && this.facing.get(u.id) === -1) {
         ctx.save();
         ctx.translate(sx, sy);
@@ -1063,12 +1070,13 @@ export class Renderer {
     ctx.restore();
   }
 
-  // Edit map, beach brush on: the brush under the cursor (teal: paints beaches; red: erases them).
-  drawBeachBrush() {
+  // Edit map, a brush on: the brush under the cursor (teal: paints beaches; brown: paints mountains; red:
+  // erases either).
+  drawBrush() {
     const g = this.g, inp = g.input;
-    if (!g.mapEdit || !g.beachBrush || !inp || !inp.mouse.inside) return;
+    if (!g.mapEdit || !g.brush || !inp || !inp.mouse.inside) return;
     const ctx = this.ctx, r = inp.brushRadius() * g.cam.zoom;
-    const tint = g.beachBrush === 'add' ? '112,200,210' : '230,90,70';
+    const tint = { 'beach-add': '112,200,210', 'mountain-add': '176,128,72' }[g.brush] || '230,90,70';
     ctx.save();
     ctx.fillStyle = `rgba(${tint},${inp.brush ? 0.3 : 0.15})`;
     ctx.strokeStyle = `rgba(${tint},0.95)`;
@@ -1223,6 +1231,7 @@ export class Renderer {
     for (const p of fx.shots) {
       const t = (now - p.t0) / p.dur;
       if (t < 0 || t > 1) continue;
+      if (p.cannon) { this.drawCannonball(p, t, z); continue; }
       const x = p.x0 + (p.x1 - p.x0) * t, y = p.y0 + (p.y1 - p.y0) * t;
       const lift = Math.sin(Math.PI * t) * p.arc;
       const [sx, sy] = this.w2s(x, y - lift);
@@ -1242,6 +1251,8 @@ export class Renderer {
       ctx.beginPath(); ctx.moveTo(-len, 0); ctx.lineTo(0, 0); ctx.stroke();
       ctx.restore();
     }
+
+    for (const b of fx.blasts) this.drawBlast(b, now, z);
 
     for (const s of fx.sparks) {
       const t = (now - s.t0) / 260;
@@ -1298,6 +1309,67 @@ export class Renderer {
     }
 
     this.drawRegionBursts(now);
+  }
+
+  // A battleship's cannonball at `t` (0 to 1) of its flight: a dark iron ball in an arc, a little smoke
+  // behind it.
+  drawCannonball(p, t, z) {
+    const ctx = this.ctx;
+    const at = (k) => {
+      const x = p.x0 + (p.x1 - p.x0) * k, y = p.y0 + (p.y1 - p.y0) * k;
+      return this.w2s(x, y - Math.sin(Math.PI * k) * p.arc);
+    };
+    const r = Math.max(2, 1.05 * z);
+    for (let k = 3; k >= 1; k--) {
+      const [tx, ty] = at(Math.max(0, t - k * 0.035));
+      ctx.fillStyle = `rgba(215,210,200,${0.32 - k * 0.08})`;
+      ctx.beginPath(); ctx.arc(tx, ty, r * (1 + k * 0.25), 0, Math.PI * 2); ctx.fill();
+    }
+    const [sx, sy] = at(t);
+    ctx.fillStyle = '#1d1a17';
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.beginPath(); ctx.arc(sx - r * 0.35, sy - r * 0.35, r * 0.35, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // Gun smoke at a battleship firing ('muzzle'), and where its shot lands: a splash on a ship
+  // ('splash') or a burst of fire and dust on land ('hit'). Each starts with a short flash, then fades.
+  drawBlast(b, now, z) {
+    const t = (now - b.t0) / b.dur;
+    if (t < 0 || t > 1) return;
+    const ctx = this.ctx;
+    const [sx, sy] = this.w2s(b.x, b.y);
+    const u = Math.max(1, z);
+    if (t < 0.2 && b.kind !== 'splash') {
+      const f = 1 - t / 0.2;
+      const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, 6.5 * u);
+      g.addColorStop(0, `rgba(255,236,170,${0.95 * f})`);
+      g.addColorStop(0.5, `rgba(246,162,58,${0.7 * f})`);
+      g.addColorStop(1, 'rgba(195,48,42,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(sx, sy, 6.5 * u, 0, Math.PI * 2); ctx.fill();
+    }
+    if (b.kind === 'splash') {
+      // A ring of foam spreading on the water, and a few drops thrown up.
+      ctx.strokeStyle = `rgba(235,246,255,${0.85 * (1 - t)})`;
+      ctx.lineWidth = Math.max(1, 0.5 * z);
+      ctx.beginPath(); ctx.ellipse(sx, sy + 2 * u, (2 + 7 * t) * u, (0.9 + 3 * t) * u, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = `rgba(235,246,255,${0.9 * (1 - t)})`;
+      for (let k = 0; k < 5; k++) {
+        const a = -Math.PI / 2 + (k - 2) * 0.45;
+        const h = Math.sin(Math.PI * Math.min(1, t * 1.6)) * 7 * u;
+        ctx.beginPath(); ctx.arc(sx + Math.cos(a) * 4.5 * t * u, sy - h * (1 - Math.abs(k - 2) * 0.25), Math.max(1, 0.5 * u), 0, Math.PI * 2); ctx.fill();
+      }
+      return;
+    }
+    // Smoke: grey-white puffs drifting up and spreading as they fade (dust is browner on land).
+    const hit = b.kind === 'hit', tone = hit ? '92,80,68' : '225,222,214';
+    for (let k = 0; k < 3; k++) {
+      const r = (1.7 + 4.5 * t) * u * (1 - k * 0.18);
+      const px = sx + (k - 1) * 2.2 * u * (0.5 + t), py = sy - (3.5 * t + k * 1.1) * u;
+      ctx.fillStyle = `rgba(${tone},${(hit ? 0.62 : 0.55) * (1 - t) * (1 - k * 0.2)})`;
+      ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2); ctx.fill();
+    }
   }
 
   drawSelectionBox() {

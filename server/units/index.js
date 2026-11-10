@@ -7,9 +7,11 @@ import { Knight } from './Knight.js';
 import { Transport } from './Transport.js';
 import { Hero } from './Hero.js';
 import { Healer } from './Healer.js';
+import { Battleship } from './Battleship.js';
 
 export const UNIT_CLASSES = {
   infantry: Infantry, archer: Archer, cavalry: Cavalry, knight: Knight, transport: Transport, hero: Hero, healer: Healer,
+  battleship: Battleship,
 };
 
 for (const type of UNIT_TYPES) {

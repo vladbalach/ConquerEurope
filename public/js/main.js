@@ -9,6 +9,7 @@ import { initTooltips } from './tooltip.js';
 import { HostSession, PeerSession } from './p2p.js';
 import { initSound } from './sound.js';
 import { mapLines } from './render.js';
+import { decodeMask, encodeMask } from '/shared/mountains.js';
 
 initTooltips();
 initSound();
@@ -34,6 +35,10 @@ let mapState = { pending: 0, busy: false };   // admins: cities moved since the 
 // it: a HostSession when this page hosts, a PeerSession otherwise (p2p.js).
 let session = null;
 let balanceValues = null;    // the server's current game balance, for a game this page hosts
+// Lost the host during a game: the lobby server hands the game to another player's browser and tells
+// us to connect to it. Only if nothing comes for this long is the game over for us.
+const HOST_WAIT_MS = 60000;
+let hostWait = 0;
 
 function show(id) {
   for (const s of SCREENS) $(s).hidden = s !== id;
@@ -268,10 +273,24 @@ for (const id of OPTION_INPUTS) $(id).addEventListener('change', sendOptions);
 
 // Leaving on purpose gives up your empire, so the rejoin token is forgotten too.
 function leaveGame() {
-  // Tell the host first that we give up (our cities become neutral), then close the link.
-  if (session && !session.isHost && game && !game.ended) session.link.send({ t: 'leave' });
-  endSession(true);
-  net.send({ t: 'leave' });
+  // Tell the host first that we give up (our cities become neutral), then close the link. While a duel
+  // restarts, the link is already to the new game.
+  const s = session, givingUp = !!game && (!game.ended || game.restarting);
+  clearTimeout(hostWait);
+  if (s && s.isHost && givingUp) {
+    // We run the game: it goes on in another player's browser. Our empire falls apart in it first,
+    // and the game as it is then goes to the lobby server, which hands it on once we have left.
+    session = null;
+    const gameId = s.gameId;
+    s.handOver().then(() => {
+      net.send({ t: 'leave', gameId });
+      s.destroy();
+    });
+  } else {
+    if (s && !s.isHost && givingUp) s.link.send({ t: 'leave' });
+    endSession(true);
+    net.send({ t: 'leave' });
+  }
   if (joined) saveToken(joined.gameId, null);
   store(sessionStorage, RESUME_KEY, null);
   joined = null;
@@ -300,10 +319,17 @@ function onGameMessage(msg) {
 function hello() {
   let resume = null;
   try { resume = JSON.parse(load(sessionStorage, RESUME_KEY) || 'null'); } catch { resume = null; }
-  // `hosting`: after a dropped connection the server learns that this page still runs its game.
-  const hosting = session && session.isHost ? session.gameId : null;
+  // `hosting`: after a dropped connection the server learns that this page still runs its game (unless
+  // another player's browser has taken it over meanwhile: a later epoch).
+  const hosting = session && session.isHost ? { gameId: session.gameId, epoch: session.epoch } : null;
   net.send({ t: 'hello', name: myName, resume, tokens: loadTokens(), hosting });
 }
+
+// Closing or reloading the page that runs the game: the lobby server hands the game to another player's
+// browser at once, instead of waiting to see whether this page's connection comes back.
+window.addEventListener('pagehide', () => {
+  if (session && session.isHost) net.send({ t: 'hostGone' });
+});
 
 net.onopen = () => {
   $('conn-status').textContent = '';
@@ -377,8 +403,10 @@ const GAME_MESSAGES = {
   start(msg) {
     if (!joined) return;
     const link = session ? session.link : net;
-    if (game && game.gameId === joined.gameId && game.you === msg.you) {
-      game.hostLink = link;            // reconnected to the host
+    // The same game again: we reconnected to the host, or to the browser that took the game over from
+    // it. (Not after a duel's Restart: a new game, same id.)
+    if (game && !game.restarting && game.gameId === joined.gameId && game.you === msg.you) {
+      game.reconnected(link);
       game.setPlayers(msg.players);
       game.onPorts(msg);
       game.onPrestart(msg.prestart);   // the game may have started meanwhile
@@ -398,28 +426,38 @@ const GAME_MESSAGES = {
   event(msg) { if (game) game.onEvent(msg); },
   score(msg) { if (game) game.setPlayers(msg.players); },
   ports(msg) { if (game) game.onPorts(msg); },
-  gameover(msg) { if (game) game.onGameOver(msg); },
+  gameover(msg) {
+    if (session && !session.isHost) session.gameOver();   // its link may close now: no reconnecting
+    if (game) game.onGameOver(msg);
+  },
 };
 
-// This page hosts the game that just started: run it here.
+// This page hosts the game: it just started, or (with `save`) this page takes it over from a host who
+// left, from the host's last checkpoint.
 net.on('host', (msg) => {
   endSession();
+  clearTimeout(hostWait);
+  if (msg.save && game) game.hud.feed('The host is gone: the game now runs in your browser');
   session = new HostSession({
-    net, gameId: msg.gameId, you: msg.you, title: msg.title, options: msg.options, roster: msg.roster, ice: msg.ice,
+    net, gameId: msg.gameId, you: msg.you, epoch: msg.epoch, title: msg.title, options: msg.options, roster: msg.roster,
+    save: msg.save || null, departed: msg.departed || [], ice: msg.ice,
     balance: balanceValues, onMessage: onGameMessage, onError: (text) => toast(text),
   });
 });
 
-// Connect to the host's browser (at the start, or to come back after a refresh or a drop).
+// Connect to the host's browser (at the start, to come back after a refresh or a drop, or to the player
+// who took the game over: `moved`).
 net.on('connectHost', (msg) => {
-  if (session && !session.isHost && session.gameId === msg.gameId && !session.done) {
+  clearTimeout(hostWait);
+  if (session && !session.isHost && session.gameId === msg.gameId && session.epoch === msg.epoch && !session.done) {
     if (session.open) return;          // our lobby connection came back; the direct link is fine
     if (session.relay) {               // the relay runs over the lobby connection: pick it up again
       session.openRelay();
       return;
     }
   }
-  endSession();
+  const wasHost = !!(session && session.isHost);
+  endSession();                        // also a game this page ran: another browser has taken it over
   // Until the host's game arrives, the waiting room says what is happening.
   const status = (text) => {
     if (game) game.hud.feed(text);
@@ -429,13 +467,28 @@ net.on('connectHost', (msg) => {
       for (const id of OPTION_INPUTS) $(id).disabled = true;
     }
   };
-  status('The game has started: connecting to the host…');
+  if (wasHost) status('Your connection dropped: the game now runs in another player\'s browser. Reconnecting…');
+  else if (msg.moved) status('The host is gone: the game moves to another player\'s browser. Reconnecting…');
+  else status(game ? 'Connecting to the host…' : 'The game has started: connecting to the host…');
   session = new PeerSession({
-    net, gameId: msg.gameId, you: msg.you, ice: msg.ice, onMessage: onGameMessage, onStatus: status,
+    net, gameId: msg.gameId, you: msg.you, epoch: msg.epoch, ice: msg.ice, onMessage: onGameMessage, onStatus: status,
     onLost: (text) => {
       session = null;
-      if (game) game.onHostLost(text);
-      else { status(text); toast(text); }
+      if (game && game.restarting) {
+        // A duel's Restart could not reach the host: back to the lobby, where Rejoin tries again.
+        game.destroy();
+        game = null;
+        toast(text);
+        show('screen-lobby');
+        drawBackdrop();
+        net.send({ t: 'list' });
+      } else if (game) {
+        // If the host is gone for good, the lobby server hands the game to another player's browser
+        // (connectHost or host). Only if nothing comes is the game over for us.
+        game.hud.feed('Lost the connection to the host: waiting for the game to carry on…', 'bad');
+        clearTimeout(hostWait);
+        hostWait = setTimeout(() => { if (game && !session) game.onHostLost(text); }, HOST_WAIT_MS);
+      } else { status(text); toast(text); }
     },
   });
 });
@@ -455,6 +508,16 @@ net.on('relay', (msg) => {
 net.on('reveal', (msg) => {
   if (game) game.onReveal(msg);
   else if (msg.reason) toast(msg.reason);
+});
+
+// A finished duel: who has pressed Restart, and whether both players are still there to play again.
+net.on('restartVotes', (msg) => { if (game) game.onRestartVotes(msg); });
+
+// Both players of a duel pressed Restart: the same game starts again, handed to its host as at a
+// start. The finished game's link goes now; its results stay on screen until the new game arrives.
+net.on('restarted', () => {
+  endSession();
+  if (game) game.onRestarting();
 });
 
 net.on('start', GAME_MESSAGES.start);
@@ -492,6 +555,17 @@ net.on('cityCoast', (msg) => {
 net.on('beachEdit', (msg) => {
   if (session && session.isHost) session.beachEdit(msg);
 });
+// Mountains an admin painted on or off (checked by the server). Every page draws them at once; the game's
+// host also makes its units walk round them.
+net.on('mountainEdit', (msg) => {
+  const m = map && map.mountains;
+  if (!m || !Array.isArray(msg.cells)) return;
+  const mask = decodeMask(m.code, m.w * m.h);
+  for (const c of msg.cells) if (Number.isInteger(c) && c >= 0 && c < mask.length) mask[c] = msg.on ? 1 : 0;
+  m.code = encodeMask(mask);
+  if (session && session.isHost) session.mountainEdit(msg);
+  if (game) game.onMountainEdit();
+});
 net.on('mapRebuilt', async () => {
   if (!map) return;
   const fresh = await fetch('map.json', { cache: 'no-store' }).then((r) => r.json());
@@ -504,6 +578,7 @@ net.on('mapState', (msg) => { mapState = msg; if (game) game.onMapState(msg); })
 net.on('error', (msg) => toast(msg.msg));
 net.on('kicked', (msg) => {
   toast(msg.msg);
+  clearTimeout(hostWait);
   endSession();
   if (game) { game.destroy(); game = null; }
   joined = null;

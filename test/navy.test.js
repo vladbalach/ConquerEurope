@@ -225,6 +225,8 @@ test('transports steer clear of the guns of coastal cities where the sea allows'
   for (const c of game.cities) c.owner = -1;              // every city shoots at A's ship...
   const rome = ctx.city('Rome');
   rome.owner = a.id;                                      // ...except its home port
+  rome.portOverride = true;                               // Rome stands inland now: made coastal, as an admin can
+  rome.updatePort();
   game.recount();
   const ship = game.spawnUnit(rome, 'transport');
   for (const u of troops(ctx, a, 4, rome.x + 30, rome.y)) { game.units.delete(u.id); ship.cargo.push(u); }
@@ -600,9 +602,9 @@ test('a transport at anchor far from the beach stays there after taking units on
 });
 test('transports find their way through narrow waters, round capes and peninsulas', () => {
   // Beaches where a transport at anchor 50 km out used to slide along the coast for ever, or give up
-  // there, on its way to take one unit on board or back: the fjords by Tromsø, the Baltic islands,
-  // a channel one cell wide off Africa.
-  for (const [bx, by] of [[238, -1937], [368, -627], [403, -632], [1848, 2038], [1858, 2038]]) {
+  // there, on its way to take one unit on board or back: the strait between Tromsø and its islands, the
+  // Baltic islands, a channel one cell wide off Africa.
+  for (const [bx, by] of [[250, -1925], [368, -627], [403, -632], [1848, 2038], [1858, 2038]]) {
     const ctx = setup();
     const { game, a, b, run, city } = ctx;
     for (const c of game.cities) c.owner = a.id;                 // no guns on the way...
@@ -628,21 +630,23 @@ test('transports find their way through narrow waters, round capes and peninsula
   }
 });
 
-test('about a fifth of the coast is beach: only there do ships take units on board and land them', () => {
+test('all of the coast is beach: ships take units on board and land them anywhere on it', () => {
   const { game, a, city } = setup();
-  // The coastline as the map draws it: every piece shows the shore cell nearest to it, beach or cliff.
-  // That is about a fifth of the drawn coast, every beach is drawn, and every beach drawn takes ships.
+  // The coastline as the map draws it: every piece shows the shore cell nearest to it. All of them are
+  // beaches; only the pieces around islets too small for the land grid have no shore cell (no land to
+  // land on), and are drawn as plain coast. Every beach is drawn, and every beach drawn takes ships.
   const dockable = new Set();
   for (const list of nav.landing.values()) for (let k = 0; k < list.length; k += 2) dockable.add(list[k]);
   const drawn = new Set();
-  let pieces = 0, onBeach = 0;
+  let pieces = 0, onShore = 0, onBeach = 0;
   forEachCoastPiece(map, (ax, ay, bx, by) => {
     pieces++;
     const c = nearestCell(nav, (ax + bx) / 2, (ay + by) / 2, (k) => nav.shore[k] === 1);
+    if (c >= 0) onShore++;
     if (c >= 0 && nav.beach[c]) { onBeach++; drawn.add(c); }
   });
-  const share = onBeach / pieces;
-  assert.ok(share >= 0.2 && share <= 0.25, `${(share * 100).toFixed(1)}% of the drawn coast is beach`);
+  assert.equal(onBeach, onShore, 'every piece of drawn coast with land behind it is beach');
+  assert.ok(onBeach / pieces > 0.97, `${(onBeach / pieces * 100).toFixed(1)}% of the drawn coast is beach`);
   let beaches = 0;
   for (let c = 0; c < nav.beach.length; c++) {
     if (!nav.beach[c]) continue;
@@ -650,20 +654,22 @@ test('about a fifth of the coast is beach: only there do ships take units on boa
     assert.ok(drawn.has(c), 'every beach is drawn on the map');
   }
   for (const c of drawn) assert.ok(dockable.has(c), 'and every beach drawn takes ships');
-  // Every landmass with a city, or bigger than 40 cells (1,000 km²), has a beach on each of its seas;
-  // tiny ones without a city have none.
+  // Every island has beaches on each of its seas, the tiny ones without a city too.
   const size = new Map();
   for (let c = 0; c < nav.comp.length; c++) if (nav.comp[c]) size.set(nav.comp[c], (size.get(nav.comp[c]) || 0) + 1);
   const settled = new Set(game.cities.map((c) => nav.landmass(c.x, c.y)));
   let tiny = 0;
-  for (const key of nav.coasts.keys()) {
-    const land = Math.floor(key / 65536), may = settled.has(land) || size.get(land) >= 40;
-    if (!may) tiny++;
-    assert.equal(nav.landing.has(key), may, may ? 'a beach on every island that may have one' : 'none on tiny islets without a city');
+  for (const [key, list] of nav.coasts) {
+    let shore = false;
+    for (let k = 0; k < list.length; k += 2) if (nav.shore[list[k]]) shore = true;
+    if (!shore) continue;                                    // not on the drawn coastline
+    assert.ok(nav.landing.has(key), 'a beach on every island, on each of its seas');
+    const land = Math.floor(key / 65536);
+    if (!settled.has(land) && size.get(land) < 40) tiny++;
   }
-  assert.ok(tiny > 100, 'there are many such islets');
+  assert.ok(tiny > 100, `islets without a city have beaches too (${tiny})`);
   // A harbour by every coastal city.
-  for (const name of ['Lisbon', 'Brest', 'Genoa', 'Athens', 'Plymouth']) {
+  for (const name of ['Lisbon', 'Brest', 'Nice', 'Athens', 'Plymouth']) {
     const c = city(name);
     const near = nav.coastNear(c.x, c.y, nav.landmass(c.x, c.y), c.port.sea, 35);
     assert.ok(near, `${name} has a beach next to it`);
@@ -685,10 +691,10 @@ test('about a fifth of the coast is beach: only there do ships take units on boa
 test('the units pick the beach nearest to them, and the transport sails there', () => {
   const ctx = setup();
   const { game, a, city } = ctx;
-  // A transport out in the Atlantic, units by Marseille on the Mediterranean (one sea, one landmass).
-  const brest = city('Brest'), marseille = city('Marseille');
+  // A transport out in the Atlantic, units by Montpellier on the Mediterranean (one sea, one landmass).
+  const brest = city('Brest'), montpellier = city('Montpellier');
   const ship = ctx.spawn(a.id, 'transport', brest.port.x - 150, brest.port.y);
-  const army = troops(ctx, a, 3, marseille.x, marseille.y - 40);
+  const army = troops(ctx, a, 3, montpellier.x, montpellier.y - 40);
   game.handleCommand(a, { t: 'board', ship: ship.id, ids: army.map((u) => u.id) });
   assert.equal(ship.order.kind, 'dock');
   const cx = army.reduce((s, u) => s + u.x, 0) / 3, cy = army.reduce((s, u) => s + u.y, 0) / 3;
@@ -700,7 +706,7 @@ test('the units pick the beach nearest to them, and the transport sails there', 
 
   // More units clicked onto the same transport while it is on its way: they join the same place.
   const dock = [ship.order.x, ship.order.y];
-  const more = troops(ctx, a, 2, marseille.x - 100, marseille.y - 60);
+  const more = troops(ctx, a, 2, montpellier.x - 100, montpellier.y - 60);
   game.handleCommand(a, { t: 'board', ship: ship.id, ids: more.map((u) => u.id) });
   assert.deepEqual([ship.order.x, ship.order.y], dock, 'the meeting place stays where it was');
   assert.ok(more.every((u) => u.order.kind === 'board'));

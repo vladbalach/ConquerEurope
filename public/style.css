@@ -289,6 +289,12 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 }
 .help-tabs button:hover:not(:disabled) { color: var(--paper); }
 .help-tabs button.active, .help-tabs button.active:hover:not(:disabled) { color: var(--gold); border-bottom-color: var(--gold); }
+/* Leave during a game: surrender and watch, or leave for the lobby. One row per choice: its button, what it does. */
+#leave { width: min(520px, calc(100vw - 32px)); }
+.leave-option { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 14px; align-items: center; padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
+.leave-option p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+.leave-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+@media (max-width: 480px) { .leave-option { grid-template-columns: 1fr; gap: 6px; } }
 /* Technologies window (T): tabs like the help, one card per technology. */
 #tech { width: min(660px, calc(100vw - 32px)); }
 .tech-page > p { line-height: 1.5; margin: 0 0 12px; }
@@ -315,6 +321,8 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 .tech-close { margin-top: 6px; }
 .tech-actions + .tech-actions { margin-top: 8px; }
 .tech-queued { color: var(--gold); font-size: 13px; white-space: nowrap; }
+/* A technology that needs another one researched (or ordered) first: in the locked build buttons' amber. */
+.tech-locked { color: #ffc46b; font-size: 13px; font-weight: 600; white-space: nowrap; }
 /* Tech window: the levels queued after the research running (all tabs), each with ✕. */
 .plan-queue { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 12px; }
 .plan-item { display: inline-flex; align-items: center; gap: 6px; padding: 2px 3px 2px 8px; border-radius: 4px; font-size: 13px;
@@ -421,7 +429,11 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 .results-heading .results-line { margin: 4px 0 12px; }
 .results-tabs { margin: 0; border-bottom: none; }
 .results-tabs button, .results-tabs button:hover:not(:disabled) { padding: 8px 20px 10px; font-size: 15px; }
-.results-actions { justify-self: end; display: flex; gap: 8px; padding-bottom: 12px; }
+.results-actions { justify-self: end; display: flex; align-items: center; gap: 8px; padding-bottom: 12px; }
+/* A duel's Restart, with a word on the other player: ready, waiting for them, or gone. */
+.restart-slot { display: inline-flex; align-items: center; gap: 10px; flex: none; }
+.restart-note { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.restart-note.ready { color: var(--gold); font-weight: 600; }
 .results-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 24px 28px; }
 .results-page { max-width: 1320px; margin: 0 auto; }
 .results-section { margin-top: 26px; }

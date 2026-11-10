@@ -1,5 +1,114 @@
 # Patch notes
 
+## 10 November 2026: Mountains
+
+- **Mountains:** the great ranges of Europe, North Africa and Anatolia are on the map, and **no unit can cross them**:
+  the Alps, Pyrenees, Cantabrian Mountains, Sistema Central, Sierra Nevada, Massif Central, Apennines, Dinaric Alps,
+  Balkan Mountains, Rila, Rhodopes, Pindus, Carpathians, Scandinavian Mountains, Scottish Highlands, the ring round
+  Bohemia, Caucasus, Urals, Taurus, Pontic Mountains, Atlas and Rif. Armies march round them or through their
+  **passes**: Mont Cenis, Gotthard and Brenner across the Alps, Somport, Dukla, Shipka, Darial, the Cilician Gates
+  and more. A move order into the mountains takes your units to the open land nearest to the spot.
+- Mountains keep 12 km off the sea, so a road always runs along the coast past them, and 35 km off every city. They
+  wall no city in: every city can still reach every city of its landmass by land, as before.
+- Close up they are drawn as rows of hill signs on rocky ground, as on an old map; zoomed out, on the minimap and
+  on the results timeline, as darker ground. The ground is opaque: the colour of the region doesn't show through
+  the mountains, only its borders cross them. What you see is exactly where units can't go.
+- **Paint mountains / Erase mountains** in Edit map (admins): drag over the land to raise mountains or clear them,
+  the built ones too. They block units at once in every game, and are saved for every game after. They keep 35 km
+  off every city, and a stroke that would wall in a city or any big stretch of land is refused (a small valley it
+  closes round is filled). They may reach the water, to close a road along the coast: the coast under them becomes
+  cliffs, where no ship docks.
+- **Nothing shoots over mountains:** archers, battleships and cities hit only what they can see past them. A battleship
+  told to shell a target behind mountains sails to water with a clear line of fire to it (with none in range, the
+  order is dropped); an archer walks round until it has a clear shot.
+- **Norway's coast is simpler:** from Stavanger round the North Cape the fjords are filled and the coast runs across
+  their mouths. Lofoten, Vesterålen and the islands by Tromsø stay islands, smoothed, and the tiniest skerries are
+  gone. Bergen, Bodø and Tromsø keep their ports.
+
+## 10 November 2026: Battleships
+
+- **Gunnery:** a new technology on the Sea tab of the Tech window (150 gold, 60 s). It needs Seafaring first: you
+  can order it as soon as Seafaring is researched or queued, and taking Seafaring out of the queue takes it out too.
+- **Battleships (N):** warships built in coastal cities once you have Gunnery, for 200 gold. 500 HP, range 60, speed
+  32. They shell ships, troops on the shore and cities, like archers do on land: one shot of **30 damage every 1.5
+  seconds**. The guns reload while the ship sails, so you can shoot, move and shoot again: pull it back after a shot,
+  and it fires the moment you order the attack again once it has reloaded. Attack-move (A + right click) works for
+  them; a plain move never shoots. They are heavy: from a standstill, also after stopping to shoot, they need 1.5 s
+  to reach full speed, so a ship that keeps running gains on one that stops to fire. In harbour they repair at twice
+  their own regeneration (2 HP per second), not at the transports' 5.
+- **Battleships take coastal cities:** a shot that brings a coastal city's HP to zero captures it, as any attack
+  does. An inland city within their range goes down to 1 HP and no further: land troops to take it. A city
+  doesn't regenerate between a battleship's shots (it still does under attacks that hit every second), so it can't
+  win back between shots what it loses. Cities still outrange battleships (70 km against 60).
+- Battleships fly a two-masted warship with a row of gun ports, and their sail carries crossed cannons. Every shot is
+  drawn: smoke at the guns, the cannonball's arc, and a splash on the water or a burst of fire on land.
+- **Attack-move goes for the nearest enemy:** units on attack-move no longer chase the first enemy they picked as if
+  ordered to attack it. Once it is out of reach, they go for whichever enemy is nearest now, and when it gets out of
+  sight they let it go and carry on to where they were sent. An attack order still follows its target anywhere.
+- **A + right click on an enemy city** now attack-moves to it: your units fight the defenders they meet on the way,
+  then the city. Before, it was a plain attack on the city, and the units walked past the enemy troops to reach it.
+  A right click without A still orders the attack on the city alone.
+
+## 10 November 2026: North Africa and Greenland
+
+- **North Africa joins the war:** four new regions across the Mediterranean, 13 cities, most of them well inland,
+  out of reach of ships' guns: **Morocco** (Tangier, Rabat, Marrakesh, Talsint), **Tlemcen** (Naâma, Relizane,
+  Laghouat), **Algiers** (Constantine, Bou Saâda, Djamaa) and **Ifriqiya** (Sfax, Le Kef, Tozeur).
+- **Cities farther from the sea in Spain:** Oviedo moves south over the mountains, Granada north, and Córdoba
+  north-east to make room; all three are now about 100 km or more from the coast. Coimbra and Marseille are gone.
+- Ships can no longer sail along the very bottom edge of the map, behind North Africa: the land grid there was a
+  strip of sea.
+- **Greenland:** brought down into the north-west corner of the map, with six cities: Tasiilaq and Ittoqqortoormiit
+  on the coast, Sermersuaq, Summit, Eismitte and Schweizerland on the ice sheet. Iceland moved down to make room for
+  it, and has a fourth city, Vík.
+- **Islands of the North Atlantic:** Jan Mayen, off Greenland, is four times as big and has two cities of Norway,
+  Olonkinbyen and Beerenberg. The Faroes are one island now, with Tórshavn, a region of its own.
+- **Crete** is a third bigger, with Chania in the west and Agios Nikolaos in the east instead of Heraklion.
+- **More room in central Europe and the Balkans:** 29 cities that stood too close to their neighbours are gone:
+  Luxembourg, Eindhoven, Lille, Strasbourg, Freiburg, Bremen, Kassel, Leipzig, Erfurt, Plzeň, Bern, Geneva,
+  Innsbruck, Ljubljana, Turin, Verona, Bologna, Nitra, Osijek, Dubrovnik, Kaunas, Plovdiv, Constanța, Edirne,
+  Skopje, Larissa, Patras, Iași and Heraklion. **Saxony is gone:** Dresden now belongs to Prussia. **Macedonia is
+  gone:** Tirana stands farther east, towards Skopje. Greece gets Kalamata in the Peloponnese. Venice and
+  Switzerland are one-city regions.
+- **Land without a city is shared out:** Slovenia, North Macedonia, Luxembourg, Kosovo and the microstates are split
+  between the cities nearest to them, like the rest of the map, instead of going whole to one city (or staying
+  neutral).
+- **More cities in the east:** Sivas, Van and Urfa in Anatolia; Veliky Ustyug in Muscovy, in the gap between
+  Arkhangelsk, Ukhta and Nizhny Novgorod; Tuapse and Grozny in the Golden Horde, in the Caucasus.
+- **Inland Scandinavia:** Kiruna and Vilhelmina in Sweden, Otta in Norway.
+- **Pomorye:** a new region on the White Sea, split off from Novgorod: Murmansk, Arkhangelsk and the new city of
+  Kem. Novgorod keeps Saint Petersburg, Novgorod and Petrozavodsk.
+- The map now has **223 cities in 63 regions** (the default target is still 120).
+- **All of the coast is beach:** transports take units on board and land them anywhere on the coast, every island's
+  too. The cliffs are gone (admins can still paint some in Edit map).
+- **The view goes past the edges:** the camera can now be moved a little beyond every edge of the map, so the land
+  along it, such as North Africa at the bottom, can be seen clear of the minimap and the panels. Where the map's
+  edge cuts the land off, it is no longer drawn as a coast.
+
+## 10 November 2026: Surrender, and Restart for duels
+
+- **Surrender and watch:** pressing **Leave** during a game now asks what you want. **Surrender and watch** gives up
+  your empire (your cities become neutral, your units are gone) but keeps you in the game as a spectator, so you see
+  how it ends. **Leave game** gives up and goes back to the lobby, as before. Players who surrendered show as
+  "Surrendered" in the Players list and on the results screen.
+- **The game survives its host:** when the host leaves, closes or refreshes their tab, or loses their connection,
+  another player's browser takes the game over and everyone plays on. At most the last few seconds are lost (the
+  host's browser saves the game every 5 seconds). A host whose tab closed or whose connection dropped keeps their
+  empire and comes back as an ordinary player, by refreshing or with Rejoin in the lobby.
+- **The last one in wins:** once everyone else has surrendered or left, the last player wins at once. A game started
+  alone is not won this way, so you can still play by yourself to try things out; surrendering ends it.
+- **Restart a duel:** a game of two players has **Restart** on its results screen. When both of you press it, the same
+  game starts again right away, without going back to the lobby: new colours, the usual countdown. The screen shows
+  when your opponent wants a rematch, or that they have left.
+- **Cancel with C:** with cities selected, **C** cancels the last unit or building in each selected city's queue and
+  gives its gold (or honor) back. Press it again to cancel the one before. With units selected, C still makes a Hero.
+- **Last Stand is gone:** the tier II tradition and its effects (30% more damage, 30% less when outnumbered, the red
+  glow) are removed. Eternal Glory is now the only tier II tradition.
+- **No browser shortcuts in a game:** keys with Ctrl or Alt and the function keys no longer reach the browser while
+  you play, so Ctrl + F, Ctrl + G, F3, Ctrl + S, Ctrl + P, Ctrl + H, Ctrl + D, Alt + Left, F5, Ctrl + Plus/Minus,
+  Ctrl + wheel and the like do nothing (or only their in-game action). F11 still switches to full screen. Chrome
+  does not let a page block Ctrl + W, Ctrl + T, Ctrl + N or Ctrl + Tab.
+
 ## 9 November 2026: Kill rewards, honor, winning at the end of the turn
 
 - **Winning at the end of the turn:** holding the target number of cities no longer ends the game at once. The game

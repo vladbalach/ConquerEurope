@@ -51,10 +51,10 @@ const held = (game, p) => game.cities.filter((c) => c.owner === p.id).length;
 
 test('the game ends when someone holds the target at the end of a turn, and the countdown lowers it', () => {
   const { game, a, b } = setup();
-  const n = held(game, a);                            // A and B hold n cities each
+  const n = held(game, a);                            // A holds n cities, B n or n - 1
   game.options = { countdown: 'turn', countdownTurn: 5, winCities: n + 5 };
   const from = game.cities.find((c) => c.owner === b.id);
-  from.owner = a.id;                                  // A n + 1, B n - 1
+  from.owner = a.id;                                  // A n + 1, B at most n - 1
   game.turn = 5;
   game.endTurn();                                     // turn 6 ends: still n + 5
   assert.equal(game.status, 'running', 'turn 6: still n + 5');
@@ -100,6 +100,10 @@ test('reaching the target during a turn is not enough: it must still be held whe
 
 test('when several players hold the target at the end of a turn, the most cities win; an exact tie plays on', () => {
   const { game, a, b } = setup();
+  if (held(game, a) > held(game, b)) {                // an odd number of cities on the map: one of A's goes neutral
+    game.cities.find((c) => c.owner === a.id).owner = -1;
+    game.recount();
+  }
   const n = held(game, a);                            // n each
   game.options = { countdown: 'start', countdownTurn: 10, winCities: 120 };
   game.turn = 120 - n;                                // target n: both hold it with the same count

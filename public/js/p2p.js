@@ -128,24 +128,34 @@ function latest(list, stride) {
   return list.length > keep ? list.slice(list.length - keep) : list;
 }
 
+// The lobby server takes messages up to 4 MB (server/index.js); a checkpoint is far smaller (about 250 KB
+// for 2000 units on the march), but one that is not is never sent.
+const MAX_CHECKPOINT = 3.5 * 1024 * 1024;
+const HANDOVER_TIMEOUT_MS = 2000;    // the host leaves: its last checkpoint gets this long to go out
+
 export class HostSession {
   // net: the lobby connection. roster: [{ id, color }]. balance: current balance values.
-  // options: the game options the host picked in the waiting room.
-  constructor({ net, gameId, you, title, options, roster, ice, balance, onMessage, onError }) {
+  // options: the game options the host picked in the waiting room. epoch: which hosting of this game
+  // this is (the lobby server counts them up each time another browser takes the game over).
+  // Taking over a game from a host who left: `save` (packed, from the lobby server) instead of the
+  // roster, and `departed`, the ids of the players who left it.
+  constructor({ net, gameId, you, epoch, title, options, roster, save = null, departed = [], ice, balance, onMessage, onError }) {
     this.isHost = true;
     this.net = net;
     this.gameId = gameId;
     this.you = you;
+    this.epoch = epoch;
     this.ice = ice;
     this.onMessage = onMessage;
     this.onError = onError || (() => {});
     this.peers = new Map();          // player id -> { pc, channel, candidates }
     this.relayed = new Set();        // players without a direct link: their messages go through the server
     this.outgoing = new Map();       // player id -> Outgoing: what was last sent on their link
+    this.handedOver = null;          // the host is leaving: resolves once its last checkpoint went out
     this.worker = new Worker(new URL('./host-worker.js', import.meta.url), { type: 'module' });
     this.worker.onmessage = (e) => this.fromWorker(e.data);
     this.worker.onerror = (e) => this.onError(`The game could not run: ${e.message || 'worker error'}`);
-    this.worker.postMessage({ type: 'init', gameId, title, options, roster, hostId: you, balance });
+    this.worker.postMessage({ type: 'init', gameId, title, options, roster, save, departed, hostId: you, balance });
     // This page's own orders go straight to the worker.
     this.link = { send: (msg) => this.worker.postMessage({ type: 'msg', from: you, msg }) };
   }
@@ -154,11 +164,33 @@ export class HostSession {
     if (m.type === 'send') {
       if (m.to === this.you) this.onMessage(m.msg);
       else this.sendTo(m.to, m.msg);
+    } else if (m.type === 'checkpoint') {
+      // For the lobby server, which hands the game to another player's browser if this one goes.
+      if (m.data && m.data.length <= MAX_CHECKPOINT) {
+        this.net.send({ t: 'checkpoint', gameId: this.gameId, epoch: this.epoch, data: m.data, active: m.active });
+      }
+      if (m.final && this.handedOver) this.handedOver();
     } else if (m.type === 'ended') {
       this.net.send({ t: 'gameEnded', winner: m.winner });
     } else if (m.type === 'error') {
       this.onError(m.msg);
     }
+  }
+
+  // The host leaves the game (Leave → Leave game): its empire falls apart here first, then the game as
+  // it is now goes to the lobby server, which hands it to another player's browser. Resolves once that
+  // checkpoint went out (or after HANDOVER_TIMEOUT_MS: the server then uses the one before).
+  handOver() {
+    this.link.send({ t: 'leave' });
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => this.handedOver(), HANDOVER_TIMEOUT_MS);
+      this.handedOver = () => {
+        clearTimeout(timer);
+        this.handedOver = null;
+        resolve();
+      };
+      this.worker.postMessage({ type: 'checkpoint' });
+    });
   }
 
   // A game message for another player: over their direct link, or through the lobby server.
@@ -281,6 +313,7 @@ export class HostSession {
   cityMoved(msg) { this.worker.postMessage({ type: 'cityMoved', city: msg.city, x: msg.x, y: msg.y }); }
   cityCoast(msg) { this.worker.postMessage({ type: 'cityCoast', city: msg.city, coastal: msg.coastal }); }
   beachEdit(msg) { this.worker.postMessage({ type: 'beachEdit', cells: msg.cells, on: msg.on }); }
+  mountainEdit(msg) { this.worker.postMessage({ type: 'mountainEdit', cells: msg.cells, on: msg.on }); }
   mapRebuilt() { this.worker.postMessage({ type: 'mapRebuilt' }); }
 
   destroy() {
@@ -293,11 +326,13 @@ export class HostSession {
 export class PeerSession {
   // onLost(text): the link to the host is gone, or could not be made.
   // onStatus(text): how the connection is going, for the screen.
-  constructor({ net, gameId, you, ice, onMessage, onLost, onStatus }) {
+  // epoch: which hosting of the game this host is (see HostSession).
+  constructor({ net, gameId, you, epoch, ice, onMessage, onLost, onStatus }) {
     this.isHost = false;
     this.net = net;
     this.gameId = gameId;
     this.you = you;
+    this.epoch = epoch;
     this.onMessage = onMessage;
     this.onLost = onLost;
     this.onStatus = onStatus || (() => {});
@@ -339,7 +374,7 @@ export class PeerSession {
     };
     // The direct link failed, or died during the game (network change, a sleeping laptop, a
     // browser pausing a background tab): carry on through the server. If the host really left,
-    // the lobby server says so and the game ends then.
+    // the lobby server hands the game to another player's browser and tells us to connect to it.
     ch.onclose = () => { if (this.open) this.linkLost(); };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState !== 'failed' || this.relay) return;
@@ -386,8 +421,18 @@ export class PeerSession {
     this.link.send({ t: 'resync' });
   }
 
+  // The game is over: the host sends nothing more. If the link drops from now on (the host went back to
+  // the lobby, or a duel restarts with a new game), there is nothing to reconnect to.
+  gameOver() {
+    this.over = true;
+  }
+
   // The direct link died during the game.
   linkLost() {
+    if (this.over) {
+      this.destroy();
+      return;
+    }
     if (this.relay || this.done) return;
     console.info('The direct link to the host was lost: switching to the server relay.');
     this.open = false;

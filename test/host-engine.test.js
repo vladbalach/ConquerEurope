@@ -153,6 +153,65 @@ test('leaving gives up the empire; the end of the game is reported to the page',
   assert.ok(inbox.get(1).some((m) => m.t === 'gameover' && m.winner === 1));
 });
 
+test('surrendering gives up the empire but keeps watching; the last player who has not surrendered or left wins', () => {
+  const { engine, game, inbox, ended, run, begin } = setupEngine();
+  begin();
+  const quitter = game.players.get(0);
+  engine.message(0, { t: 'surrender' });
+  assert.ok(game.players.has(0), 'still in the game');
+  assert.ok(quitter.surrendered && quitter.eliminated);
+  assert.ok(game.cities.every((c) => c.owner !== 0), 'its cities are neutral');
+  assert.ok(inbox.get(1).some((m) => m.t === 'event' && m.kind === 'surrendered' && m.player === 0), 'everyone is told');
+  assert.equal(inbox.get(2).filter((m) => m.t === 'score').at(-1).players.find((p) => p.id === 0).surrendered, true);
+
+  // A spectator: no orders, never a liberator (Death: Liberator is the default), but the game keeps coming.
+  quitter.gold = 1000;
+  engine.message(0, { t: 'research', tech: 'seafaring' });
+  assert.equal(quitter.research, null, 'a spectator gives no orders');
+  inbox.get(0).length = 0;
+  run(1);
+  assert.equal(game.options.death, 'liberator');
+  assert.ok(!quitter.liberator, 'a player who surrendered never becomes a liberator');
+  assert.ok(inbox.get(0).some((m) => m.t === 'snap'), 'and still watches the game');
+  assert.equal(game.status, 'running', 'two players are still in it');
+
+  engine.message(2, { t: 'leave' });                 // the other one gives up for good
+  run(0.1);
+  assert.equal(game.status, 'ended');
+  assert.equal(game.winner, 1, 'the last one in the game wins');
+  assert.deepEqual(ended, [1]);
+  assert.ok(inbox.get(0).some((m) => m.t === 'gameover' && m.winner === 1), 'the spectator sees the results');
+});
+
+test('when everyone else surrenders, the last player wins at once, even during the countdown', () => {
+  const { engine, game, ended } = setupEngine();
+  for (const id of [1, 0, 2]) engine.connect(id);
+  assert.ok(game.prestart, 'not started yet');
+  engine.message(0, { t: 'surrender' });
+  assert.equal(game.status, 'running');
+  engine.message(2, { t: 'surrender' });
+  assert.equal(game.status, 'ended');
+  assert.equal(game.winner, 1);
+  engine.step();
+  assert.deepEqual(ended, [1]);
+  assert.deepEqual(game.history.toJSON().stats[0].events.map((e) => e[1]), ['surrendered'], 'in the results');
+});
+
+test('a game started alone goes on without opponents, and ends when its player surrenders', () => {
+  const engine = new HostEngine({
+    gameId: '8', title: 'solo', map: readJson('public', 'map.json'), navData: readJson('server', 'data', 'navgrid.json'),
+    roster: [{ id: 0, color: '#e6194b' }], hostId: 0, send() {},
+  });
+  const game = engine.game;
+  engine.connect(0);
+  for (let i = 0; i < (GAME.startCountdown + 3) * GAME.tickRate; i++) engine.step();
+  assert.equal(game.prestart, null, 'started');
+  assert.equal(game.status, 'running', 'being the only player is not winning: one can play alone to try things');
+  engine.message(0, { t: 'surrender' });
+  assert.equal(game.status, 'ended');
+  assert.equal(game.winner, -1, 'nobody wins');
+});
+
 test('an admin makes a city inland or coastal: the host sends everyone the new ports', () => {
   const { engine, game, inbox } = setupEngine();
   engine.connect(0);

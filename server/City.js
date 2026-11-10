@@ -1,9 +1,11 @@
 // A city: shoots the nearest enemy unit in range, regenerates, produces units and
-// upgrades, and changes hands when its HP drops to zero. Stats come from CITY and
-// CITY_UPGRADES in shared/config.js. A coastal city (the sea within NAVAL.portRange) has a
+// upgrades, and changes hands when its HP drops to zero (an inland city only to land units). Stats come
+// from CITY and CITY_UPGRADES in shared/config.js. A coastal city (the sea within NAVAL.portRange) has a
 // port, where the ships it builds are launched.
 import { CITY, CITY_UPGRADES, UPGRADE_TYPES, ECONOMY, NAVAL, UNITS } from '../shared/config.js';
 import { nextGrade } from '../shared/upgrades.js';
+
+const SHELLED_HP = 1;        // the least HP ships' fire leaves an inland city with (receiveDamage)
 
 export class City {
   constructor(game, id, data) {
@@ -23,6 +25,7 @@ export class City {
     this.rally = null;           // { x, y } on land: where new units go
     this.seaRally = null;        // { x, y } on the sea: where new ships go (coastal cities)
     this.target = 0;
+    this.regenAt = 0;            // game time it regenerates again after a shot (receiveDamage)
     this.upgrades = new Set();   // built upgrades, e.g. 'wall', 'tower'
     this.port = null;            // { x, y, sea }: the nearest sea point, for coastal cities
     // Set by an admin in Edit map (map.json `coastal`): true or false, null = from the distance to the sea.
@@ -85,32 +88,43 @@ export class City {
     this.hp += CITY_UPGRADES[key].hp || 0;
   }
 
-  // Fire at the nearest enemy unit in range (neutral cities fire at everyone).
+  // Fire at the nearest enemy unit in range (neutral cities fire at everyone) that no mountains hide: its
+  // guns don't fire over them (NavGrid.lineOfFire).
   update(dt) {
-    const g = this.game;
+    const g = this.game, nav = g.nav;
     const range = this.range;
     let t = this.target ? g.units.get(this.target) : null;
-    if (t && (t.hp <= 0 || t.owner === this.owner || Math.hypot(t.x - this.x, t.y - this.y) > range + t.r)) t = null;
+    if (t && (t.hp <= 0 || t.owner === this.owner || Math.hypot(t.x - this.x, t.y - this.y) > range + t.r ||
+        !nav.lineOfFire(this.x, this.y, t.x, t.y))) t = null;
     if (!t) {
       let bd = Infinity;
       g.unitGrid.forEachNear(this.x, this.y, range + 8, (o) => {
         if (o.owner === this.owner || o.hp <= 0) return;
         const d = Math.hypot(o.x - this.x, o.y - this.y) - o.r;
-        if (d <= range && d < bd) { bd = d; t = o; }
+        if (d <= range && d < bd && nav.lineOfFire(this.x, this.y, o.x, o.y)) { bd = d; t = o; }
       });
     }
     this.target = t ? t.id : 0;
     if (t) t.receiveDamage(this.damage * dt, this);
   }
 
+  // At zero HP the city falls to whoever dealt the last blow. A ship takes only a coastal city (one with a
+  // port): an inland one in reach of its guns goes down to SHELLED_HP and no further, for troops to take.
+  // A shot (from a unit with `reload`: a battleship) also stops its regeneration until that unit could fire
+  // again: otherwise it would win back between shots what an attack every second keeps down.
   receiveDamage(amount, attacker) {
     this.hp -= amount;
-    if (this.hp <= 0) this.game.captureCity(this, attacker.owner);
+    const reload = attacker.stats?.reload;
+    if (reload) this.regenAt = Math.max(this.regenAt, this.game.time + reload);
+    if (this.hp > 0) return;
+    if (attacker.naval && !this.port) this.hp = SHELLED_HP;
+    else this.game.captureCity(this, attacker.owner);
   }
 
+  // Always, even under attack; only not between the shots of a battleship firing at it.
   regenerate(dt) {
     const max = this.maxHp;
-    if (this.hp < max) this.hp = Math.min(max, this.hp + CITY.hpRegen * dt);
+    if (this.hp < max && this.game.time >= this.regenAt) this.hp = Math.min(max, this.hp + CITY.hpRegen * dt);
   }
 
   // Changes hands: its upgrades are destroyed and production stops.
@@ -124,6 +138,7 @@ export class City {
     this.rally = null;
     this.seaRally = null;
     this.target = 0;
+    this.regenAt = 0;
   }
 
   // A spot on the city's own landmass just outside the walls, preferably facing the rally point.
@@ -160,5 +175,5 @@ export class City {
 export function markCityObstacles(nav, cities, map = null) {
   nav.markObstacles(cities.map((c) => ({ x: c.x, y: c.y, r: CITY.size + 2 })));
   nav.markDanger(cities.map((c) => ({ x: c.x, y: c.y, r: CITY.attackRange + 10 })));
-  nav.markBeaches(cities.map((c) => [c.x, c.y]), map?.beachEdits, map);   // where ships use the coast: beaches, harbours
+  nav.markBeaches(map?.beachEdits, map);   // where ships use the coast: beaches (all of it but painted cliffs)
 }

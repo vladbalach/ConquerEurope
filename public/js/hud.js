@@ -93,13 +93,16 @@ export class Hud {
         this.g.setMapEdit(!this.g.mapEdit);
         if (this.g.mapEdit) {
           this.banner('Map editing: drag any city to move it, or click it to make it coastal or inland. Paint beach / ' +
-            'Erase beach: drag along the coast. Changes are saved for every game. Press Rebuild navigation to update ' +
-            'territories and paths.', 9000);
+            'Erase beach: drag along the coast. Paint mountains / Erase mountains: drag over the land; they block ' +
+            'units at once. Changes are saved for every game. Press Rebuild navigation to update territories and ' +
+            'paths after moving cities.', 9000);
         }
       }],
       [$('btn-rebuild'), 'click', () => this.g.rebuildMap()],
-      [$('btn-beach-add'), 'click', () => this.g.setBeachBrush('add')],
-      [$('btn-beach-del'), 'click', () => this.g.setBeachBrush('del')],
+      [$('btn-beach-add'), 'click', () => this.g.setBrush('beach-add')],
+      [$('btn-beach-del'), 'click', () => this.g.setBrush('beach-del')],
+      [$('btn-mountain-add'), 'click', () => this.g.setBrush('mountain-add')],
+      [$('btn-mountain-del'), 'click', () => this.g.setBrush('mountain-del')],
       [$('btn-scores'), 'click', () => this.showScores($('scoreboard').hidden)],
       [$('btn-tech'), 'click', () => this.toggleTech()],
       [$('stat-honor'), 'click', () => this.toggleHonor()],
@@ -109,9 +112,7 @@ export class Hud {
         const tab = e.target.closest('[data-page]');
         if (tab) this.showHelpPage(tab.dataset.page);
       }],
-      [$('btn-leave'), 'click', () => {
-        if (this.g.ended || confirm('Leave this game? Your cities will become neutral.')) this.g.leave();
-      }],
+      [$('btn-leave'), 'click', () => this.leaveClicked()],
       [window, 'keyup', (e) => { if (e.key === 'Shift') this.applyPicks(); }],
       [window, 'blur', () => this.applyPicks()],         // Shift released outside the page
     ];
@@ -132,6 +133,7 @@ export class Hud {
     $('help').hidden = true;
     $('tech').hidden = true;
     $('honor').hidden = true;
+    $('leave').hidden = true;
     this.honorKey = null;
     this.techTab = TECH_TABS[0].id;
     this.techKey = null;
@@ -159,10 +161,12 @@ export class Hud {
     rebuild.textContent = st.busy ? 'Rebuilding…' : st.pending ? `Rebuild navigation (${st.pending})` : 'Rebuild navigation';
     rebuild.title = 'Rebuild territories, borders and pathfinding from where the cities stand now' +
       (st.pending ? ` (${st.pending} moved since the last rebuild)` : '');
-    // The beach brush (Edit map only): paint beaches or erase them by dragging along the coast.
-    for (const [id, mode] of [['btn-beach-add', 'add'], ['btn-beach-del', 'del']]) {
+    // The brushes (Edit map only): paint beaches or erase them by dragging along the coast, mountains over
+    // the land.
+    for (const mode of ['beach-add', 'beach-del', 'mountain-add', 'mountain-del']) {
+      const id = `btn-${mode}`;
       $(id).hidden = !g.admin || !g.mapEdit;
-      $(id).classList.toggle('active', g.beachBrush === mode);
+      $(id).classList.toggle('active', g.brush === mode);
     }
     $('view').classList.toggle('map-editing', g.mapEdit);
   }
@@ -193,6 +197,35 @@ export class Hud {
     if (show && this.results.isOpen) return;     // the results screen has every player already
     $('scoreboard').hidden = !show;
     if (show) this.renderScores();
+  }
+
+  // Leave, during a game. With an empire to give up, a dialog asks first: surrender and watch the rest of
+  // the game, or leave for the lobby. With nothing at stake (the game is over, or you only watch it) you go
+  // at once. The host too: the game goes on in another player's browser (main.js, leaveGame).
+  leaveClicked() {
+    const g = this.g;
+    if (g.ended || g.isOut()) g.leave();
+    else this.showLeave(true);
+  }
+
+  showLeave(show) {
+    const box = $('leave');
+    box.hidden = !show;
+    if (!show) return;
+    const g = this.g, out = g.isOut();
+    const others = [...g.players.keys()].some((id) => id !== g.you);
+    const close = () => this.showLeave(false);
+    const option = (button, text) => el('div', { class: 'leave-option' }, button, el('p', {}, text));
+    box.replaceChildren(
+      el('h3', { id: 'leave-title' }, 'Leave the game?'),
+      out ? null : option(
+        el('button', { type: 'button', class: 'primary', onclick: () => { close(); g.surrender(); } }, 'Surrender and watch'),
+        'Your cities become neutral and your units are gone, but you stay as a spectator and see how the game ends. ' +
+        (others ? 'Once everyone else has surrendered or left, the last player wins.' : 'Playing alone, this ends the game.')),
+      option(
+        el('button', { type: 'button', onclick: () => { close(); g.leave(); } }, 'Leave game'),
+        out ? 'Stop watching and go back to the lobby.' : 'Your cities become neutral and you go back to the lobby.'),
+      el('div', { class: 'leave-actions' }, el('button', { type: 'button', onclick: close }, 'Cancel')));
   }
 
   // F1 help. It always opens on Controls; Economy is written from the current numbers
@@ -377,9 +410,17 @@ export class Hud {
     const then = (now, next) => (level < max ? `Now ${now}; next level ${next}.` : `Now ${now}.`);
     if (key === 'seafaring') {
       const t = UNITS.transport;
-      return `Coastal cities (marked with an anchor) build transports (B, ${t.cost} gold): ships that carry ` +
+      return `Coastal cities (marked with an anchor) build transports (${t.hotkey}, ${t.cost} gold): ships that carry ` +
         `${t.capacity} units across the sea. Right-click your transport with units selected to take them on board, ` +
         'and Unload (U) to land them on another coast, islands included.';
+    }
+    if (key === 'gunnery') {
+      const b = UNITS.battleship;
+      return `Coastal cities build battleships (${b.hotkey}, ${b.cost} gold): warships with ${b.hp} HP that fire a ` +
+        `${b.damage} damage shot every ${b.reload} s at ships, troops ashore and cities up to ${b.attackRange} km away. ` +
+        'They reload while they sail, so you can shoot, pull back and come in again. They take coastal cities; an ' +
+        'inland city in range they bring down to 1 HP, and troops must take it. A city does not regenerate between ' +
+        'their shots.';
     }
     if (key === 'supporters') {
       return `As a liberator you get ${T.supporters.goldPerTurnPerLevel} more gold per turn for each level. ` +
@@ -399,6 +440,7 @@ export class Hud {
   techSummary(key) {
     const T = TECHS;
     if (key === 'seafaring') return 'Build ships and carry your units across the sea';
+    if (key === 'gunnery') return 'Build battleships that shell ships and coasts';
     if (key === 'supporters') return `+${T.supporters.goldPerTurnPerLevel} gold per turn as a liberator, for each level`;
     if (key === 'influencer') return 'Liberate several cities at once';
     return `Take ${Math.round(T.smuggling.share * 100)}% of the income of the cities you mark`;
@@ -438,7 +480,13 @@ export class Hud {
           onclick: () => g.cancelResearch(key, last),
         }, 'Remove')));
     }
-    if (next) {
+    const need = def.requires && g.plannedTechLevel(def.requires) < 1 ? TECHS[def.requires] : null;
+    if (next && need) {
+      // It needs another technology first (Gunnery: Seafaring): researched, or ordered before it.
+      body.append(el('div', { class: 'tech-actions' },
+        el('span', { class: 'tech-locked' }, `🔒 Needs ${need.name} first`),
+        el('span', { class: 'tech-price' }, `${next.cost} gold · ${fmt(next.time)}`)));
+    } else if (next) {
       // While a research runs, the next one ordered is queued after it (and the queue).
       const btn = el('button', {
         type: 'button', class: 'primary',
@@ -511,7 +559,6 @@ export class Hud {
     if (key === 'mercy') return 'Turn any of your land units into a Healer';
     if (key === 'honoredDead') return 'Your fallen units bring you honor';
     if (key === 'eternalGlory') return 'Train any unit with honor instead of gold';
-    if (key === 'lastStand') return 'Your units strike harder and hold firm when outnumbered';
     return '';
   }
 
@@ -542,11 +589,9 @@ export class Hud {
     }
     if (key === 'eternalGlory') {
       const f = TRADITIONS.eternalGlory.unitHonorFactor;
-      const ex = ['infantry', 'archer', 'cavalry', 'knight', 'transport'].map((t) => `${UNITS[t].name} ${UNITS[t].cost * f}`);
-      return `A tier II tradition, open only once every tier I tradition is learned. Then every city can train ` +
-        `any unit for honor, at ${f} times its gold cost: ${ex.join(', ')}. Use the Gold / Honor switch in the Units ` +
-        `box, or Shift + the unit's key. While you learn it, every player can see its countdown in the Players list ` +
-        '(Tab), and everyone is told once you have learned it.';
+      const ex = ['infantry', 'archer', 'cavalry', 'knight', 'transport', 'battleship'].map((t) => `${UNITS[t].name} ${UNITS[t].cost * f}`);
+      return `Then every city can train any unit for honor, at ${f} times its gold cost: ${ex.join(', ')}. Use the ` +
+        `Gold / Honor switch in the Units box, or Shift + the unit's key.`;
     }
     if (key === 'honoredDead') {
       const share = TRADITIONS.honoredDead.lossShare, pct = Math.round(share * 1000) / 10;
@@ -554,14 +599,6 @@ export class Hud {
       return `From then on, every unit of yours that falls in battle gives you ${pct}% of its cost in honor: ` +
         `${ex.join(', ')}. Units on board a sunk ship count too. Units you disband don't count, unless an enemy hit ` +
         `them in their last ${DISBAND.killCreditSeconds} seconds.`;
-    }
-    if (key === 'lastStand') {
-      const d = TRADITIONS.lastStand;
-      return `A tier II tradition, open only once every tier I tradition is learned. Then all your units deal ` +
-        `${Math.round(d.damageBonus * 100)}% more damage (on top of a Hero's). A unit, or a ship, with at least ${d.odds} ` +
-        `times as many enemy units as units of yours (itself included) within ${d.radius} km of it takes ` +
-        `${Math.round(d.damageCut * 100)}% less damage, and glows red meanwhile. While you learn it, every player can ` +
-        'see its countdown in the Players list (Tab), and everyone is told once you have learned it.';
     }
     return '';
   }
@@ -637,10 +674,12 @@ export class Hud {
 
   closeOverlays() {
     const results = this.results.isOpen;
-    const open = !$('help').hidden || !$('scoreboard').hidden || !$('tech').hidden || !$('honor').hidden || this.editor.isOpen || results;
+    const open = !$('help').hidden || !$('scoreboard').hidden || !$('tech').hidden || !$('honor').hidden || !$('leave').hidden ||
+      this.editor.isOpen || results;
     $('help').hidden = true;
     $('tech').hidden = true;
     $('honor').hidden = true;
+    $('leave').hidden = true;
     $('scoreboard').hidden = true;
     this.editor.close();
     if (results) this.results.collapse();   // the game is over: Esc folds the results to look around, like the button
@@ -665,7 +704,7 @@ export class Hud {
         el('th', { title: 'Traditions the player has learned (Honor window). Everyone sees them.' }, 'Traditions'),
         el('th', {}, '')));
     for (const p of rows) {
-      const status = p.eliminated ? 'Eliminated'
+      const status = p.surrendered ? 'Surrendered' : p.eliminated ? 'Eliminated'
         : [p.liberator ? 'Liberator' : '', !p.connected ? 'Disconnected' : ''].filter(Boolean).join(' · ');
       // Players are known by colour; nicknames arrive only once the game is over.
       const who = g.nameOf(p.id);
@@ -715,6 +754,7 @@ export class Hud {
     clearTimeout(this.prestartTimer);
     $('prestart').hidden = true;         // e.g. the host left before the start
     $('scoreboard').hidden = true;
+    $('leave').hidden = true;            // nothing to give up any more
     this.panelKey = null;                // the how-to-play tip goes: the game is over
     this.results.show(winnerId, reason);
   }
@@ -866,7 +906,8 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     this.renderHonor();
     if (me && me.eliminated && !g.ended && !this.eliminatedShown) {
       this.eliminatedShown = true;
-      this.banner('You have been eliminated. You can keep watching or leave.', 10000);
+      this.banner(me.surrendered ? 'You surrendered. You are watching the game as a spectator; press Leave to go back to the lobby.'
+        : 'You have been eliminated. You can keep watching or leave.', 10000);
     }
     this.updatePanel();
   }
@@ -1121,22 +1162,24 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       `for ${names.join(', then ')}. Each grade is built once per city; all are destroyed if the city is captured.`;
   }
 
-  // Unit cost and build time in the selected cities. Barracks shorten the time (not for ships), so
-  // with several cities selected it can be a range. Ships: only the coastal ones count.
-  // Why a ship's build button is locked: Seafaring is missing, or still being researched.
-  seafaringLock() {
-    const r = this.g.research, name = TECHS.seafaring.name;
-    if (r && r.tech === 'seafaring') {
-      const s = Math.max(0, Math.ceil(TECHS.seafaring.levels[0].time - r.progress));
+  // Why a ship's build button is locked: its technology `key` (Seafaring, Gunnery) is missing, still
+  // being researched, or queued.
+  techLock(key) {
+    const g = this.g, r = g.research, name = TECHS[key].name;
+    if (r && r.tech === key) {
+      const s = Math.max(0, Math.ceil(TECHS[key].levels[0].time - r.progress));
       return `Researching ${name}: ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} left`;
     }
+    if (g.researchQueue.includes(key)) return `${name} is queued in Technologies`;
     return `Needs ${name}: click to research it`;
   }
 
+  // Unit cost and build time in the selected cities. Barracks shorten the time (not for ships), so
+  // with several cities selected it can be a range. Ships: only the coastal ones count.
   // `honor`: the price in honor (Eternal Glory), shown after the honor star.
   unitCostText(def, ids, honor = false) {
+    if (def.tech && !this.g.myTech()[def.tech]) return `🔒 ${TECHS[def.tech].name}`;
     if (def.naval) {
-      if (!this.g.hasSeafaring()) return `🔒 ${TECHS.seafaring.name}`;
       ids = ids.filter((ci) => this.g.isCoastal(ci));
       if (!ids.length) return 'coastal cities only';
     }
@@ -1191,14 +1234,15 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       if (def.naval && !st.ids.some((ci) => g.isCoastal(ci))) return;
       const range = def.attackRange ? `range ${def.attackRange}` : 'melee';
       const state = el('span', { class: 'cost' }, this.unitCostText(def, st.ids));   // kept current in refreshDynamic
-      const about = def.naval
+      const about = def.capacity
         ? `${def.hp} HP · carries ${def.capacity} units · ${many ? 'in coastal cities' : 'ship'}`
-        : `${def.hp} HP · ${def.damage} dmg/s · ${range}`;
+        : def.reload ? `${def.hp} HP · ${def.damage} dmg / ${def.reload}s · ${range}`
+          : `${def.hp} HP · ${def.damage} dmg/s · ${range}`;
       const eff = el('span', { class: 'eff' }, about);
-      // A ship without Seafaring is locked (see refreshDynamic): a click opens the Sea technologies instead.
+      // A ship without its technology is locked (see refreshDynamic): a click opens its tab of the Tech window instead.
       const btn = el('button', {
         type: 'button', class: 'build-btn', title: UNIT_CLASSES[t].describe(),
-        onclick: () => (def.naval && !g.hasSeafaring() ? this.toggleTech(true, 'sea') : g.build(type, this.unitsForHonor())),
+        onclick: () => (g.canTrain(type) ? g.build(type, this.unitsForHonor()) : this.toggleTech(true, TECHS[def.tech].tab)),
       },
       el('img', { src: unitIconURL(myColor, t), alt: '' }),
       el('span', { class: 'nm' }, def.name, el('kbd', {}, def.hotkey)),
@@ -1263,7 +1307,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     const names = st.ids.map((ci) => g.map.cities[ci].n);
     this.panel.append(el('div', { class: 'stats city-list', title: names.join(', ') }, names.join(' · ')));
     this.panel.append(el('div', { class: 'queue' },
-      el('span', { class: 'label' }, 'Each order goes to every selected city, as far as your gold reaches.'),
+      el('span', { class: 'label' }, 'Each order goes to every selected city, as far as your gold reaches. C cancels the last one in each.'),
       el('span', { class: 'label', style: 'margin-left:auto' }, 'Right-click land: rally point · water: rally point for ships · Alt + right-click: clear')));
   }
 
@@ -1272,7 +1316,8 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     this.cityHeader(ci);
     const myColor = g.colorOf(g.you);
 
-    const queue = el('div', { class: 'queue' }, el('span', { class: 'label' }, 'Queue'));
+    const queue = el('div', { class: 'queue' },
+      el('span', { class: 'label', title: 'Click an entry to cancel it · C cancels the last one' }, 'Queue'));
     const items = st.q ? st.q.queue : [];
     this.dyn.queueProg = null;
     items.forEach((id, idx) => {
@@ -1636,9 +1681,9 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     this.panel.append(el('div', { class: 'hpbar' }, hpFill));
     this.panel.append(el('div', { class: 'stats' },
       el('span', {}, 'HP ', hpText),
-      def.naval ? el('span', {}, 'On board ', el('b', {}, `${u.flags >> CARGO_SHIFT} / ${def.capacity}`))
-        : el('span', {}, 'Damage ', el('b', {}, `${def.damage}/s`)),
-      def.naval ? null : el('span', {}, 'Range ', el('b', {}, def.attackRange ? String(def.attackRange) : 'melee')),
+      def.capacity ? el('span', {}, 'On board ', el('b', {}, `${u.flags >> CARGO_SHIFT} / ${def.capacity}`))
+        : el('span', {}, 'Damage ', el('b', {}, def.reload ? `${def.damage} / ${def.reload}s` : `${def.damage}/s`)),
+      def.capacity ? null : el('span', {}, 'Range ', el('b', {}, def.attackRange ? String(def.attackRange) : 'melee')),
       el('span', {}, 'Speed ', el('b', {}, String(def.moveSpeed)))));
     const note = el('div', { class: 'disband-note' }, `Disbanding: loses ${DISBAND.hpPerSecond} HP per second until it dies`);
     note.hidden = true;
@@ -1704,22 +1749,24 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
         const { btn, def, item, state, eff, about, title } = b;
         if (!CITY_UPGRADES[item]) {
           const ids = def.naval ? st.ids.filter((ci) => g.isCoastal(ci)) : st.ids;   // ships: coastal cities
-          // Ships without Seafaring: not greyed out but locked, saying why; a click opens the Sea tab.
-          const locked = !!def.naval && !g.hasSeafaring();
+          // Ships without their technology: not greyed out but locked, saying why; a click opens the Sea tab.
+          const locked = !g.canTrain(item);
           const honor = !locked && this.unitsForHonor();
           const price = honor ? def.cost * TRADITIONS.eternalGlory.unitHonorFactor : def.cost;
           btn.classList.toggle('locked', locked);
           btn.classList.toggle('honor-buy', honor);
           btn.disabled = !locked && ((honor ? g.honor : g.gold) < price || !ids.length || ids.every(full));
-          const text = locked ? `🔒 ${TECHS.seafaring.name}` : this.unitCostText(def, st.ids, honor);   // shorter once a Barracks is built
+          const text = locked ? `🔒 ${TECHS[def.tech].name}` : this.unitCostText(def, st.ids, honor);   // shorter once a Barracks is built
           if (b.shownCost !== `${honor}|${text}`) {
             b.shownCost = `${honor}|${text}`;
             state.replaceChildren(...(honor ? [el('span', { class: 'honor' }), text] : [text]));
           }
-          const line = locked ? this.seafaringLock() : about;
+          const line = locked ? this.techLock(def.tech) : about;
           if (eff.textContent !== line) eff.textContent = line;
-          const tip = locked ? `${def.name}: ships need the ${TECHS.seafaring.name} technology ` +
-            `(${TECHS.seafaring.levels[0].cost} gold, ${TECHS.seafaring.levels[0].time} s). Click to open Technologies on the Sea tab.` : title;
+          const tech = locked ? TECHS[def.tech] : null;
+          const first = tech?.requires && !g.myTech()[tech.requires] ? ` It needs ${TECHS[tech.requires].name} first.` : '';
+          const tip = locked ? `${def.name}: needs the ${tech.name} technology ` +
+            `(${tech.levels[0].cost} gold, ${tech.levels[0].time} s).${first} Click to open Technologies on the Sea tab.` : title;
           if (btn.title !== tip) btn.title = tip;
           continue;
         }

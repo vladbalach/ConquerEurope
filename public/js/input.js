@@ -1,14 +1,40 @@
 // Mouse / keyboard: camera control, selection, orders.
-import { UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES } from '/shared/config.js';
+import { UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES, DEBUG } from '/shared/config.js';
 
 const DRAG_THRESHOLD = 5;
 const BOUNCE_MS = 50;            // let go and pressed again quicker than this: the button bounced, it is still the same press
-const BRUSH_PX = 16;             // Edit map: radius of the beach brush on screen...
+const BRUSH_PX = { beach: 16, mountain: 26 };   // Edit map: radius of the brushes on screen...
 const BRUSH_MIN_KM = 8;          // ...but never less: the grid's shore cells lie up to ~7 km off the drawn coast
-const BRUSH_SEND_MS = 250;       // how often a beach brush stroke is sent while painting
+const BRUSH_SEND_MS = 250;       // how often a brush stroke is sent while painting
 const EDGE = 8;
 const PAN_SPEED = 900;           // screen px per second
 const MAX_ZOOM = 7;
+// How far the view may always be panned past each edge of the map, as a share of the screen's width (left,
+// right) or height (top, bottom): far enough to bring the land along an edge out from under the HUD, such as
+// North Africa from under the minimap and the panels along the bottom of the screen.
+const OVERSCROLL = { side: 0.15, top: 0.12, bottom: 0.3 };
+
+// Keys a text field still needs with Ctrl held: select all, copy, cut, paste, undo, redo, move and delete by word.
+const TEXT_EDIT_KEYS = new Set(['KeyA', 'KeyC', 'KeyX', 'KeyV', 'KeyZ', 'KeyY', 'ArrowLeft', 'ArrowRight',
+  'ArrowUp', 'ArrowDown', 'Home', 'End', 'Backspace', 'Delete']);
+
+// No browser shortcut works in a game: a key pressed with Ctrl, Alt or Meta, and every function key, does only
+// what the game gives it (Find, Find next, Save, Print, History, Downloads, Bookmarks, Back, Reload, Zoom, the
+// menu, the address bar... are all cancelled). Kept: F11 (full screen), the developer tools in debug builds
+// (F12, Ctrl + Shift + I / J / C), and editing keys and AltGr letters in text fields.
+// Chrome never lets a page cancel Ctrl + W / T / N / Tab, nor Ctrl + Shift + T / N / W.
+function isBrowserShortcut(e) {
+  const fnKey = /^F\d+$/.test(e.key);
+  if (!fnKey && !e.ctrlKey && !e.altKey && !e.metaKey) return false;
+  if (e.key === 'F11') return false;
+  if (DEBUG && (e.key === 'F12' || (e.ctrlKey && e.shiftKey && /^Key[IJC]$/.test(e.code)))) return false;
+  const t = e.target;
+  if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t?.isContentEditable) {
+    if (e.getModifierState?.('AltGraph')) return false;       // AltGr types letters such as @ on many layouts
+    if (!e.altKey && TEXT_EDIT_KEYS.has(e.code)) return false;
+  }
+  return true;
+}
 
 export class Input {
   constructor(game) {
@@ -50,6 +76,10 @@ export class Input {
       if (!(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) e.preventDefault();
     });
     on(this.canvas, 'dblclick', (e) => this.onDblClick(e));
+    // Capture phase, so it also covers text fields that keep their keys to themselves (the debug console).
+    on(window, 'keydown', (e) => { if (isBrowserShortcut(e)) e.preventDefault(); }, true);
+    // Ctrl + wheel (and a touchpad pinch) is the browser's page zoom; over the map the wheel already zooms the map.
+    on(window, 'wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
     on(window, 'keydown', (e) => this.onKeyDown(e));
     on(window, 'keyup', (e) => this.onKeyUp(e));
     on(window, 'blur', () => {
@@ -94,10 +124,11 @@ export class Input {
     }
   }
 
-  // Keeps the view on the map. Normally the view stays inside the map bounds; when the map is smaller than the
-  // screen, all of it stays in view. Zooming in towards the cursor from far out can leave a margin past a map
-  // edge (the point under the cursor must not slide). That margin is kept but can never grow: it is remembered
-  // per side in screen px, and panning back towards the map shrinks it.
+  // Keeps the view on the map. The view may reach past each map edge by OVERSCROLL, no further; when the map
+  // and that margin are smaller than the screen, the map can be anywhere in view. Zooming in towards the cursor
+  // from far out can leave a wider margin past a map edge (the point under the cursor must not slide). That
+  // margin is kept but can never grow: it is remembered per side in screen px, and panning back towards the
+  // map shrinks it, down to OVERSCROLL.
   clampCamera() {
     const cam = this.g.cam, b = this.g.map.bounds, r = this.g.renderer;
     cam.zoom = Math.max(r.minZoom(), Math.min(MAX_ZOOM, cam.zoom));
@@ -105,12 +136,13 @@ export class Input {
     // lo/hi: camera range in which the view reaches past the edges by at most m0 / m1 px.
     const fit = (c, e0, e1, half, m0, m1) => {
       let lo = e0 + (half - m0) / z, hi = e1 - (half - m1) / z;
-      if (lo > hi) [lo, hi] = [hi, lo];   // map smaller than the screen: anywhere it is fully in view
+      if (lo > hi) [lo, hi] = [hi, lo];   // map and margins smaller than the screen: anywhere it is fully in view
       return Math.max(lo, Math.min(hi, c));
     };
     const hw = r.W / 2, hh = r.H / 2;
-    cam.x = fit(cam.x, b.x0, b.x1, hw, m.l, m.r);
-    cam.y = fit(cam.y, b.y0, b.y1, hh, m.t, m.b);
+    const side = r.W * OVERSCROLL.side, top = r.H * OVERSCROLL.top, bottom = r.H * OVERSCROLL.bottom;
+    cam.x = fit(cam.x, b.x0, b.x1, hw, Math.max(m.l, side), Math.max(m.r, side));
+    cam.y = fit(cam.y, b.y0, b.y1, hh, Math.max(m.t, top), Math.max(m.b, bottom));
     m.l = Math.max(0, hw - (cam.x - b.x0) * z);
     m.r = Math.max(0, hw - (b.x1 - cam.x) * z);
     m.t = Math.max(0, hh - (cam.y - b.y0) * z);
@@ -220,8 +252,8 @@ export class Input {
       return;
     }
     if (e.button !== 0) return;
-    // Edit map, beach brush on: paint (or erase) beaches along the coast while the button is held.
-    if (this.g.mapEdit && this.g.beachBrush) {
+    // Edit map, a brush on: paint (or erase) beaches along the coast, or mountains, while the button is held.
+    if (this.g.mapEdit && this.g.brush) {
       this.brush = { pts: [], last: null, sentAt: performance.now() };
       this.brushAt(sx, sy);
       return;
@@ -307,14 +339,15 @@ export class Input {
       cursor = 'pointer';
     }
     if (g.mapEdit && this.hoverCity >= 0) cursor = 'grab';    // Edit map: cities can be dragged
-    if (g.mapEdit && g.beachBrush) cursor = 'crosshair';       // ...unless the beach brush is on
+    if (g.mapEdit && g.brush) cursor = 'crosshair';            // ...unless a brush is on
     this.canvas.style.cursor = cursor;
   }
 
-  // ---------------------------------------------------------------- beach brush (Edit map)
-  // Its radius in map km: about the same size on screen at any zoom.
+  // ---------------------------------------------------------------- brushes (Edit map)
+  // Its radius in map km: about the same size on screen at any zoom (the mountain brush is bigger).
   brushRadius() {
-    return Math.max(BRUSH_MIN_KM, Math.min(80, BRUSH_PX / this.g.cam.zoom));
+    const px = this.g.brush?.startsWith('mountain') ? BRUSH_PX.mountain : BRUSH_PX.beach;
+    return Math.max(BRUSH_MIN_KM, Math.min(80, px / this.g.cam.zoom));
   }
 
   // A point of the stroke under (sx, sy): kept when it is half a radius from the last one, and the
@@ -332,7 +365,7 @@ export class Input {
   brushSend() {
     const b = this.brush;
     if (!b) return;
-    if (b.pts.length) this.g.paintBeaches(b.pts, this.brushRadius());
+    if (b.pts.length) this.g.paintStroke(b.pts, this.brushRadius());
     b.pts = [];
     b.sentAt = performance.now();
   }
@@ -443,7 +476,8 @@ export class Input {
   }
 
   // Right-click with units: on your transport, the land units go on board; on an enemy, attack it;
-  // otherwise move there. Holding A turns the move into an attack-move (fight anything met on the way).
+  // otherwise move there. Holding A turns the move into an attack-move (fight anything met on the way),
+  // also on an enemy city: the units attack-move to it instead of walking past the defenders to hit it.
   // Holding Shift queues the move or attack after the orders the units already have.
   rightClick(sx, sy, alt, shift = false) {
     const g = this.g;
@@ -458,7 +492,8 @@ export class Input {
       const city = this.pickCity(sx, sy);
       if (city >= 0 && g.cityOwner[city] !== g.you) {
         const c = g.map.cities[city];
-        g.commandAttack('c', city, c.x, c.y, shift);
+        if (this.attackKey) g.commandMove(c.x, c.y, true, shift);
+        else g.commandAttack('c', city, c.x, c.y, shift);
         return;
       }
       g.commandMove(wx, wy, this.attackKey, shift);
@@ -552,25 +587,22 @@ export class Input {
     if (k === 'F2') { e.preventDefault(); g.select(g.renderUnits.filter((u) => u.owner === g.you).map((u) => u.id), false); return; }
     if (k === 'Escape') {
       if (this.targetMode) this.setTargetMode(null);
-      else if (g.beachBrush) g.setBeachBrush(null);
+      else if (g.brush) g.setBrush(null);
       else if (!g.hud.closeOverlays()) g.clearSelection();
       return;
     }
     // Units selected: Ctrl + B removes the ships from the selection, Shift + B keeps only the ships.
     // (Without units selected, Shift + B builds a transport like B.)
     if (e.code === 'KeyB' && e.ctrlKey !== e.shiftKey && !e.altKey && !e.metaKey && g.selection.size) {
-      e.preventDefault();                  // Ctrl + B opens the bookmarks in some browsers
       g.filterSelection(e.shiftKey);
       return;
     }
     // Units selected: Ctrl + F removes the full transports from the selection, Shift + F keeps only them.
     if (e.code === 'KeyF' && e.ctrlKey !== e.shiftKey && !e.altKey && !e.metaKey && g.selection.size) {
-      e.preventDefault();                  // Ctrl + F is the browser's Find
       g.filterFull(e.shiftKey);
       return;
     }
     if (e.ctrlKey && /^[1-9]$/.test(k)) {
-      e.preventDefault();
       g.groups.set(k, [...g.selection]);
       g.hud.feed(`Group ${k} saved (${g.selection.size} units)`);
       return;
@@ -605,7 +637,10 @@ export class Input {
       case 'KeyU': if (g.selectedTransports().length) g.startUnload(); break;
       case 'KeyT': g.hud.toggleTech(); break;
       case 'KeyO': g.hud.toggleHonor(); break;
-      case 'KeyC': if (g.selection.size) g.promote('hero'); break;   // Make Hero, as the button in the unit panel
+      case 'KeyC':
+        if (g.selectedCities.size) g.cancelLast();          // cities: cancel the last entry of each queue
+        else if (g.selection.size) g.promote('hero');       // units: Make Hero, as the button in the unit panel
+        break;
       case 'Space':                      // Shift: your city captured last
         e.preventDefault();
         if (e.shiftKey) g.showLostCity();
@@ -616,6 +651,7 @@ export class Input {
   }
 
   onKeyUp(e) {
+    if (e.key === 'F10') e.preventDefault();     // F10, like Alt, focuses the browser menu when let go
     if (e.key === 'Alt') {
       e.preventDefault();                // releasing Alt alone would otherwise open the browser menu
       this.showRanges = false;

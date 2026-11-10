@@ -9,11 +9,14 @@ import { UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES } from './config.
 // for transports). `optional`: may be added to any row, missing counts as 0 (upgrade effects).
 const UNIT_FIELDS = [
   { key: 'hp', label: 'HP', min: 1, max: 100000 },
-  { key: 'damage', label: 'Damage/s', min: 0, max: 10000 },
+  { key: 'damage', label: 'Damage/s', min: 0, max: 10000, hint: 'per shot for units with Reload' },
+  { key: 'reload', label: 'Reload s', min: 0.1, max: 60, only: true, hint: 'seconds between two shots (battleships)' },
   { key: 'attackRange', label: 'Range', min: 0, max: 1000, hint: '0 = melee' },
   { key: 'moveSpeed', label: 'Speed', min: 0, max: 1000 },
+  { key: 'accelTime', label: 'Accel s', min: 0.05, max: 60, only: true, hint: 'seconds from standing still to full speed (battleships)' },
   { key: 'size', label: 'Size', min: 1, max: 50 },
   { key: 'hpRegen', label: 'Regen/s', min: 0, max: 10000 },
+  { key: 'harbourFactor', label: 'Harbour ×', min: 0, max: 100, only: true, hint: 'in harbour: this many times Regen/s (battleships)' },
   { key: 'cost', label: 'Cost', min: 0, max: 100000 },
   { key: 'buildTime', label: 'Build s', min: 0.1, max: 3600 },
   { key: 'capacity', label: 'Capacity', min: 0, max: 100, only: true, hint: 'units a transport carries' },

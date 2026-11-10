@@ -3,6 +3,7 @@
 //    their empire) and a graph of the whole game. Click a player for their own page of stats.
 //  - Timeline: the map turn by turn, as cities changed hands, with a slider and Play.
 // "Look at the map" (or Esc) folds it into a bar at the top of the screen; the bar's button opens it again.
+// A duel (two players) also has Restart: once both press it, the lobby server starts the same game again.
 // Everything comes from the game-over message: the players, and the game's history, recorded by the host
 // (server/history.js). Without a history (the host left) only the players' last numbers are shown.
 import {
@@ -138,7 +139,8 @@ function buildModel(g, winner) {
       losses: live ? live.losses : lastNumbers.losses || 0,
       tech: live?.tech || techFromEvents(stats?.events),
       traditions: live?.traditions || traditionsFromEvents(stats?.events),
-      status: id === winner ? 'Winner' : !live ? 'Left' : live.eliminated ? 'Eliminated' : live.liberator ? 'Liberator'
+      status: id === winner ? 'Winner' : !live ? 'Left' : live.surrendered ? 'Surrendered' : live.eliminated ? 'Eliminated'
+        : live.liberator ? 'Liberator'
         : !live.connected ? 'Disconnected' : '',
     };
   });
@@ -429,7 +431,42 @@ export class Results {
     if (this.reason) return { title: 'Game over', text: [this.reason] };
     if (this.winner === g.you) return { title: 'Victory!', text: ['Europe bows before you.'] };
     if (w) return { title: 'Defeat', text: [this.tag(w, false), ' has conquered Europe.'] };
+    if (g.players.get(g.you)?.surrendered) return { title: 'Game over', text: ['You surrendered.'] };   // playing alone
     return { title: 'Game over', text: ['No one is left standing.'] };
+  }
+
+  // A duel (a game of two players) has Restart: once both have pressed it, the same two play again at once,
+  // without the waiting room. Next to it, a word on the other player: ready, awaited, or gone. Filled again
+  // in place as their choice comes in (renderRestart), so the rest of the screen stays as it is.
+  restartSlot() {
+    this.restartEl = el('span', { class: 'restart-slot' });
+    this.fillRestart();
+    return this.restartEl;
+  }
+
+  renderRestart() {
+    if (this.shown && this.restartEl) this.fillRestart();
+  }
+
+  fillRestart() {
+    const g = this.g, r = g.restart, slot = this.restartEl;
+    slot.hidden = !r;
+    if (!r) { slot.replaceChildren(); return; }
+    const other = this.model.players.find((p) => p.id !== g.you);
+    const them = other ? other.name || other.colorName : 'Your opponent';
+    const mine = r.votes.includes(g.you), theirs = r.votes.some((id) => id !== g.you);
+    let label = 'Restart', note = '', ready = false;
+    if (g.restarting) label = 'Starting…';
+    else if (!r.open) note = `${them} has left`;
+    else if (mine) { label = 'Waiting…'; note = `Waiting for ${them}`; }
+    else if (theirs) { note = `${them} wants a rematch`; ready = true; }
+    const button = el('button', {
+      type: 'button', class: ready ? 'primary' : '',
+      title: r.open ? `Play this duel again with ${them}: a new game starts as soon as you both press Restart` : `${them} is no longer here`,
+      onclick: () => g.requestRestart(),
+    }, label);
+    button.disabled = g.restarting || !r.open || mine;
+    slot.replaceChildren(...(note ? [el('span', { class: `restart-note${ready ? ' ready' : ''}` }, note)] : []), button);
   }
 
   // How long the game lasted, from its last frame.
@@ -446,6 +483,7 @@ export class Results {
       el('span', { class: 'muted small results-time' }, this.duration()),
       el('span', { class: 'results-gap' }),
       el('button', { type: 'button', class: 'results-toggle', title: 'Every player\'s stats and the timeline of the game', onclick: () => this.expand() }, 'Show results ▾'),
+      this.restartSlot(),
       el('button', { type: 'button', class: 'primary', onclick: () => this.g.leave() }, 'Back to lobby'));
   }
 
@@ -462,6 +500,7 @@ export class Results {
       el('div', { class: 'help-tabs results-tabs', role: 'tablist' }, tab('players', 'Players'), tab('timeline', 'Timeline')),
       el('div', { class: 'results-actions' },
         el('button', { type: 'button', title: 'Fold the results into a bar at the top and look at the map (Esc)', onclick: () => this.collapse() }, 'Look at the map ▴'),
+        this.restartSlot(),
         el('button', { type: 'button', class: 'primary', onclick: () => this.g.leave() }, 'Back to lobby')));
     let body;
     if (this.tab === 'timeline') {
@@ -717,7 +756,8 @@ export class Results {
         text = `Learned ${TRADITIONS[what].name}`;
       } else {
         text = {
-          fell: 'Fell and became a liberator', back: 'Back in the game', out: 'Eliminated', left: 'Left the game', won: 'Won the game',
+          fell: 'Fell and became a liberator', back: 'Back in the game', out: 'Eliminated', surrendered: 'Surrendered',
+          left: 'Left the game', won: 'Won the game',
         }[kind];
       }
       if (!text) continue;
@@ -975,7 +1015,10 @@ class Timeline {
           const text = kind === 'research' && TECHS[what]
             ? ` researched ${TECHS[what].name}${TECHS[what].levels.length > 1 ? ` ${level}` : ''}`
             : kind === 'tradition' && TRADITIONS[what] ? ` learned ${TRADITIONS[what].name}`
-              : { fell: ' fell and became a liberator', back: ' is back in the game', out: ' was eliminated', left: ' left the game', won: ' won the game' }[kind];
+              : {
+                fell: ' fell and became a liberator', back: ' is back in the game', out: ' was eliminated', surrendered: ' surrendered',
+                left: ' left the game', won: ' won the game',
+              }[kind];
           if (text) out.push(el('p', { class: `ev ${kind}` }, this.r.tagOf(p.id), text));
         }
       }

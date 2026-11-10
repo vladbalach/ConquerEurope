@@ -18,26 +18,28 @@
       "buildTime": 6
     },
     "knight": {
-      "hp": 500,
-      "damage": 90,
+      "hp": 450,
       "hpRegen": 2,
-      "cost": 140,
+      "cost": 100,
       "buildTime": 7
     },
     "transport": {
-      "hp": 300,
+      "hp": 200,
       "hpRegen": 1,
-      "buildTime": 5
+      "buildTime": 4
     },
     "hero": {
-      "hp": 500,
-      "damage": 30,
       "hpRegen": 2
     },
     "healer": {
-      "hp": 250,
-      "damage": 10,
+      "hp": 200,
+      "damage": 12,
       "hpRegen": 1.4
+    },
+    "battleship": {
+      "attackRange": 56,
+      "cost": 300,
+      "buildTime": 7
     }
   },
   "upgrades": {
@@ -61,12 +63,14 @@
     "farm": {
       "cost": 40,
       "buildTime": 15
+    },
+    "barracks": {
+      "buildTime": 10
     }
   },
   "city": {
     "all": {
       "hp": 200,
-      "hpRegen": 10,
       "captureHp": 80
     }
   }
