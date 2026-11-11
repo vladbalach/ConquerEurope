@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { MapEditor } from '../server/map-editor.js';
 import { NavGrid } from '../server/nav.js';
 import { Game } from '../server/game.js';
-import { UNITS } from '../shared/config.js';
+import { UNITS, LABEL_EDIT } from '../shared/config.js';
 import { forEachCoastPiece, nearestCell } from '../shared/coastline.js';
 import { decodeMask } from '../shared/mountains.js';
 
@@ -25,6 +25,7 @@ function setupEditor() {
     coastal: path.join(dir, 'city-coastal.json'),
     beaches: path.join(dir, 'beach-edits.json'),
     mountains: path.join(dir, 'mountain-edits.json'),
+    labels: path.join(dir, 'label-edits.json'),
   };
   fs.copyFileSync(path.join(ROOT, 'public', 'map.json'), files.map);
   fs.copyFileSync(path.join(ROOT, 'server', 'data', 'navgrid.json'), files.nav);
@@ -302,8 +303,8 @@ test('players without admin rights cannot paint mountains', async () => {
 
 test('admins paint mountains and clear them: units go round them at once, everyone is told, and they hold', async () => {
   const { files, map, nav, editor, admin, player, clients, idOf } = setupEditor();
-  const orleans = map.cities[idOf('Orléans')], limoges = map.cities[idOf('Limoges')];
-  assert.equal(nav.los(orleans.x, orleans.y, BOURGES[0], BOURGES[1]), true, 'open country between them');
+  const tours = map.cities[idOf('Tours')], limoges = map.cities[idOf('Limoges')];
+  assert.equal(nav.los(tours.x, tours.y, BOURGES[0], BOURGES[1]), true, 'open country between them');
 
   // A range by Bourges.
   const stroke = [[BOURGES[0] - 30, BOURGES[1]], BOURGES, [BOURGES[0] + 30, BOURGES[1]]];
@@ -314,7 +315,7 @@ test('admins paint mountains and clear them: units go round them at once, everyo
   assert.deepEqual(player.inbox.at(-1), msg, 'every browser is told: pages draw them, game hosts block them');
   assert.ok(nav.mountainAt(...BOURGES) && !nav.walkable(...BOURGES), 'units cannot walk there');
   assert.ok(drawnMountain(editor, nav, ...BOURGES), 'in the map new games and pages load');
-  const path = nav.findPath(orleans.x, orleans.y, limoges.x, limoges.y);
+  const path = nav.findPath(tours.x, tours.y, limoges.x, limoges.y);
   assert.ok(path, 'a way round');
   let saved = JSON.parse(fs.readFileSync(files.mountains, 'utf8'));
   assert.ok(saved.add.includes(nav.cellOf(...BOURGES)), 'saved');
@@ -375,4 +376,47 @@ test('painted mountains keep off the cities, and wall no land in', async () => {
   assert.ok(filled.cells.includes(nav.cellOf(...BOURGES)), 'the valley inside is mountains too');
   assert.ok(nav.mountainAt(...BOURGES));
   assert.equal(nav.cutOff().length, 0, 'no land walled in');
+});
+
+test('players without admin rights cannot move or resize region names', async () => {
+  const { map, editor, player, clients } = setupEditor();
+  const hungary = map.countries.findIndex((co) => co.n === 'Hungary');
+  await editor.handle(player, { t: 'mapLabel', region: hungary, x: 0, y: 0, scale: 2 }, clients);
+  assert.match(player.inbox.at(-1).msg, /Only admins/);
+  assert.equal(map.labelEdits.Hungary, undefined, 'nothing changed');
+});
+
+test('an admin moves and resizes a region name: everyone is told, it is saved, and it holds', async () => {
+  const { files, map, editor, admin, player, clients } = setupEditor();
+  const hungary = map.countries.findIndex((co) => co.n === 'Hungary');
+  await editor.handle(admin, { t: 'mapLabel', region: hungary, x: 512.34, y: 300.06, scale: 1.5 }, clients);
+  const msg = admin.inbox.at(-1);
+  assert.deepEqual(msg, { t: 'labelEdit', region: hungary, edit: { x: 512.3, y: 300.1, scale: 1.5 } });
+  assert.deepEqual(player.inbox.at(-1), msg, 'every browser is told');
+  assert.deepEqual(JSON.parse(editor.mapJson()).labelEdits.Hungary, msg.edit, 'in the map new pages load');
+  assert.deepEqual(JSON.parse(fs.readFileSync(files.labels, 'utf8')), { Hungary: msg.edit }, 'saved by region name');
+
+  // Kept within the map, and within LABEL_EDIT's sizes; nonsense is refused.
+  await editor.handle(admin, { t: 'mapLabel', region: hungary, x: 1e9, y: -1e9, scale: 100 }, clients);
+  const far = admin.inbox.at(-1).edit;
+  assert.deepEqual([far.x, far.y], [map.bounds.x1, map.bounds.y0]);
+  assert.equal(far.scale, LABEL_EDIT.maxScale);
+  for (const bad of [{ region: 999, x: 0, y: 0, scale: 1 }, { region: hungary, x: 'a', y: 0, scale: 1 }]) {
+    await editor.handle(admin, { t: 'mapLabel', ...bad }, clients);
+    assert.equal(admin.inbox.at(-1).t, 'error');
+  }
+
+  // A restart and a rebuild (the built map knows nothing of it) keep it.
+  await editor.handle(admin, { t: 'mapLabel', region: hungary, x: 512, y: 300, scale: 0.8 }, clients);
+  const fresh = JSON.parse(fs.readFileSync(files.map, 'utf8'));
+  new MapEditor({ map: fresh, nav: NavGrid.load(files.nav), games: () => [], files });
+  assert.deepEqual(fresh.labelEdits.Hungary, { x: 512, y: 300, scale: 0.8 }, 'after a restart');
+  editor.reload();
+  assert.deepEqual(map.labelEdits.Hungary, { x: 512, y: 300, scale: 0.8 }, 'after a rebuild');
+
+  // Back to automatic placing.
+  await editor.handle(admin, { t: 'mapLabel', region: hungary, reset: true }, clients);
+  assert.deepEqual(admin.inbox.at(-1), { t: 'labelEdit', region: hungary, edit: null });
+  assert.equal(map.labelEdits.Hungary, undefined);
+  assert.deepEqual(JSON.parse(fs.readFileSync(files.labels, 'utf8')), {});
 });

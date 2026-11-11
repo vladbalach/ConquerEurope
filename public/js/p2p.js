@@ -134,7 +134,7 @@ const MAX_CHECKPOINT = 3.5 * 1024 * 1024;
 const HANDOVER_TIMEOUT_MS = 2000;    // the host leaves: its last checkpoint gets this long to go out
 
 export class HostSession {
-  // net: the lobby connection. roster: [{ id, color }]. balance: current balance values.
+  // net: the lobby connection. roster: [{ id, color, goldPercent }]. balance: current balance values.
   // options: the game options the host picked in the waiting room. epoch: which hosting of this game
   // this is (the lobby server counts them up each time another browser takes the game over).
   // Taking over a game from a host who left: `save` (packed, from the lobby server) instead of the

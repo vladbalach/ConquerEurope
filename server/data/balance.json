@@ -1,30 +1,32 @@
 {
   "units": {
     "infantry": {
-      "hp": 200,
+      "hp": 210,
       "damage": 12,
-      "hpRegen": 1.4
+      "hpRegen": 1.4,
+      "cost": 15
     },
     "archer": {
-      "hp": 50,
+      "hp": 36,
       "moveSpeed": 28,
-      "hpRegen": 0.8
+      "hpRegen": 0.8,
+      "cost": 14
     },
     "cavalry": {
       "hp": 140,
-      "damage": 14,
       "hpRegen": 1,
-      "cost": 15,
+      "cost": 18,
       "buildTime": 6
     },
     "knight": {
-      "hp": 450,
+      "hp": 440,
       "hpRegen": 2,
-      "cost": 100,
+      "cost": 120,
       "buildTime": 7
     },
     "transport": {
       "hp": 200,
+      "moveSpeed": 40,
       "hpRegen": 1,
       "buildTime": 4
     },
@@ -38,8 +40,9 @@
     },
     "battleship": {
       "attackRange": 56,
+      "moveSpeed": 34,
       "cost": 300,
-      "buildTime": 7
+      "buildTime": 10
     }
   },
   "upgrades": {

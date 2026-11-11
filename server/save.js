@@ -12,6 +12,8 @@
 import { Game } from './game.js';
 import { History } from './history.js';
 import { createUnit } from './units/index.js';
+import { noTech } from '../shared/tech.js';
+import { sanitizeGoldPercent } from '../shared/options.js';
 
 export const SAVE_VERSION = 1;
 
@@ -66,7 +68,11 @@ export function restoreGame(save, { map, nav, hostId }) {
   for (const k of GAME_FIELDS) if (k in save.game) game[k] = save.game[k];
   game.nextUnitId += ID_GAP;
   game.hostId = hostId;
-  for (const p of save.players) game.players.set(p.id, { ...p, client: null });
+  // Technologies added since the save was made: not researched (0), not missing. A save from before
+  // gold percentages: 100%.
+  for (const p of save.players) {
+    game.players.set(p.id, { ...p, tech: { ...noTech(), ...p.tech }, goldPercent: sanitizeGoldPercent(p.goldPercent), client: null });
+  }
   save.cities.forEach((s, i) => {
     const c = game.cities[i];
     if (!c) return;

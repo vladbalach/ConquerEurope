@@ -108,7 +108,7 @@ console (F12) says which way each player connected.
 | Cavalry | 70 | 15/s | melee | 52 | 0.5/s | 20 | 7 s |
 | Knight | 250 | 45/s | melee | 45 | 1/s | 150 | 8 s |
 | Transport (ship) | 150 | — | — | 38 | 0.5/s, 5/s in harbour | 10 | 12 s |
-| Battleship (ship) | 500 | 30 per shot, every 1.5 s | 60 | 32 (1.5 s to get there from a stop) | 1/s, 2× that in harbour | 200 | 20 s |
+| Battleship (ship) | 500 | 30 per shot, every 1.5 s | 60 | 32 (0.75 s to get there from a stop) | 1/s, 2× that in harbour | 200 | 20 s |
 | City | 100 | 20/s | 70 | — | 5/s (always, but not between a battleship's shots) | — | — |
 
 \* Units regenerate only after 3 seconds without fighting.
@@ -117,10 +117,20 @@ console (F12) says which way each player connected.
   (Britain, Ireland, Sicily, Sardinia, Zealand, Crete, Cyprus, Iceland, Greenland, ...) are reached only by transport (see
   Navy). A move order onto another landmass takes units to the nearest shore they can reach. Archers can still shoot
   across a narrow strait.
+- **Group moves:** a group sent somewhere (move or attack-move) spreads into one formation round the place (one per
+  landmass the units stand on), and each unit goes its own way to its spot: straight when nothing is in its way,
+  otherwise round it, sharing the way of a unit within 50 km. Nobody walks to a common gathering point first. No
+  spot is inside a city's walls. Each unit keeps its spot once there: held up on the way by the crowd, or pushed
+  off it, it walks back to it, and it steps aside for your units walking through. A unit whose spot stays taken
+  gives it up after a while and stands where it is.
+  In the formation the infantry stands in front, the archers behind it and Healers at the back; cavalry and knights
+  split into two wings, left and right (a Hero by its kind). At sea, battleships sail in front of the transports.
+  The formation faces the way the group goes, or the way you drag the right button: hold it and grey ghosts show
+  where each unit will stand; drag, and the formation turns to face the way you drag. Letting go gives the order.
 - **Mountains:** no unit crosses them. The great ranges are on the map (the Alps, Pyrenees, Carpathians, Caucasus,
   Scandinavian Mountains, Apennines, Dinaric Alps, Atlas, Taurus, Urals and more, [tools/mountains.js](tools/mountains.js)),
-  drawn as opaque rocky ground with hill signs on it (the colour of the region they lie in doesn't show through them;
-  its borders do). Admins can paint more and erase them in Edit map. Units walk round them or through their **passes**, gaps at least 20 km
+  drawn as solid rocky ground with hill signs on it (neither the colour of the region they lie in nor its borders show
+  through them). Admins can paint more and erase them in Edit map. Units walk round them or through their **passes**, gaps at least 20 km
   wide where the real ones are: Mont Cenis, Gotthard and Brenner across the Alps, Somport in the Pyrenees, Dukla,
   Oituz and Turnu Roșu in the Carpathians, Shipka in the Balkans, Darial in the Caucasus, the Cilician Gates... A move
   order into the mountains takes units to the open land nearest to the spot. The ranges never come within 12 km of the
@@ -132,6 +142,7 @@ console (F12) says which way each player connected.
   has a clear shot; a city doesn't fire at units behind them. Melee units are not affected.
 - **Navy:** ships sail only on the sea. Building transports, and taking units on board or landing them, needs the
   **Seafaring** technology (Tech, Sea tab: 100 gold, 30 s); battleships need **Gunnery** as well (150 gold, 60 s).
+  **Navigation** (120 gold, 45 s) makes all your ships 20% faster.
   - **Coastal cities:** a city with the sea within 30 km is coastal (admins can change it in Edit map). It is marked with an anchor (next to the castle, or
     next to the dot when zoomed out), has a timber pier where its ships are launched, and its panel says Port. Only
     coastal cities build ships (Barracks don't speed them up). Every city has two rally points: right-click land (cities selected) for new units, right-click the water for new ships of coastal cities on that sea. Without one, new ships stay in the port.
@@ -156,7 +167,7 @@ console (F12) says which way each player connected.
     60 km of it: other ships, units on the shore and cities. It fires single shots, **30 damage every 1.5 seconds**,
     and its guns reload whatever it does, sailing included. So you can **shoot, move, shoot**: let it fire, sail it
     out of trouble, and order the attack again once it has reloaded; it fires on the first moment the target is in
-    reach. A battleship is heavy: from a standstill (it stops to shoot, too) it takes **1.5 s to reach full speed**,
+    reach. A battleship is heavy: from a standstill (it stops to shoot, too) it takes **0.75 s to reach full speed**,
     so a ship that keeps running gains on one that stops to fire. A plain move order never shoots; attack-move (A + right click) fights whatever it meets, and an idle
     battleship fires at enemies in reach and goes after enemy ships in sight. Attack a unit or city on land and it
     sails to the water nearest to the target that is within its range and has a clear line of fire to it, no
@@ -181,6 +192,19 @@ console (F12) says which way each player connected.
     units already on their way to a transport stay with it, and each next transport takes the closest units that have
     none. Select the units again (a new selection) and the next transport may take any of them, away from the transport
     they were going to. Any other order (move, attack, stop, hold, disband) ends their boarding.
+  - **Autoload:** select transports (one or a whole fleet) and press **Autoload** in the panel (or **L**). Your idle
+    land units within 200 km of them go on board: each unit to the nearest selected transport that still has room,
+    so the fleet shares out the army around it. Each transport takes units of one landmass only (the one it already
+    loads at, otherwise that of the nearest unit it gets) and sails to the free beach nearest to its share, as with a
+    right-click. Units with orders (walking, fighting, holding, already on their way to a transport) stay where they
+    are, and so do units on land without a beach on the transports' sea. The feed says how many go.
+    **The other way round:** select land units and press **Board transports** in the panel (or **L**): they find your
+    transports with room within 500 km of them (lying idle, or already waiting at a beach; transports sailing
+    somewhere or landing units are left alone) and go on board the same way, whatever orders they had. With land
+    units and transports selected together, the units ask the same way: the selected transports (full ones, often)
+    are no matter, and a free transport nearby takes them.
+  - **Hidden cargo:** only a transport's owner sees how many units it carries (the number on the boat, and in its
+    panel); other players see the boat, but not its cargo (its panel says ? on board).
   - **Landing:** select transports with units on board and press **Unload** in the panel (or **U**), then click any land
     or city (also on the minimap). Each transport sails to the beach nearest to that place, puts everyone ashore and
     sends them there: they attack it when it is an enemy city. Right-click or Esc cancels. Quicker: right-click land or
@@ -188,6 +212,21 @@ console (F12) says which way each player connected.
     fighting anything on the way (on the water, or without units on board, the transports just sail there).
     A unit steps ashore only where there is room for it (within 30 km of the landing place, clear of other units and
     city walls). The others wait on board, and the transport waits with them until there is room; the feed says so.
+    **Storming a city** is the exception: nobody stays on board under its guns. Units that find no room by the beach
+    squeeze in among the others (the crowd pushes itself apart on land), or step ashore farther along the coast;
+    this holds for the transports still arriving after the city has fallen too.
+    Everyone on board the transports sent together gets a place of their own in one formation round the place, as
+    seen from where their transport lands them, and finds its own way there from the beach: a fleet landing along a
+    long coast spreads round the place instead of every transport's units heading for the same spot. Shift-queued
+    orders on land for them (below) get one such formation too.
+  - **Shift with loaded transports:** clicks on the water are the transports' path. The **first click on land**, with
+    or without Shift, is where they park and land the units (with Shift: after the path; on an enemy city: to storm
+    it). **Every later Shift + right-click on land** (a place, or an enemy unit or city to attack; with A, an
+    attack-move) is an order for the units on board: once ashore they set off from the beach for them, one after
+    another, instead of marching to the place where they were landed (storming a city, they take it first). With no
+    such orders they march there, as without Shift. **Shift + right-click on the water** after the landing is the
+    transports' own again: they sail there once everyone is ashore. Select the transports to see their path, where
+    they park, and the units' way drawn from the beach.
   - **Docks:** each transport taking units on board or landing them gets its own dock: the free spot on a beach
     nearest to where it is sent, clear of the docks of other ships and of ships lying idle. Several transports sent
     together spread along the shore, the nearest ones closest to the target. While one is on its way, your map shows
@@ -241,7 +280,7 @@ console (F12) says which way each player connected.
   | Order of Mercy | 1500 honor | 30 s | Any of your land units can be made a Healer |
   | Brotherhood of Arms | 1500 honor | 30 s | Barracks can be paid with 30 honor instead of 30 gold, and build twice as fast either way |
   | Honored Dead | 1500 honor | 30 s | Every unit of yours that falls gives you 25% of its cost in honor |
-  | **Eternal Glory** (tier II) | 4000 honor | 2 min | Every unit can be trained for honor, at 2 times its gold cost. Only once every tier I tradition is learned |
+  | **Eternal Glory** (tier II) | 4000 honor | 2 min | Every unit can be trained for honor, at 3 times its gold cost. Only once every tier I tradition is learned |
 
   - **Heroes:** select one of your land units (not a ship, not one being disbanded) and press **C** (or **Make Hero**
     in its panel): for **100 honor** it becomes a Hero where it stands, keeping its orders and its share of HP. A Hero has
@@ -273,8 +312,8 @@ console (F12) says which way each player connected.
   - **Tier II tradition (Eternal Glory):** its name is always written in red. Its card stays locked, naming what is
     missing, until every tier I tradition is learned. Nobody is told when someone starts or cancels learning it, but the Players list shows its name and countdown in red while it is
     learned, and every player is told (a red banner and a feed line) once someone has learned it.
-  - **Eternal Glory:** every unit a city trains can be paid with honor, at **2 times its gold cost** (Infantry 24, Archers 20,
-    Cavalry 40, Knight 300, Transport 20, Battleship 400): the Units box gets a **Pay with Gold / ★ Honor** switch, and **Shift + the
+  - **Eternal Glory:** every unit a city trains can be paid with honor, at **3 times its gold cost** (Infantry 36, Archers 30,
+    Cavalry 60, Knight 450, Transport 30, Battleship 600): the Units box gets a **Pay with Gold / ★ Honor** switch, and **Shift + the
     unit's key** pays with honor either way. Units paid with honor carry the silver star in the queue; cancelling one,
     or losing the city or its port while it waits, gives the honor back. Ships still need their technology, and the unit
     limit still counts.
@@ -330,6 +369,17 @@ console (F12) says which way each player connected.
   - Liberators are never eliminated, so with this option the game is won only by holding the target number of cities
     (or by being the only player left once everyone else has surrendered or left).
   - The numbers are in `LIBERATOR` in [shared/config.js](shared/config.js). F1 → **Liberator** explains it in the game.
+- **Start gold** (also a game option): the gold every player has at the start, the same for everyone. 50 by default
+  (`startGold` in `ECONOMY` in [shared/config.js](shared/config.js)), 0–100000. The lobby's game list shows it when it
+  isn't the default.
+- **Gold percentage** (waiting room): to even out players of different strength, the host sets a percentage for each
+  player next to their name (100% by default, 10–500%): less for a strong player, more for a weaker one. Everything that
+  player earns in the game is scaled by it: what their cities pay each turn (whole regions and Farms included), their
+  pay as a liberator (smuggled gold too) and kill gold. Turn pay is rounded to whole gold. The start gold is the same
+  for everyone, refunds give back exactly what was paid, and costs are the same for everyone. Everyone in the waiting room sees
+  the percentages (the others only those that are not 100%); in the game you see only your own (the feed says it at the
+  start, and it is in the gold tooltip and F1 → Economy), and your income in the top bar and the Players list includes
+  it. Other players' incomes there are shown at 100%: their percentages stay secret, as they would tell who is who.
 - **Technologies:** the **Tech** button (or **T**) opens the Technologies window. Research costs gold up front and takes
   game time; one at a time, and cancelling gives the gold back. Order more while one runs and they are **queued**
   (the button says **Queue level N**): each is paid when ordered and starts once the one before it is done. A line
@@ -340,17 +390,22 @@ console (F12) says which way each player connected.
   - **Gunnery** (150 gold, 60 s): coastal cities build battleships (see Navy). It needs Seafaring: its card stays
     locked until Seafaring is researched or ordered, and taking Seafaring out of the queue takes Gunnery out too
     (gold back for both).
+  - **Navigation** (120 gold, 45 s): all your ships sail 20% faster, transports and battleships, the ones already at
+    sea too (a battleship still takes its 1.5 s to gather speed after a stop). It needs Seafaring, like Gunnery.
+    The panel of a selected ship shows its speed with Navigation.
 
   The **Rebellion** tab exists only with Death: Liberator. Rebellion technologies can be researched at any time (also before you fall) but work only while you
-  are a liberator:
-  - **Supporters** (3 levels: 100 / 180 / 260 gold, 2 min each): +20 / +40 / +60 liberator gold per turn.
+  are a liberator. **Ordered as a liberator they cost half** (`LIBERATOR.rebellionCost`, rounded up; the card shows the
+  full price struck out); levels ordered before you fell keep the full price, and cancelling gives back what was paid.
+  The prices below are the full ones:
+  - **Supporters** (3 levels: 120 gold, 2 min each): +20 / +40 / +60 liberator gold per turn.
   - **Influencer** (3 levels: 100 gold, 2 min each): instead of taking one city, a liberator marks (influences) 2, 3 or 4
     cities, one per turn. Marking the last one liberates them all at once; **Liberate now** takes the marked ones
     earlier. Everyone sees the marks (a turning dashed ring in the liberator's colour), and only one liberator can mark a
     city for liberation. The protection of small empires
     is checked city by city when they are liberated. Without Influencer the limit is 1: the city is taken at once.
   - **Smuggling** (3 levels: 30 gold, 1 min each): mark 1, 2 or 3 cities to smuggle from. At the end of every turn
-    half of each one's income goes from its owner to the liberator (neutral cities pay nothing). Only one liberator can
+    each one's whole income goes from its owner to the liberator (neutral cities pay nothing). Only one liberator can
     smuggle from a city. These marks are separate from influence marks (a gold coin on the map): one liberator may
     influence a city while another smuggles from it. Click a smuggled city again to stop.
   - A liberator who is back in the game loses all their marks, so other liberators can mark those cities.
@@ -377,7 +432,7 @@ Every number lives in **[shared/config.js](shared/config.js)**, which both the s
   fires single shots of `damage` every `reload` seconds instead of dealing `damage` every second; one with `accelTime`
   needs that many seconds to get from a standstill to `moveSpeed`. `tech` names the
   technology a unit needs before cities build it (Seafaring, Gunnery). In `TECHS`, `requires` names a technology that
-  must come first.
+  must come first; Navigation's `speedPercent` is how much faster it makes ships.
 - `NAVAL`: how close the sea must be for a coastal city, and the distances for going on board.
 - `CITY_UPGRADES`: cost, build time and bonus of each city upgrade.
 - `HONOR`, `TRADITIONS`, `HERO`: the honor a kill gives (`killShare` of the unit's cost), the traditions it buys,
@@ -435,6 +490,13 @@ selects as usual.
   pass from the middle. Saved in `server/data/mountain-edits.json` (grid cells painted and cleared), on top of the
   built mountains; it holds after restarts and rebuilds, where the same rules apply again (painted mountains a moved
   city would be walled in by get a pass). To undo everything, delete the file and restart the server.
+- **Region names:** with no brush on, the name of a region under the cursor gets a dashed frame. Drag it to a new
+  place; turn the mouse wheel over it to make it bigger or smaller (0.3 to 4 times its own size, `LABEL_EDIT` in
+  [shared/config.js](shared/config.js)); double-click it to give it back to automatic placing. A name placed this
+  way stays exactly there, and the other names keep off it. Names show only zoomed in past the strategic view, so
+  zoom in to edit them. It takes effect at once for every player, and is saved in `server/data/label-edits.json`
+  (region name → its centre and scale), which holds after restarts and rebuilds. To undo everything, delete the file
+  and restart the server.
 - **Rebuild navigation** appears only while editing. The number on it counts moves since the last rebuild. It
   rebuilds everything that depends on where cities stand: territories, borders, country name positions, and the
   areas around cities that paths avoid. Then it reloads them in every game and browser; it takes well under a
@@ -452,6 +514,7 @@ if they send the messages themselves.
 | Shift + click / drag | Add units, or add cities, to the selection |
 | Double click | On one of your units: select all your units of that type on screen. On one of your cities: select all your cities on screen. Shift adds them |
 | Right click | Move, attack a unit or city, or set a rally point of the selected cities: on land for new units, which attack-move there, fighting anything they meet on the way; on the water for new ships (coastal cities on that sea) |
+| Hold right button | Units selected: grey ghosts show where each unit will stand. Drag to turn the formation to face the way you drag; let go to give the move (Esc cancels it) |
 | Alt + right click | Cities selected: clear both their rally points (so does a right click on one of them) |
 | Hold A + right click | Units selected: attack-move, fighting anything met on the way (also on the minimap). They fight the nearest enemy: one that moves out of reach is swapped for whichever is nearest then, and one that gets out of sight is let go while they walk on (an attack order, by contrast, follows its target anywhere). On an enemy city: attack-move to it, fighting the defenders met on the way, then the city |
 | Shift + right click | Units selected: queue the move, attack-move or attack after the orders they already have; they carry them out one after another. Units with nothing to do start at once. A right click without Shift (or S, H) replaces the whole queue. Selected units show their queued route as dashed lines |
@@ -467,7 +530,7 @@ if they send the messages themselves.
 | Ctrl + F / Shift + F | Units selected: remove the full transports from the selection / keep only the full transports |
 | A / S / D / F / G | Cities selected: build Wall / Tower / Castle / Farm / Barracks in each selected city that doesn't have it yet. A again: Wall II where Wall I is built or queued |
 | Shift + G | Cities selected, with the tradition Brotherhood of Arms: build Barracks paid with honor instead of gold |
-| Shift + Q / W / E / R / B | Cities selected, with the tradition Eternal Glory: build that unit paid with honor (2 times its gold cost) |
+| Shift + Q / W / E / R / B | Cities selected, with the tradition Eternal Glory: build that unit paid with honor (3 times its gold cost) |
 | Ctrl+1–9, 1–9 | Save / recall a control group |
 | Hold Alt | Show the attack radius of every city. Alt + drag a frame selects only your cities, even with your units inside it |
 | Space / Shift + Space | Center on the selection / jump to your city captured last. When a city of yours falls, it pings red on the minimap for a few seconds and the minimap's frame glows red |
@@ -526,8 +589,9 @@ New commands are added in [public/js/debug/index.js](public/js/debug/index.js).
 ```
 shared/config.js        All game numbers (units, cities, combat, economy), used by server and client
 shared/balance.js       Which stats the Edit button may change, their limits, apply / reset
-shared/options.js       Game options the host sets in the waiting room: cities to win, countdown, death
+shared/options.js       Game options the host sets in the waiting room: cities to win, countdown, death, start gold, gold percentages
 shared/regions.js       Regions: their cities, and who holds a whole region (gold bonus)
+shared/formation.js     Group-move formations (infantry front, archers back, cavalry wings), for the game and the move preview
 shared/mountains.js     The mountain cells' code, shared by the land grid (navgrid.json) and the map (map.json)
 shared/tech.js          Technologies: levels, liberator income, influence and smuggling limits, smuggled gold
 server/index.js         HTTP static server, WebSocket lobby, rejoin, admins, hand-over to the host and WebRTC signalling
@@ -539,6 +603,7 @@ server/data/city-positions.json  Cities moved by admins (created on the first mo
 server/data/city-coastal.json    Cities admins made coastal or inland (created on the first change)
 server/data/beach-edits.json     Coast painted as beach or cliff by admins (created on the first stroke)
 server/data/mountain-edits.json  Mountains painted or erased by admins (created on the first stroke)
+server/data/label-edits.json     Region names moved or resized by admins (created on the first change)
 server/game.js          One match: players, commands, formations, tick, collisions, snapshots
 server/history.js       What happened in a game, for the results screen: the map and every player's numbers turn by turn, totals
 server/City.js          City: shooting, regeneration, capture, spawn points, port (coastal cities)
@@ -567,7 +632,7 @@ public/                 Browser client (vanilla JS modules, Canvas 2D, no build 
   js/units/*.js         One class per unit type: icon and tooltip
   map.json              Generated map data (committed)
   sounds/               Sound effects made by tools/gen-sfx.js (committed)
-tools/cities.js         The 63 regions and 223 cities (lat/lon)
+tools/cities.js         The 64 regions and 223 cities (lat/lon)
 tools/mountains.js      The mountain ranges: chains along their crests (lat/lon, width), passes between the chains
 tools/build-map.js      Builds public/map.json and server/data/navgrid.json from Natural Earth data
 tools/gen-sfx.js        Makes the sound effects in public/sounds/ with ElevenLabs

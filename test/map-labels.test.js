@@ -52,6 +52,23 @@ test('on the real map, names cover no city and no other name', () => {
   }
 });
 
+test('a name an admin placed (fixed) stays where they put it, at its size, and the others keep off it', () => {
+  const sizes = regionLabelSizes(index);
+  const labels = map.countries.map((co, i) => ({
+    region: i, x: co.x, y: co.y - sizes[i] * 0.8, w: (co.n.length * 0.9 + 0.3) * sizes[i], h: sizes[i],
+  }));
+  // Hungary's name, twice as big, right where Wallachia's would go.
+  const hu = map.countries.findIndex((co) => co.n === 'Hungary');
+  const wa = map.countries.findIndex((co) => co.n === 'Wallachia');
+  const at = { x: labels[wa].x, y: labels[wa].y };
+  Object.assign(labels[hu], { ...at, w: labels[hu].w * 2, h: labels[hu].h * 2, fixed: true });
+  placeLabels(labels, [], index);
+  assert.deepEqual({ x: labels[hu].x, y: labels[hu].y }, at, 'it stays where it was put');
+  for (const l of labels) {
+    if (l !== labels[hu]) assert.equal(area(boxOf(l), boxOf(labels[hu])), 0, `${map.countries[l.region].n} keeps off it`);
+  }
+});
+
 // The outline that lights up when a player takes a whole region (render.js).
 const outlines = regionOutlines(map, index);
 const segments = (s) => Array.from({ length: s.length / 4 }, (_, k) => s.slice(4 * k, 4 * k + 4));

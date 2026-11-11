@@ -265,12 +265,12 @@ test('archers do not shoot over mountains: they go round them for a clear shot',
 });
 
 test('cities do not shoot over mountains either', () => {
-  const orleans = city('Orléans');
-  const g = walled(orleans.x + 25, orleans.y - 50, orleans.y + 50, 5);
+  const tours = city('Tours');
+  const g = walled(tours.x + 25, tours.y - 50, tours.y + 50, 5);
   for (const grid of [g, null]) {
     const ctx = grid ? quietOn(grid) : quiet();
-    ctx.city('Orléans').owner = ctx.b.id;
-    const u = ctx.spawn(ctx.a.id, 'infantry', orleans.x + 50, orleans.y);
+    ctx.city('Tours').owner = ctx.b.id;
+    const u = ctx.spawn(ctx.a.id, 'infantry', tours.x + 50, tours.y);
     ctx.run(3);
     if (grid) assert.equal(u.hp, u.maxHp, 'behind the mountains: not shot');
     else assert.ok(u.hp < u.maxHp, 'in the open: shot');

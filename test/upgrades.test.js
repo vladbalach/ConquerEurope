@@ -208,13 +208,13 @@ test('cancelling Wall I also cancels the Wall II queued after it, refunding both
 
 test('capturing a city destroys both wall grades', () => {
   const { game, b, city } = setup();
-  const rouen = city('Rouen');
-  rouen.addUpgrade('wall');
-  rouen.addUpgrade('wall2');
-  game.captureCity(rouen, b.id);
-  assert.equal(rouen.maxHp, CITY.hp);
-  game.handleCommand(b, { t: 'build', cities: [rouen.id], item: 'wall' });
-  assert.deepEqual(rouen.queue, ['wall'], 'the new owner starts again from Wall I');
+  const tours = city('Tours');
+  tours.addUpgrade('wall');
+  tours.addUpgrade('wall2');
+  game.captureCity(tours, b.id);
+  assert.equal(tours.maxHp, CITY.hp);
+  game.handleCommand(b, { t: 'build', cities: [tours.id], item: 'wall' });
+  assert.deepEqual(tours.queue, ['wall'], 'the new owner starts again from Wall I');
 });
 
 test('a Tower shoots further and a Castle hits harder', () => {
@@ -239,16 +239,16 @@ test('a Tower shoots further and a Castle hits harder', () => {
 
 test('capturing a city destroys its upgrades and refunds what was still queued', () => {
   const { game, a, b, city } = setup();
-  const rouen = city('Rouen');
-  rouen.addUpgrade('wall');
-  rouen.addUpgrade('castle');
-  rouen.queue = ['tower', 'infantry'];
+  const tours = city('Tours');
+  tours.addUpgrade('wall');
+  tours.addUpgrade('castle');
+  tours.queue = ['tower', 'infantry'];
   const gold = a.gold;
-  game.captureCity(rouen, b.id);
-  assert.equal(rouen.upgrades.size, 0);
-  assert.equal(rouen.maxHp, CITY.hp);
-  assert.equal(rouen.damage, CITY.damage);
-  assert.equal(rouen.range, CITY.attackRange);
+  game.captureCity(tours, b.id);
+  assert.equal(tours.upgrades.size, 0);
+  assert.equal(tours.maxHp, CITY.hp);
+  assert.equal(tours.damage, CITY.damage);
+  assert.equal(tours.range, CITY.attackRange);
   assert.equal(a.gold, gold + tower.cost + UNITS.infantry.cost, 'unfinished tower and infantry are refunded');
 });
 

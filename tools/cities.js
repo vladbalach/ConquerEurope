@@ -15,7 +15,7 @@ export const COUNTRIES = [
   { name: 'Andalusia', cities: [['Seville', 37.39, -5.98], ['Granada', 37.18, -3.60], ['Córdoba', 37.88, -4.78]] },
   { name: 'Balearics', cities: [['Palma', 39.57, 2.65]] },
 
-  { name: 'France', cities: [['Paris', 48.86, 2.35], ['Orléans', 47.90, 1.90], ['Rouen', 49.44, 1.10], ['Reims', 49.26, 4.03]] },
+  { name: 'France', cities: [['Paris', 48.86, 2.35], ['Tours', 47.39, 0.69], ['Reims', 49.26, 4.03]] },
   { name: 'Brittany', cities: [['Rennes', 48.11, -1.68], ['Brest', 48.39, -4.49], ['Nantes', 47.22, -1.55]] },
   { name: 'Burgundy', cities: [['Dijon', 47.32, 5.04], ['Lyon', 45.76, 4.84], ['Metz', 49.12, 6.18]] },
   { name: 'Occitania', cities: [['Bordeaux', 44.84, -0.58], ['Toulouse', 43.60, 1.44], ['Limoges', 45.83, 1.26], ['Montpellier', 43.61, 3.88],['Nice', 43.70, 7.27]] },
@@ -28,7 +28,7 @@ export const COUNTRIES = [
   { name: 'Faroes', cities: [['Tórshavn', 62.01, -6.77]] },
   { name: 'Greenland', cities: [['Tasiilaq', 65.61, -37.64], ['Sermersuaq', 67.39, -43.76], ['Summit', 69.13, -38.92], ['Eismitte', 70.97, -33.58], ['Schweizerland', 67.63, -35.11], ['Ittoqqortoormiit', 70.48, -21.97]] },
   { name: 'Netherlands', cities: [['Amsterdam', 52.37, 4.90], ['Groningen', 53.22, 6.57], ['Brussels', 50.85, 4.35]] },
-  { name: 'Prussia', cities: [['Berlin', 52.52, 13.40], ['Magdeburg', 52.13, 11.63], ['Rostock', 54.09, 12.10], ['Königsberg', 54.71, 20.51], ['Dresden', 51.05, 13.74]] },
+  { name: 'Prussia', cities: [['Berlin', 52.52, 13.40], ['Rostock', 54.09, 12.10], ['Königsberg', 54.71, 20.51], ['Dresden', 51.05, 13.74]] },
   { name: 'Bavaria', cities: [['Munich', 48.14, 11.58], ['Nuremberg', 49.45, 11.08], ['Stuttgart', 48.78, 9.18]] },
   { name: 'Westphalia', cities: [['Cologne', 50.94, 6.96], ['Frankfurt', 50.11, 8.68], ['Hanover', 52.37, 9.73], ['Hamburg', 53.55, 9.99]] },
 
@@ -50,7 +50,8 @@ export const COUNTRIES = [
   { name: 'Finland', cities: [['Helsinki', 60.17, 24.94], ['Turku', 60.45, 22.27], ['Kuopio', 62.89, 27.68], ['Oulu', 65.01, 25.47]] },
 
   { name: 'Livonia', cities: [['Tallinn', 59.44, 24.75], ['Tartu', 58.38, 26.72], ['Riga', 56.95, 24.11], ['Daugavpils', 55.87, 26.54]] },
-  { name: 'Lithuania', cities: [['Vilnius', 54.69, 25.28], ['Klaipėda', 55.70, 21.14], ['Minsk', 53.90, 27.56], ['Brest-Litovsk', 52.10, 23.69], ['Gomel', 52.44, 30.98], ['Vitebsk', 55.19, 30.20]] },
+  { name: 'Lithuania', cities: [['Vilnius', 54.69, 25.28], ['Klaipėda', 55.70, 21.14]] },
+  { name: 'White Ruthenia', cities: [['Minsk', 53.90, 27.56], ['Brest-Litovsk', 52.10, 23.69], ['Gomel', 52.44, 30.98], ['Vitebsk', 55.19, 30.20]] },
   { name: 'Poland', cities: [['Warsaw', 52.23, 21.01], ['Kraków', 50.06, 19.94], ['Lublin', 51.25, 22.57], ['Gdańsk', 54.35, 18.65], ['Szczecin', 53.43, 14.55], ['Poznań', 52.41, 16.93], ['Wrocław', 51.11, 17.03]] },
   { name: 'Bohemia', cities: [['Prague', 50.08, 14.44], ['Brno', 49.20, 16.61]] },
   { name: 'Hungary', cities: [['Budapest', 47.50, 19.04], ['Debrecen', 47.53, 21.64], ['Szeged', 46.25, 20.15], ['Pécs', 46.07, 18.23], ['Košice', 48.72, 21.26], ['Cluj', 46.77, 23.59]] },
@@ -70,7 +71,7 @@ export const COUNTRIES = [
   { name: 'Muscovy', cities: [['Moscow', 55.76, 37.62], ['Smolensk', 54.78, 32.05], ['Tula', 54.19, 37.62], ['Yaroslavl', 57.63, 39.87], ['Nizhny Novgorod', 56.33, 44.00], ['Voronezh', 51.66, 39.20], ['Veliky Ustyug', 60.76, 46.30]] },
   { name: 'Novgorod', cities: [['Saint Petersburg', 59.94, 30.31], ['Novgorod', 58.52, 31.27], ['Petrozavodsk', 61.79, 34.35]] },
   { name: 'Pomorye', cities: [['Arkhangelsk', 64.54, 40.54], ['Murmansk', 68.97, 33.07], ['Kem', 64.95, 34.58]] },
-  { name: 'Yugra', cities: [['Ukhta', 63.56, 53.68], ['Ivdel', 60.69, 60.43]] },
+  { name: 'Yugra', cities: [['Ukhta', 63.56, 53.68], ['Ivdel', 60.69, 60.43], ['Pustozersk', 67.55, 52.65], ['Khanty-Mansiysk', 61.00, 69.00]] },
   { name: 'Kazan Khanate', cities: [['Kazan', 55.79, 49.11], ['Samara', 53.20, 50.15], ['Kungur', 57.43, 56.95], ['Ufa', 54.73, 55.97]] },
   { name: 'Golden Horde', cities: [['Saratov', 51.53, 46.03], ['Volgograd', 48.71, 44.51], ['Astrakhan', 46.35, 48.04], ['Rostov', 47.24, 39.72], ['Tuapse', 44.10, 39.07], ['Grozny', 43.32, 45.69]] },
 

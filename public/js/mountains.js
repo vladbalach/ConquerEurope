@@ -1,7 +1,7 @@
 // Mountains on the map: the land units can't cross (shared/mountains.js). Drawn from the very cells the
-// game blocks, so the drawing is exactly where units can't go: opaque rocky ground over their outline (the
-// colour of the region they lie in doesn't show through; its borders do) and, close up, hill signs as on
-// an old map, lit from the top left (ICON_STYLE.md) with a thin ink line.
+// game blocks, so the drawing is exactly where units can't go: solid rocky ground over their outline (neither
+// the colour of the region they lie in nor its borders show through) and, close up, hill signs as on an old
+// map, lit from the top left (ICON_STYLE.md) with a thin ink line.
 //
 // The map layer is repainted whenever the camera moves, so the signs are built once into a few paths per
 // tile, and only the tiles in view are drawn. Signs overlap in rows as on old maps, the nearer (lower) in
@@ -11,13 +11,14 @@ import { decodeMask } from '/shared/mountains.js';
 
 const LIGHT = '#efe6cd';                 // the lit (left) face of a sign
 const SHADE = '#a48b67';                 // its shaded (right) face
-const INK = 'rgba(42, 28, 14, 0.85)';
-const HATCH = 'rgba(42, 28, 14, 0.42)';  // engraved lines down the shaded face
-const EDGE = 'rgba(78, 56, 32, 0.45)';   // the outline of the mountains' land
+// Every colour is opaque: mountains are solid, nothing under them (territory colours, borders) shows through.
+const INK = 'rgb(54, 40, 26)';
+const HATCH = 'rgb(114, 92, 66)';        // engraved lines down the shaded face
+const EDGE = 'rgb(140, 118, 88)';        // the outline of the mountains' land
 // The mountains' ground, opaque: under the signs close up, and darker without them (strategic view,
 // minimap, timeline) so the ranges stand out from the land round them.
 const AREA = { near: [196, 182, 150], far: [160, 140, 108] };
-export const PEAKS_ZOOM = 0.45;          // signs fade in from this zoom over the next 0.1
+export const PEAKS_ZOOM = 0.45;          // signs from this zoom in (the ground's colour turns to theirs over the next 0.1)
 const TILE = 250;                        // km: signs are drawn by tiles this big
 const SPACING = { x: 0.62, y: 0.42 };    // how close signs stand (placePeaks)
 
@@ -243,7 +244,6 @@ export function paintMountains(ctx, art, z, view = null) {
   ctx.lineJoin = 'round';
   ctx.stroke(art.area);
   if (fade <= 0) return;
-  ctx.globalAlpha = fade;
   ctx.lineWidth = 0.9 / z;
   ctx.lineCap = 'round';
   // Layer by layer (the layers hold for all the tiles together), then tile by tile.
@@ -266,6 +266,5 @@ export function paintMountains(ctx, art, z, view = null) {
       ctx.stroke(layer.ink);
     }
   }
-  ctx.globalAlpha = 1;
   ctx.lineCap = 'butt';
 }

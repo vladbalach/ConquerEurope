@@ -12,6 +12,7 @@ const LAND = '#dccfa8';
 const LAND_DIM = '#a9a088';
 const TERRITORY_ALPHA = 0.5;
 const INK = '#1c130b';
+const GHOST = '#8e8e8e';                 // the grey of the units in a move's preview (drawFormation)
 // Beaches (ships take units on board and land them there): shallow water off the shore, and sand.
 const SHALLOWS = 'rgba(112,178,190,0.55)';
 const BEACH = 'rgb(226,200,130)';
@@ -25,12 +26,19 @@ const FAR_ZOOM = 0.42;
 // so they scale with the map and stay in the same place. Bigger countries get bigger letters.
 // They are kept off the cities as the cities look at labelZoom, just after the names fade in:
 // zoomed in further, castles and city names take less of the map (see map-labels.js).
-const COUNTRY_LABEL = { alpha: 0.3, spacing: 0.18, labelZoom: 0.5 };
+// outline: the white border round the letters, in parts of the font size (between 1 and 3.5 px), as opaque
+// as outlineAlpha times the letters.
+const COUNTRY_LABEL = { alpha: 0.55, outline: 0.06, outlineAlpha: 0.5, spacing: 0.18, labelZoom: 0.5 };
 // You take the last city of a region (client.regionChanged): for `ms` the region lights up in
 // gold. A wave of light spreads over it from the city just taken in the first `spread` of that
 // time, its outline lights up behind the wave, and each city it reaches bursts with a gold ring
 // and shows the gold it now pays more ("+2/turn"). Its name shines in gold for the first half.
 export const REGION_GLOW = { ms: 4200, spread: 0.35 };
+// Hovering the Region stat in the city panel lights its region up (g.hoverRegion), in ms: it fades
+// in for `in` and out for `out`. As it appears, a wave of light carries it from the city in the panel
+// to the region's edge in `spread`, the borders flash as it passes, and a ring of light spreads on
+// the ground round each city of the region for `ring` once the wave reaches it.
+const REGION_HOVER = { in: 180, out: 300, spread: 480, ring: 700 };
 // One of your cities is captured (client.js): for `ms` it pings on the minimap. A red ring goes out
 // from it every `every` ms, `waves` times, and a red frame blinks around its marker.
 export const LOST_PING = { ms: 7000, every: 1100, waves: 4 };
@@ -175,19 +183,23 @@ export class Renderer {
   }
 
   // Country names: just above the middle of their cities, or the nearest spot in the country
-  // where they cover no city and no other name. Again after a city moves.
+  // where they cover no city and no other name. Again after a city moves. A name an admin placed in
+  // Edit map (map.labelEdits: its centre and its scale) stays where they put it, and the others keep off it.
   placeCountryLabels(map) {
     const L = COUNTRY_LABEL, Z = L.labelZoom;
     const m = this.measureCtx || (this.measureCtx = document.createElement('canvas').getContext('2d'));
     const spacing = 'letterSpacing' in this.ctx ? L.spacing : 0;
     m.font = LABEL_FONT(100);
+    const edits = map.labelEdits || {};
     const labels = map.countries.map((co, i) => {
-      const size = this.labelSizes[i];
+      const e = edits[co.n];
+      const fixed = !!e && Number.isFinite(e.x) && Number.isFinite(e.y);
+      const size = this.labelSizes[i] * (fixed && e.scale > 0 ? e.scale : 1);
       const text = co.n.toUpperCase();
       return {
-        region: i, text, size,
-        x: co.x,
-        y: co.y - size * 0.8,
+        region: i, text, size, fixed,
+        x: fixed ? e.x : co.x,
+        y: fixed ? e.y : co.y - size * 0.8,
         w: (m.measureText(text).width / 100 + text.length * spacing + 0.3) * size,
         h: size,
       };
@@ -203,6 +215,18 @@ export class Renderer {
       cities.push({ x0: c.x - w / 2 - pad, y0: ny - pad, x1: c.x + w / 2 + pad, y1: ny + (fs * 1.2) / Z + pad });
     }
     this.countryLabels = placeLabels(labels, cities, this.regions);
+  }
+
+  // Edit map: the region whose name is under (sx, sy) on screen, or -1. Names are printed (and can be
+  // picked) only zoomed in past the strategic view.
+  pickCountryLabel(sx, sy) {
+    if (this.farView() || !this.countryLabels) return -1;
+    const z = this.g.cam.zoom;
+    for (const l of this.countryLabels) {
+      const [x, y] = this.w2s(l.x, l.y);
+      if (Math.abs(sx - x) <= (l.w / 2) * z && Math.abs(sy - y) <= (l.h / 2) * z) return l.region;
+    }
+    return -1;
   }
 
   resize() {
@@ -381,10 +405,6 @@ export class Renderer {
     }
     ctx.globalAlpha = 1;
 
-    // Mountains, which no unit crosses: over the territories they belong to, under the borders. Close up
-    // (the main map) with their hill signs, elsewhere only their land.
-    if (this.mountains) paintMountains(ctx, this.mountains, z, detailed ? this.viewRect() : null);
-
     // Only two kinds of border: between the cities of one region (faint) and between regions.
     const lines = this.lines;
     ctx.lineJoin = 'round';
@@ -397,6 +417,14 @@ export class Renderer {
     ctx.strokeStyle = 'rgba(55,32,18,0.85)';
     ctx.lineWidth = (detailed ? 1.6 : 0.5) / z;
     ctx.stroke(lines.regions);
+
+    // Mountains, which no unit crosses: solid, over the territories and their borders (neither shows
+    // through), under the coastline. Close up (the main map) with their hill signs, elsewhere only their land.
+    if (this.mountains) {
+      paintMountains(ctx, this.mountains, z, detailed ? this.viewRect() : null);
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+    }
     // Beaches, where ships take units on board and land them: the shallows above, then a thin strip of
     // sand on the shoreline. The rest of the coast is cliffs: the plain dark line, against deep water.
     ctx.strokeStyle = BEACH;
@@ -413,7 +441,7 @@ export class Renderer {
     ctx.lineCap = 'butt';
   }
 
-  // Faint country names, fixed to the map: their size and place are in world units,
+  // Country names, dark brown with a white border round the letters, fixed to the map: their size and place are in world units,
   // so they zoom with the land. Hidden in the strategic view, with a short fade in after it.
   // Zoomed far in the letters grow huge, so they also get lighter.
   paintCountryLabels(ctx) {
@@ -423,6 +451,8 @@ export class Renderer {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = `rgba(70,45,22,${COUNTRY_LABEL.alpha * fade})`;
+    ctx.strokeStyle = `rgba(255,255,255,${COUNTRY_LABEL.alpha * COUNTRY_LABEL.outlineAlpha * fade})`;
+    ctx.lineJoin = 'round';
     const spacing = 'letterSpacing' in ctx;
     for (const l of this.countryLabels) {
       const fs = l.size * z;
@@ -431,6 +461,8 @@ export class Renderer {
       if (sx + half < 0 || sx - half > this.W || sy + fs < 0 || sy - fs > this.H) continue;
       ctx.font = LABEL_FONT(fs.toFixed(1));
       if (spacing) ctx.letterSpacing = `${(fs * COUNTRY_LABEL.spacing).toFixed(1)}px`;
+      ctx.lineWidth = clamp(fs * COUNTRY_LABEL.outline, 1, 3.5);
+      ctx.strokeText(l.text, sx, sy);
       ctx.fillText(l.text, sx, sy);
     }
     if (spacing) ctx.letterSpacing = '0px';
@@ -514,6 +546,141 @@ export class Renderer {
     ctx.restore();
   }
 
+  // ---------------------------------------------------------------- region hovered in the city panel
+  // Brings the lit regions up and down, once a frame: the one whose Region stat the mouse is on
+  // (g.hoverRegion) fades in, any other fades out and is dropped. One that comes back while still
+  // fading out just fades in again, without a second wave.
+  updateRegionHovers(now) {
+    const g = this.g, want = g.hoverRegion;
+    const dt = clamp(now - (this.hoverAt ?? now), 0, 100);
+    this.hoverAt = now;
+    const list = this.hovers ?? [];
+    if (want >= 0 && this.regionLand[want] && !list.some((h) => h.region === want)) {
+      // The wave starts from the city in the panel; it reaches a band beyond the region's farthest point.
+      const o = g.map.cities[g.hoverCity] ?? g.map.cities[g.regionCities[want][0]];
+      const s = this.regionEdges[want];
+      let far = 0;
+      for (let i = 0; i < s.length; i += 2) far = Math.max(far, Math.hypot(s[i] - o.x, s[i + 1] - o.y));
+      const band = clamp(far * 0.25, 25, 110);
+      list.push({ region: want, x: o.x, y: o.y, t0: now, a: 0, band, reach: far + band });
+    }
+    for (const h of list) {
+      h.a = h.region === want ? Math.min(1, h.a + dt / REGION_HOVER.in) : Math.max(0, h.a - dt / REGION_HOVER.out);
+    }
+    this.hovers = list.filter((h) => h.a > 0 || h.region === want);
+  }
+
+  // Where a lit region is at `now`. e: its brightness (the fade, smoothed); p: 0..1 through the wave,
+  // f: the same eased out (fast, then settling); front: how far the wave has come from the city, in
+  // world units; pulse: a slow breath once the wave is over (1 when it starts, so nothing jumps).
+  regionHoverState(h, now) {
+    const p = clamp((now - h.t0) / REGION_HOVER.spread, 0, 1);
+    const f = 1 - (1 - p) ** 3;
+    const since = Math.max(0, now - h.t0 - REGION_HOVER.spread);
+    return {
+      e: h.a * h.a * (3 - 2 * h.a), p, f, front: h.reach * f,
+      pulse: 1 - 0.14 * (0.5 - 0.5 * Math.cos(since / 380)),
+    };
+  }
+
+  // The lit regions, under the cities and units: the land washed in light and the outline traced in
+  // gold. While the wave spreads, the wash follows a bright crest out of the city, the outline lights
+  // up as far as it has come and flashes where the crest crosses it.
+  drawRegionHover(now) {
+    this.updateRegionHovers(now);
+    if (!this.hovers.length) return;
+    const g = this.g, ctx = this.ctx, c = g.cam, z = c.zoom, dpr = this.dpr;
+    const rgba = (rgb, a) => `rgba(${rgb},${a.toFixed(3)})`;
+    ctx.save();
+    ctx.setTransform(z * dpr, 0, 0, z * dpr, (this.W / 2 - c.x * z) * dpr, (this.H / 2 - c.y * z) * dpr);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    for (const h of this.hovers) {
+      const s = this.regionHoverState(h, now);
+      if (s.e <= 0) continue;
+      const spreading = s.p < 1;
+      const wash = rgba('255,244,205', 0.32 * s.e * s.pulse);
+      if (spreading) {
+        const R = s.front + h.band * 0.5;
+        const grad = ctx.createRadialGradient(h.x, h.y, 0, h.x, h.y, R);
+        grad.addColorStop(0, wash);
+        grad.addColorStop(Math.max(0, (s.front - h.band) / R), wash);
+        grad.addColorStop(s.front / R, rgba('255,250,228', 0.6 * s.e));
+        grad.addColorStop(1, 'rgba(255,250,228,0)');
+        ctx.fillStyle = grad;
+      } else {
+        ctx.fillStyle = wash;
+      }
+      this.fillRegion(ctx, h.region);
+
+      const outline = this.regionOutline[h.region];
+      ctx.save();
+      if (spreading) {
+        ctx.beginPath();
+        ctx.arc(h.x, h.y, s.front, 0, Math.PI * 2);
+        ctx.clip();
+      }
+      // The soft glow starts wide and draws in as the wave settles.
+      ctx.strokeStyle = rgba('150,105,25', 0.45 * s.e * s.pulse);
+      ctx.lineWidth = (7 + 9 * (1 - s.f)) / z;
+      ctx.stroke(outline);
+      ctx.strokeStyle = rgba('255,226,130', 0.95 * s.e);
+      ctx.lineWidth = 2.2 / z;
+      ctx.stroke(outline);
+      ctx.restore();
+      // The flash on the borders: a ring just behind the crest.
+      if (spreading) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(h.x, h.y, s.front, 0, Math.PI * 2);
+        ctx.arc(h.x, h.y, Math.max(0, s.front - h.band * 0.7), 0, Math.PI * 2, true);
+        ctx.clip();
+        ctx.strokeStyle = rgba('255,250,225', 0.9 * s.e * (1 - s.p * 0.6));
+        ctx.lineWidth = 4.5 / z;
+        ctx.stroke(outline);
+        ctx.restore();
+      }
+    }
+    ctx.restore();
+    this.drawRegionHoverRings(now);
+  }
+
+  // Round each city of a lit region, as the wave reaches it, a ring of light spreads on the ground
+  // and fades (under the castles: drawn before them). The city in the panel rings at once.
+  drawRegionHoverRings(now) {
+    const g = this.g, ctx = this.ctx;
+    const far = this.farView(), size = this.citySize(), mr = this.markerRadius();
+    for (const h of this.hovers) {
+      const s = this.regionHoverState(h, now);
+      if (s.e <= 0 || now - h.t0 > REGION_HOVER.spread + REGION_HOVER.ring) continue;
+      for (const ci of g.regionCities[h.region]) {
+        const c = g.map.cities[ci];
+        // When the crest reaches the city: f = d / reach, so p = 1 - cbrt(1 - d / reach).
+        const d = Math.min(1, Math.hypot(c.x - h.x, c.y - h.y) / h.reach);
+        const k = now - h.t0 - (1 - Math.cbrt(1 - d)) * REGION_HOVER.spread;
+        if (k < 0 || k >= REGION_HOVER.ring) continue;
+        const [sx, sy] = this.w2s(c.x, c.y);
+        if (!this.onScreen(sx, sy, 80)) continue;
+        const u = k / REGION_HOVER.ring, grow = 1 - (1 - u) ** 3, a = (1 - u) ** 1.5 * s.e;
+        const ring = () => {
+          ctx.beginPath();
+          if (far) ctx.arc(sx, sy, mr + 3 + grow * 16, 0, Math.PI * 2);
+          else {
+            const rx = size * (0.45 + 0.75 * grow);
+            ctx.ellipse(sx, sy + size * 0.05, rx, rx * 0.37, 0, 0, Math.PI * 2);
+          }
+          ctx.stroke();
+        };
+        ctx.strokeStyle = `rgba(214,160,40,${(0.85 * a).toFixed(3)})`;
+        ctx.lineWidth = 3 * (1 - u) + 1;
+        ring();
+        ctx.strokeStyle = `rgba(255,248,215,${(0.95 * a).toFixed(3)})`;
+        ctx.lineWidth = 1.2;
+        ring();
+      }
+    }
+  }
+
   // Over the cities and units: as the wave reaches each city of the region, a gold ring bursts out
   // of it and "+2/turn", the gold it now pays more, rises from it. The region's name shines in
   // gold, over its faint name on the map (or where that would be, in the strategic view).
@@ -570,31 +737,89 @@ export class Renderer {
     ctx.restore();
   }
 
+  // Where a region's name is on screen, to light it up over its faint name on the map (or where that
+  // would be, in the strategic view): font size fs (at least 16 px, to be read zoomed out), centre
+  // (sx, sy), half its width. Null when it is off screen.
+  regionLabelAt(region) {
+    const l = this.countryLabels[region];
+    if (!l) return null;
+    const fs = Math.max(16, l.size * this.g.cam.zoom);
+    const [sx, sy] = this.w2s(l.x, l.y);
+    const half = (l.w / 2) * fs / l.size;
+    if (sx + half < 0 || sx - half > this.W || sy + fs < 0 || sy - fs > this.H) return null;
+    return { text: l.text, fs, sx, sy, half };
+  }
+
+  // The font of a lit region name, as the map prints it: centred, letters spaced out.
+  setRegionLabelFont(ctx, fs) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = LABEL_FONT(fs.toFixed(1));
+    if ('letterSpacing' in ctx) ctx.letterSpacing = `${(fs * COUNTRY_LABEL.spacing).toFixed(1)}px`;
+    ctx.lineJoin = 'round';
+  }
+
   // The gold name lasts half as long as the glow (REGION_GLOW.ms / 2).
   drawRegionName(region, s) {
     const t = s.t * 2;
     if (t >= 1) return;
-    const l = this.countryLabels[region], z = this.g.cam.zoom, ctx = this.ctx;
-    const fs = Math.max(16, l.size * z);
-    const [sx, sy] = this.w2s(l.x, l.y);
-    const half = (l.w / 2) * fs / l.size;
-    if (sx + half < 0 || sx - half > this.W || sy + fs < 0 || sy - fs > this.H) return;
-    const a = Math.min(1, t / 0.12) * Math.min(1, (1 - t) / 0.35);
+    const at = this.regionLabelAt(region);
+    if (!at) return;
+    const ctx = this.ctx;
     ctx.save();
-    ctx.globalAlpha = a;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = LABEL_FONT(fs.toFixed(1));
-    const spacing = 'letterSpacing' in ctx;
-    if (spacing) ctx.letterSpacing = `${(fs * COUNTRY_LABEL.spacing).toFixed(1)}px`;
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = Math.max(3, fs * 0.12);
+    ctx.globalAlpha = Math.min(1, t / 0.12) * Math.min(1, (1 - t) / 0.35);
+    this.setRegionLabelFont(ctx, at.fs);
+    ctx.lineWidth = Math.max(3, at.fs * 0.12);
     ctx.strokeStyle = 'rgba(40,24,8,0.8)';
-    ctx.strokeText(l.text, sx, sy);
+    ctx.strokeText(at.text, at.sx, at.sy);
     ctx.fillStyle = '#ffd75e';
-    ctx.fillText(l.text, sx, sy);
-    if (spacing) ctx.letterSpacing = '0px';
+    ctx.fillText(at.text, at.sx, at.sy);
+    if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
     ctx.restore();
+  }
+
+  // The names of the regions lit from the city panel, over everything else: gold on a dark edge, in a
+  // warm glow, fading with the region. As it appears the name grows to its size with a slight
+  // overshoot, and a gleam runs once across its letters.
+  drawRegionHoverNames(now) {
+    if (!this.hovers?.length) return;
+    const ctx = this.ctx;
+    for (const h of this.hovers) {
+      const e = this.regionHoverState(h, now).e;
+      if (e <= 0) continue;
+      const at = this.regionLabelAt(h.region);
+      if (!at) continue;
+      const k = now - h.t0;
+      const x = clamp(k / 320, 0, 1) - 1;                   // ease out with overshoot ("back")
+      const scale = 0.88 + 0.12 * (1 + 2.70158 * x ** 3 + 1.70158 * x ** 2);
+      ctx.save();
+      ctx.globalAlpha = e;
+      ctx.translate(at.sx, at.sy);
+      ctx.scale(scale, scale);
+      this.setRegionLabelFont(ctx, at.fs);
+      ctx.shadowColor = 'rgba(255,190,60,0.8)';
+      ctx.shadowBlur = Math.max(6, at.fs * 0.45);
+      ctx.lineWidth = Math.max(3, at.fs * 0.12);
+      ctx.strokeStyle = 'rgba(40,24,8,0.85)';
+      ctx.strokeText(at.text, 0, 0);
+      ctx.shadowColor = 'transparent';
+      const q = (k - 140) / 700;                           // the gleam: 0..1 across, once
+      if (q > 0 && q < 1) {
+        const c = -0.25 + 1.5 * q, w = 0.16;
+        const grad = ctx.createLinearGradient(-at.half, 0, at.half, 0);
+        grad.addColorStop(0, '#ffd75e');
+        grad.addColorStop(clamp(c - w, 0, 1), '#ffd75e');
+        grad.addColorStop(clamp(c, 0, 1), '#fffbea');
+        grad.addColorStop(clamp(c + w, 0, 1), '#ffd75e');
+        grad.addColorStop(1, '#ffd75e');
+        ctx.fillStyle = grad;
+      } else {
+        ctx.fillStyle = '#ffd75e';
+      }
+      ctx.fillText(at.text, 0, 0);
+      if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+      ctx.restore();
+    }
   }
 
   // ---------------------------------------------------------------- frame
@@ -606,6 +831,7 @@ export class Renderer {
     if (this.g.debug) this.g.debug.drawWorld(ctx, this);    // debug overlays such as "show navigation"
     this.drawRegionGlow(now);
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    this.drawRegionHover(now);     // sets its own transform for the land; the city rings are in screen px
     this.drawRally();
     if (this.g.input && this.g.input.showRanges) this.drawCityRanges();
     this.drawPorts();
@@ -613,10 +839,13 @@ export class Renderer {
     this.drawPlans();
     this.drawDocks();
     this.drawUnits(now);
+    this.drawFormation();
     this.drawUnloadAim();
     this.drawBrush();
+    this.drawLabelFrame();
     this.drawEffects(now);
     this.drawSelectionBox();
+    this.drawRegionHoverNames(now);   // over everything
     this.drawMinimap(now);
   }
 
@@ -996,15 +1225,23 @@ export class Renderer {
 
   // Your selected units with Shift-queued orders: a dashed line from each unit through every place it
   // still has to go, a dot at each. Coloured by order, like the click markers: green move, orange
-  // attack-move, red attack.
+  // attack-move, red attack. For your selected transports landing units, also the way of those units
+  // once ashore: from the shore where they land, through what Shift gave them to do.
   drawPlans() {
     const g = this.g, ctx = this.ctx;
-    if (!g.plans.size || !g.selection.size) return;
+    if ((!g.plans.size && !g.landPlans.size) || !g.selection.size) return;
     const lines = PLAN_COLORS.map(() => new Path2D()), dots = PLAN_COLORS.map(() => new Path2D());
+    const routes = [];                    // [start x, start y (world), points]
     for (const id of g.selection) {
-      const pts = g.plans.get(id), u = pts && g.unitById.get(id);
+      const u = g.unitById.get(id);
       if (!u) continue;
-      let [ax, ay] = this.w2s(u.dx, u.dy);
+      if (g.plans.has(id)) routes.push([u.dx, u.dy, g.plans.get(id)]);
+      // Your transports with a landing ahead: the way of the units on board, from the beach where they land.
+      const land = g.landPlans.get(id);
+      if (land) routes.push([land.from[0], land.from[1], land.points]);
+    }
+    for (const [x0, y0, pts] of routes) {
+      let [ax, ay] = this.w2s(x0, y0);
       for (let i = 0; i + 2 < pts.length; i += 3) {
         const k = pts[i] in PLAN_COLORS ? pts[i] : 0;
         const [bx, by] = this.w2s(pts[i + 1], pts[i + 2]);
@@ -1085,6 +1322,24 @@ export class Renderer {
     ctx.restore();
   }
 
+  // Edit map, no brush on: a dashed frame round the region name under the cursor (or being dragged), which
+  // can be dragged to a new place and resized with the wheel.
+  drawLabelFrame() {
+    const g = this.g, inp = g.input;
+    if (!g.mapEdit || g.brush || !inp || this.farView()) return;
+    const region = inp.labelDrag ? inp.labelDrag.region : inp.hoverLabel;
+    const l = region >= 0 && this.countryLabels ? this.countryLabels[region] : null;
+    if (!l) return;
+    const z = g.cam.zoom, [x, y] = this.w2s(l.x, l.y), hw = (l.w / 2) * z + 4, hh = (l.h / 2) * z + 3;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.strokeRect(x - hw, y - hh, hw * 2, hh * 2);
+    ctx.restore();
+  }
+
   // Unload targeting (U): dashed lines from the selected transports with units on board to the cursor.
   drawUnloadAim() {
     const g = this.g, inp = g.input;
@@ -1105,6 +1360,77 @@ export class Renderer {
     ctx.lineWidth = 2;
     ctx.beginPath(); ctx.ellipse(x, y, 11, 6, 0, 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
+  }
+
+  // The right button held with units selected (Input.formationView): a grey, see-through ghost of each unit
+  // where the move will put it, and once the button is dragged, an arrow from the place clicked the way the
+  // formation will face (green for a move, orange for an attack-move, as the click markers).
+  drawFormation() {
+    const view = this.g.input?.formationView();
+    if (!view) return;
+    const g = this.g, ctx = this.ctx, z = g.cam.zoom;
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    for (const p of view.places) {
+      const def = UNITS[UNIT_TYPES[p.u.t]];
+      const rpx = def.size * z;
+      const [sx, sy] = this.w2s(p.x, p.y);
+      if (!this.onScreen(sx, sy, rpx * 4 + 10)) continue;
+      if (rpx < 2.6) {
+        ctx.fillStyle = GHOST;
+        ctx.beginPath(); ctx.arc(sx, sy, Math.max(1.6, rpx), 0, Math.PI * 2); ctx.fill();
+        continue;
+      }
+      const s = rpx / CONE.rx;
+      const sprite = unitSprite(GHOST, p.u.t, def.hero ? g.heroKind(p.u) : null);
+      if (def.naval && p.x < p.u.x) {               // a ship sailing left: mirrored, as drawUnits does
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.scale(-1, 1);
+        ctx.drawImage(sprite, -CONE.cx * s, -CONE.by * s, 64 * s, 64 * s);
+        ctx.restore();
+      } else {
+        ctx.drawImage(sprite, sx - CONE.cx * s, sy - CONE.by * s, 64 * s, 64 * s);
+      }
+    }
+    ctx.restore();
+    if (view.facing === null) return;
+    const [ax, ay] = this.w2s(view.x, view.y);
+    const { x: bx, y: by } = view.cursor;
+    const a = Math.atan2(by - ay, bx - ax), head = 11;
+    const arrow = new Path2D();
+    arrow.moveTo(ax, ay);
+    arrow.lineTo(bx - Math.cos(a) * head * 0.6, by - Math.sin(a) * head * 0.6);
+    const tip = new Path2D();
+    tip.moveTo(bx, by);
+    tip.lineTo(bx - Math.cos(a - 0.45) * head, by - Math.sin(a - 0.45) * head);
+    tip.lineTo(bx - Math.cos(a + 0.45) * head, by - Math.sin(a + 0.45) * head);
+    tip.closePath();
+    const color = view.amove ? '#ff9a3c' : '#9dff6a';
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 4.5;
+    ctx.stroke(arrow);
+    ctx.lineWidth = 2;
+    ctx.stroke(tip);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.2;
+    ctx.stroke(arrow);
+    ctx.fillStyle = color;
+    ctx.fill(tip);
+    ctx.fillStyle = color;
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(ax, ay, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+
+  // Is (x, y) on land (map km)? As the coastline is drawn: the page doesn't have the host's land grid.
+  isLand(x, y) {
+    const m = this.measureCtx || (this.measureCtx = document.createElement('canvas').getContext('2d'));
+    return m.isPointInPath(this.outlines, x, y, 'evenodd');
   }
 
   // One of your units on Hold (H key): a dashed ring at its feet, so you can tell it won't move.
@@ -1424,6 +1750,20 @@ export class Renderer {
         ctx.strokeStyle = `rgba(255,236,160,${st.fade.toFixed(3)})`;
         ctx.lineWidth = 1.6 / s;
         ctx.stroke(this.regionOutline[e.region]);
+      }
+    }
+    // The regions lit from the city panel, in case they are off screen: fading in and out with the map.
+    if (this.hovers?.length) {
+      ctx.setTransform(s * dpr, 0, 0, s * dpr, -b.x0 * s * dpr, -b.y0 * s * dpr);
+      ctx.lineJoin = 'round';
+      for (const h of this.hovers) {
+        const e = this.regionHoverState(h, now).e;
+        if (e <= 0) continue;
+        ctx.fillStyle = `rgba(255,244,205,${(0.45 * e).toFixed(3)})`;
+        this.fillRegion(ctx, h.region);
+        ctx.strokeStyle = `rgba(255,226,130,${(0.95 * e).toFixed(3)})`;
+        ctx.lineWidth = 1.6 / s;
+        ctx.stroke(this.regionOutline[h.region]);
       }
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);

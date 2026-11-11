@@ -9,6 +9,8 @@
 //   honoredDead   a remembrance flame in a brazier
 //   eternalGlory  the honor star in a laurel wreath tied with a red ribbon
 // The tier II traditions are set apart by a double gold border with a crimson line between, and a faint red halo.
+// Technologies in the same style, the subject alone without the shield (drawTechEmblem):
+//   navigation    a compass rose, its north point in the player's colour
 
 const INK = '#1a120a';
 const rgbOf = (hex) => { const n = parseInt(hex.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
@@ -283,16 +285,49 @@ function laurel(small = false) {
   return { box: [-45, -45, 45, 48], layers };
 }
 
+// A compass rose (technology Navigation): four long silver points at the cardinal directions, north
+// enamelled in the player's colour, four short gold ones between them, a gold ring and a gold boss. Each
+// point is cut along its ridge into a lit half and a shaded one.
+function compassRose() {
+  const points = (len, side, from) => {
+    const out = [];
+    for (let k = 0; k < 4; k++) {
+      const a = from + (k * Math.PI) / 2, at = (r, da) => [Math.cos(a + da) * r, Math.sin(a + da) * r];
+      const whole = new Path2D(), shade = new Path2D();
+      whole.moveTo(...at(len, 0)); whole.lineTo(...at(side, Math.PI / 4)); whole.lineTo(0, 0);
+      whole.lineTo(...at(side, -Math.PI / 4)); whole.closePath();
+      shade.moveTo(...at(len, 0)); shade.lineTo(...at(side, Math.PI / 4)); shade.lineTo(0, 0); shade.closePath();
+      out.push({ whole, shade });
+    }
+    return out;
+  };
+  const ring = new Path2D();
+  ring.arc(0, 0, 26, 0, Math.PI * 2);
+  ring.moveTo(21, 0); ring.arc(0, 0, 21, 0, Math.PI * 2, true);
+  const boss = new Path2D(); boss.arc(0, 0, 4.5, 0, Math.PI * 2);
+  const layers = [];
+  for (const p of points(39, 10, -Math.PI / 4)) layers.push({ role: 'accent', path: p.whole }, { role: 'shade', path: p.shade });
+  layers.push({ role: 'accent', path: ring });
+  // North first in the list (k = 0: straight up), drawn in the player's colour.
+  points(49, 15, -Math.PI / 2).forEach((p, k) => layers.push({ role: k ? 'main' : 'enamel', path: p.whole }, { role: 'shade', path: p.shade }));
+  layers.push({ role: 'accent', path: boss });
+  return { box: [-50, -50, 50, 50], layers };
+}
+
 const SUBJECTS = {
   heroes: helmet, mercy: hospitallerCross, brotherhood, honoredDead: () => brazier(), eternalGlory: () => laurel(),
 };
+// Technologies drawn in this style, without the shield (drawTechEmblem).
+const TECH_SUBJECTS = { navigation: compassRose };
 
-// The subject in silver and gold, `size` px across, centred on (cx, cy).
-function drawSubject(ctx, key, color, cx, cy, size) {
-  const { box: [x0, y0, x1, y1], layers } = SUBJECTS[key]();
+// The subject in silver and gold, `size` px across, centred on (cx, cy). Roles of its own here: `enamel`, a
+// part in the player's colour; `shade`, the shaded half of a faceted part (laid flat over it).
+function drawSubject(ctx, key, color, cx, cy, size, subjects = SUBJECTS) {
+  const { box: [x0, y0, x1, y1], layers } = subjects[key]();
   const MAT = {
     main: SILVER, blade: SILVER, accent: GOLD, grip: LEATHER, hole: darken(color, 0.82),
     flame: FLAME, inner: '#fff3b8', ribbon: RED, star: SILVER, leaf: LEAF_GOLD,
+    enamel: [[0, lighten(color, 0.38)], [0.5, color], [1, darken(color, 0.45)]],
   };
   const s = size / Math.max(x1 - x0, y1 - y0);
   const px = (v) => v / s;
@@ -306,11 +341,13 @@ function drawSubject(ctx, key, color, cx, cy, size) {
   ctx.save();
   shadow(ctx, 1.5, 0.6, 1.2, 'rgba(0,0,0,0.6)');
   ctx.fillStyle = '#000';
-  for (const l of layers) if (!['line', 'shine', 'hole', 'inner'].includes(l.role)) ctx.fill(l.path);
+  for (const l of layers) if (!['line', 'shine', 'shade', 'hole', 'inner'].includes(l.role)) ctx.fill(l.path);
   ctx.restore();
   const leaves = layers.filter((l) => l.role === 'leaf');
   for (const l of layers) {
-    if (l.role === 'line') {
+    if (l.role === 'shade') {
+      ctx.fillStyle = 'rgba(20,12,4,0.32)'; ctx.fill(l.path);
+    } else if (l.role === 'line') {
       ctx.save();
       if (l.clip) ctx.clip(l.clip);
       ctx.strokeStyle = 'rgba(30,20,10,0.55)'; ctx.lineWidth = px(l.w); ctx.stroke(l.path);
@@ -398,6 +435,13 @@ export function drawTradition(ctx, key, color, ultimate = false) {
   }[key];
   drawSubject(ctx, key, color, 32, at[0], at[1]);
   ctx.restore();
+}
+
+// A technology's picture in this style (TECH_SUBJECTS) on `ctx`, scaled to 64x64 logical px: the subject
+// alone, no shield, filling the box (the Tech window shows it at 54 px, the results at 24 px).
+export function drawTechEmblem(ctx, key, color) {
+  R = ctx.getTransform().a;
+  drawSubject(ctx, key, color, 32, 32, 58, TECH_SUBJECTS);
 }
 
 // ------------------------------------------------------------------ small pictures (22-24 px)

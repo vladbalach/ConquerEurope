@@ -914,6 +914,11 @@ export class NavGrid {
   // The beach of `landmass` on `sea` nearest to (x, y), within maxDist (only beaches take ships):
   // { land: [x, y] (the shore cell), water: [x, y] (where a ship docks), d }, or null.
   // `ok(wx, wy)`: only docks it accepts count (e.g. not one that another ship uses).
+  // Has `landmass` a beach on `sea`: can a ship on that sea take its units on board?
+  hasBeach(landmass, sea) {
+    return !!this.landing.get(landmass * 65536 + sea)?.length;
+  }
+
   coastNear(x, y, landmass, sea, maxDist = Infinity, ok = null) {
     const list = this.landing.get(landmass * 65536 + sea);
     if (!list) return null;

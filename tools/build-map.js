@@ -65,6 +65,28 @@ const GROWN = [
 // Natural Earth countries whose islands become one island: a smooth outline round them all.
 const MERGED = ['Faeroe Is.'];
 
+// Straits made wider for the game: a line along each from sea to sea ([latitude, longitude], all on the water)
+// and the width of water wanted along it, in km. The coasts within WIDEN_REACH km beyond half that width are
+// pushed back from the line, the nearer the more, so the shores keep their shape; the cities there move with
+// them. Land farther off stays put.
+const WIDENED = [
+  { name: 'Bosporus', width: 12, line: [[41.27, 29.15], [41.22, 29.13], [41.17, 29.07], [41.12, 29.06], [41.08, 29.05], [41.04, 29.02], [41.01, 29.00], [40.96, 28.99]] },
+  { name: 'Dardanelles', width: 14, line: [[39.97, 26.10], [40.02, 26.20], [40.10, 26.36], [40.15, 26.40], [40.25, 26.53], [40.35, 26.66], [40.40, 26.69], [40.46, 26.77]] },
+];
+const WIDEN_REACH = 30;
+
+// Islands taken off the map: every island lying wholly inside one of these outlines ([latitude, longitude]).
+const REMOVED_ISLANDS = [
+  {
+    name: 'the Cyclades and the islands north-east of Euboea',
+    outline: [[39.3, 23.42], [39.38, 23.78], [39.31, 24.47], [39.12, 25.13], [38.78, 25.61], [38.31, 25.66],
+      [38.02, 25.75], [37.84, 26.16], [37.6, 26.45], [37.31, 26.34], [37.14, 26.15], [36.84, 26.34], [36.57, 26.57],
+      [36.21, 26.57], [36.03, 26.27], [35.96, 25.68], [36.08, 24.94], [36.3, 24.4], [36.56, 24.21], [36.96, 24.13],
+      [37.42, 24.17], [37.71, 24.32], [38.05, 24.72], [38.27, 24.81], [38.58, 24.53], [38.83, 24.08], [39.05, 23.62],
+      [39.19, 23.4]],
+  },
+];
+
 // Coasts with less detail than Natural Earth gives (smoothCoast), within `area` (longitude, latitude): every
 // inlet of the mainland that a disc of `radius` km rolling along its coast on the sea can't get into becomes
 // land (a morphological closing, on a raster of SMOOTH_RES km), so the fjords fill up and the coast runs
@@ -515,6 +537,38 @@ for (const g of GROWN) {
   }
 }
 
+// Wider straits (WIDENED): widen(p) is point p pushed back from every strait line it is near.
+const straits = WIDENED.map((s) => {
+  const line = s.line.map(([lat, lon]) => project(lon, lat));
+  const half = s.width / 2;
+  return { line, half, reach: half + WIDEN_REACH, bb: bboxOf(line) };
+});
+function widen(p) {
+  let [x, y] = p;
+  for (const s of straits) {
+    if (x < s.bb.x0 - s.reach || x > s.bb.x1 + s.reach || y < s.bb.y0 - s.reach || y > s.bb.y1 + s.reach) continue;
+    let d = Infinity, qx = 0, qy = 0;            // the nearest point of the line, and how far it is
+    for (let i = 0; i + 1 < s.line.length; i++) {
+      const [ax, ay] = s.line[i], [bx, by] = s.line[i + 1];
+      const dx = bx - ax, dy = by - ay;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)));
+      const e = Math.hypot(x - ax - t * dx, y - ay - t * dy);
+      if (e < d) { d = e; qx = ax + t * dx; qy = ay + t * dy; }
+    }
+    if (d >= s.reach || d === 0) continue;
+    // 0..reach is stretched over half..reach: the shore ends up at least half the width off the line.
+    const to = s.half + d * (s.reach - s.half) / s.reach;
+    x = qx + (x - qx) * to / d;
+    y = qy + (y - qy) * to / d;
+  }
+  return x === p[0] && y === p[1] ? p : [x, y];
+}
+for (const c of cities) [c.x, c.y] = widen([c.x, c.y]);
+
+// Removed islands (REMOVED_ISLANDS): their outlines on the map.
+const removedAreas = REMOVED_ISLANDS.map(({ outline }) => outline.map(([lat, lon]) => project(lon, lat)));
+let removedIslands = 0;
+
 const rect = RECT;
 for (const c of cities) {
   if (c.x < rect.x0 || c.x > rect.x1 || c.y < rect.y0 || c.y > rect.y1) {
@@ -574,7 +628,7 @@ for (const [fIndex, f] of fc.features.entries()) {
   for (const [pIndex, poly] of gp.entries()) {
     if (!poly[0].some(([lon, lat]) => lon > -45 && lon < 80 && lat > 20 && lat < 85)) continue;
     const grow = grown.get(`${fIndex}:${pIndex}`);
-    const place = grow ? (p) => grow(move(p)) : move;
+    const place = grow ? (p) => widen(grow(move(p))) : (p) => widen(move(p));
     const rings = [];
     const rawRings = [];   // unsimplified: neighbouring countries share exact borders, so no slivers when rasterised
     for (let k = 0; k < poly.length; k++) {
@@ -591,6 +645,7 @@ for (const [fIndex, f] of fc.features.entries()) {
       rawRings.push(raw);
     }
     if (!rings.length) continue;
+    if (removedAreas.some((o) => rings[0].every(([x, y]) => inRing(o, x, y)))) { removedIslands++; continue; }
     polys.push({ f: fi, rings, rawRings, bbox: bboxOf(rings[0]), area: ringArea(rings[0]), cities: [] });
     used = true;
   }
@@ -1181,6 +1236,7 @@ console.log(`map.json: ${countries.length} countries, ${cities.length} cities, $
   `${segs.length / 5} border segments, ` +
   `${(fs.statSync(OUT).size / 1024).toFixed(0)} KB`);
 console.log(`bounds: ${JSON.stringify(out.bounds)}`);
+if (removedIslands) console.log(`${removedIslands} islands taken off the map (REMOVED_ISLANDS)`);
 console.log(`navgrid.json: ${nav.w}x${nav.h} cells of ${NAV_CELL} km, ${grid.filter((v) => v).length} on land, ` +
   `${touches.length} land borders, ${(fs.statSync(NAV_OUT).size / 1024).toFixed(0)} KB`);
 const mountainCells = mountain.reduce((s, v) => s + v, 0);

@@ -23,7 +23,7 @@ const DT = 1 / GAME.tickRate;
 const withMountains = (navData, map) => (map.mountains ? { ...navData, mountains: map.mountains.code } : navData);
 
 export class HostEngine {
-  // roster: [{ id, color }] from the lobby server (no nicknames). options: the host's game options
+  // roster: [{ id, color, goldPercent }] from the lobby server (no nicknames). options: the host's game options
   // (shared/options.js). send(to, msg): deliver to a player. onEnded(winner): the game is over, so
   // the page can tell the lobby server.
   // Taking over a game from a host who left: `save` (server/save.js) instead of a roster, and

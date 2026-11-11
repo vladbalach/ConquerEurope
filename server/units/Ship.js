@@ -5,8 +5,9 @@
 // Ships with guns (`armed`: Battleship.js) fight like land units (Unit.update): attack orders,
 // attack-move, hold, and targets of their own. They hit what is within reach of the water: other
 // ships, and units and cities on land, which they shell from the water nearest to them.
-import { Unit } from './Unit.js';
+import { Unit, MAX_QUEUED } from './Unit.js';
 import { DISBAND, NAVAL, COMBAT } from '../../shared/config.js';
+import { shipSpeedFactor } from '../../shared/tech.js';
 
 const DOCK_REACH = 8;        // km from its dock at which a transport lands its units
 const SPOT_MARGIN = 4;       // km inside its reach that an armed ship stops to shell a target on land
@@ -22,6 +23,10 @@ export class Ship extends Unit {
   get naval() { return true; }
   get capacity() { return this.stats.capacity || 0; }
   get armed() { return false; }
+  // Navigation: faster while its owner has it, from the moment it is researched.
+  get moveSpeed() {
+    return this.stats.moveSpeed * shipSpeedFactor(this.game.players.get(this.owner)?.tech);
+  }
 
   // Sailing instead of walking: the sea grid for straight lines, paths and every step. Routes keep
   // out of the range of cities' guns where the sea allows (NavGrid.markDanger).
@@ -160,11 +165,83 @@ export class Ship extends Unit {
 
   // Sail to the dock (x, y), land everyone on board at the coast cell (lx, ly), and send them on:
   // to attack `city` (>= 0), or to (tx, ty): walking, or attack-moving with `amove`.
-  orderUnload({ x, y, lx, ly, land, tx, ty, city, amove }) {
+  // `slots`: { unit id: [x, y] }, the place of each unit on board in the formation of the whole landing
+  // (Game.orderUnload), where it goes once ashore. `then`: what Shift gave them to do (queueLanding).
+  orderUnload({ x, y, lx, ly, land, tx, ty, city, amove, slots = {}, then = [] }) {
     super.orderMove(x, y, false);
-    this.order = { kind: 'unload', x, y, lx, ly, land, tx, ty, city, amove };
+    this.order = { kind: 'unload', x, y, lx, ly, land, tx, ty, city, amove, slots, then };
     this.gather = null;
     this.returnTo = null;
+  }
+
+  // A landing queued with Shift (Game.orderUnload with `queue`) starts as one given then.
+  startQueued(o) {
+    if (o.kind === 'unload') this.orderUnload(o);
+    else super.startQueued(o);
+  }
+
+  // The landing of the units on board: the one it is on its way to, or the one Shift queued for it after
+  // other sails. Null without units on board.
+  get landingOrder() {
+    if (!this.cargo.length) return null;
+    if (this.order.kind === 'unload') return this.order;
+    return this.queue.find((q) => q.kind === 'unload') || null;
+  }
+
+  // With a landing ahead (landingOrder): Shift + an order on land is for the units on board, not the ship.
+  get landing() {
+    return !!this.landingOrder;
+  }
+
+  // Shift + an order on land with a landing ahead (`o`: { kind: 'move' | 'amove', x, y } or { kind: 'attack',
+  // tk, tid }): the units on board carry it out once ashore, in the order given (Game.landUnits). The place
+  // clicked for the landing then only says where the transport lands (park there; Shift + click: go there):
+  // the units set off from the beach for these orders instead of marching there first. With none, they
+  // march there. Storming a city they take it first. Shift + an order on the water stays the ship's own
+  // (queueOrder): it sails there once everyone is ashore.
+  queueLanding(o) {
+    const lo = this.landingOrder;
+    if (!lo) return;
+    const then = lo.then || (lo.then = []);     // a save from before it had none
+    if (then.length < MAX_QUEUED) then.push(o);
+  }
+
+  // Where unit `u` on board will stand once it has done what Shift queued for it so far, as far as we can tell
+  // now (like Unit.planEnd): the place a new queued order starts from. Before any: the beach where it lands
+  // (the place clicked for the landing is only where to land, queueLanding), or storming a city, the city.
+  cargoEnd(u) {
+    const o = this.landingOrder, g = this.game;
+    const then = o.then || [];
+    for (let i = then.length - 1; i >= 0; i--) {
+      const q = then[i];
+      if (q.kind === 'attack') {
+        const t = g.resolve(q.tk, q.tid, this.owner);
+        if (t) return [t.x, t.y];
+      } else {
+        return q.slots?.[u.id] || [q.x, q.y];
+      }
+    }
+    if (o.city >= 0) {
+      const city = g.resolve('c', o.city, this.owner);
+      return city ? [city.x, city.y] : o.slots?.[u.id] || [o.tx, o.ty];
+    }
+    return [o.lx, o.ly];
+  }
+
+  // For the player's map, like planPoints: from the shore where they land ([x, y] first), where the units go
+  // once landed (the enemy city they attack, or the place they march to, unless Shift gave them orders: then
+  // the click was only where to land), then what Shift queued for them.
+  landingPlan() {
+    const o = this.landingOrder;
+    const city = o.city >= 0 ? this.game.resolve('c', o.city, this.owner) : null;
+    const out = [Math.round(o.lx), Math.round(o.ly)];
+    if (city) out.push(2, Math.round(city.x), Math.round(city.y));
+    else if (!o.then?.length) out.push(o.amove ? 1 : 0, Math.round(o.tx), Math.round(o.ty));
+    for (const q of o.then || []) {
+      const p = this.orderPoint(q);
+      if (p) out.push(q.kind === 'attack' ? 2 : q.kind === 'amove' ? 1 : 0, Math.round(p[0]), Math.round(p[1]));
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------- per tick

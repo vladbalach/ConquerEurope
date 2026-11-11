@@ -67,7 +67,7 @@ const METRICS = [
   { key: 'cities', name: 'Cities', tip: 'Cities held at the end of each turn' },
   { key: 'units', name: 'Units', tip: 'Units commanded at the end of each turn (units on board ships too)' },
   { key: 'army', name: 'Army value', tip: 'Gold value of every unit the player commanded at the end of each turn' },
-  { key: 'income', name: 'Gold per turn', tip: 'Gold per turn the player\'s cities paid (Farms and whole regions included; a liberator: their pay)' },
+  { key: 'income', name: 'Gold per turn', tip: 'Gold per turn the player\'s cities paid (Farms and whole regions included; a liberator: their pay), times their gold percentage' },
   { key: 'kills', name: 'Kills', tip: 'Gold value of the enemy units destroyed so far' },
   { key: 'losses', name: 'Losses', tip: 'Gold value of the units lost so far' },
 ];

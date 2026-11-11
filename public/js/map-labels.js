@@ -257,18 +257,22 @@ function findSpot(l, taken, index) {
   return blocked.find((s) => index.at(s.x, s.y) === l.region) || free || { x: l.x, y: l.y };
 }
 
-// labels: [{ region, x, y, w, h }]: (x, y) the preferred centre, w × h the label's box.
+// labels: [{ region, x, y, w, h, fixed }]: (x, y) the preferred centre, w × h the label's box.
 // cities: [{ x0, y0, x1, y1 }], the boxes the names must keep off. index: regionIndex(map).
 // Moves each label's x and y; bigger names choose first, and every placed name is kept off by
-// the ones after it.
+// the ones after it. A `fixed` label (placed by an admin in Edit map) stays where it is, and goes
+// first: the others keep off it.
 export function placeLabels(labels, cities, index) {
   const taken = cities.slice();
-  const order = labels.map((l, i) => i).sort((a, b) => labels[b].h - labels[a].h || a - b);
+  const order = labels.map((l, i) => i)
+    .sort((a, b) => (labels[b].fixed ? 1 : 0) - (labels[a].fixed ? 1 : 0) || labels[b].h - labels[a].h || a - b);
   for (const i of order) {
     const l = labels[i];
-    const spot = findSpot(l, taken, index);
-    l.x = spot.x;
-    l.y = spot.y;
+    if (!l.fixed) {
+      const spot = findSpot(l, taken, index);
+      l.x = spot.x;
+      l.y = spot.y;
+    }
     taken.push({ x0: l.x - l.w / 2, y0: l.y - l.h / 2, x1: l.x + l.w / 2, y1: l.y + l.h / 2 });
   }
   return labels;

@@ -72,7 +72,9 @@ test('starting hands the game to the host\'s browser: a roster without nicknames
   assert.equal(host.gameId, gameId);
   assert.equal(host.roster.length, 3);
   assert.deepEqual(new Set(host.roster.map((r) => r.id)), new Set([host.you, bId, cId]));
-  for (const r of host.roster) assert.deepEqual(Object.keys(r).sort(), ['color', 'id'], 'ids and colours only');
+  for (const r of host.roster) {
+    assert.deepEqual(Object.keys(r).sort(), ['color', 'goldPercent', 'id'], 'ids, colours and gold percentages only');
+  }
   assert.ok(Array.isArray(host.ice.iceServers) && host.ice.iceServers.length, 'ICE servers for WebRTC');
 
   // Connection messages: a player reaches only the host, the host reaches the player it names.
@@ -98,6 +100,31 @@ test('starting hands the game to the host\'s browser: a roster without nicknames
     assert.deepEqual(new Set(r.players.map((p) => p.name)), new Set(NAMES));
     assert.ok(r.players.every((p) => /^#/.test(p.color)));
   }
+});
+
+test("the host sets each player's gold percentage in the waiting room; the host's browser gets it with the roster", async () => {
+  const [a, b] = await Promise.all(['Gold_A', 'Gold_B'].map(connect));
+  await Promise.all([a, b].map((x) => x.waitFor('welcome')));
+  a.send({ t: 'create', title: 'p2p gold' });
+  const ja = await a.waitFor('joined');
+  b.send({ t: 'join', gameId: ja.gameId });
+  const jb = await b.waitFor('joined');
+  await a.waitFor('room', (m) => m.players.length === 2);
+
+  // Not the host: ignored (the list after it shows the server has read it).
+  b.inbox.length = 0;
+  b.send({ t: 'setGoldPercent', player: jb.playerId, percent: 300 });
+  b.send({ t: 'list' });
+  await b.waitFor('games');
+  a.send({ t: 'setGoldPercent', player: jb.playerId, percent: 60 });
+  const room = await b.waitFor('room', (m) => m.players.some((p) => p.goldPercent === 60));
+  assert.deepEqual(room.players.map((p) => [p.id, p.goldPercent]), [[ja.playerId, 100], [jb.playerId, 60]], 'everyone in the room sees them');
+
+  a.send({ t: 'start' });
+  const host = await a.waitFor('host');
+  const { you: bId } = await b.waitFor('connectHost');
+  assert.equal(host.roster.find((r) => r.id === bId).goldPercent, 60, 'by the new, shuffled id');
+  assert.equal(host.roster.find((r) => r.id === host.you).goldPercent, 100);
 });
 
 test('players without a direct link play through the server relay', async () => {

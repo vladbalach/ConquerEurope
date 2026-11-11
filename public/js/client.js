@@ -1,10 +1,11 @@
 // In-game client state: snapshot interpolation, selection, commands, effects.
 import {
   UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES, PRODUCTION_ITEMS, ECONOMY, LIBERATOR, TECHS, TECH_TYPES,
-  NEUTRAL_COLOR, PLAYER_COLOR_NAMES, TRADITIONS, TRADITION_TYPES, HERO, HERO_KINDS, HEALER,
+  NEUTRAL_COLOR, PLAYER_COLOR_NAMES, TRADITIONS, TRADITION_TYPES, HERO, HERO_KINDS, HEALER, NAVAL, GAME,
 } from '/shared/config.js';
-import { liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring, canTrain } from '/shared/tech.js';
-import { sanitizeOptions, citiesToWin, describeOptions } from '/shared/options.js';
+import { formationSlots, formationRole, SHIP_SPACING } from '/shared/formation.js';
+import { liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring, canTrain, shipSpeedFactor } from '/shared/tech.js';
+import { sanitizeOptions, citiesToWin, describeOptions, sanitizeGoldPercent, scaleGoldWhole } from '/shared/options.js';
 import { regionCities, regionHolder } from '/shared/regions.js';
 import { nearestCell } from '/shared/coastline.js';
 import { CARGO_SHIFT, heroKindOf } from '/shared/protocol.js';
@@ -21,7 +22,7 @@ const TICK_SECONDS = 3;      // a clock tick sounds in each of the last seconds 
 export class GameClient {
   constructor({
     map, net, link, gameId, you, title, options, players, ports, beaches, onLeave, debug = null, admin = false, mapState = null,
-    prestart = null,
+    prestart = null, goldPercent = undefined,
   }) {
     this.map = map;
     this.net = net;              // the lobby server: balance, map edits, a duel's Restart
@@ -40,6 +41,9 @@ export class GameClient {
     this.you = you;
     this.title = title;
     this.options = sanitizeOptions(options, map.cities.length);   // victory rules the host picked
+    // Your gold percentage (set by the host in the waiting room): all the gold you receive is scaled by it.
+    // Only yours: the others' would give away who is who.
+    this.goldPercent = sanitizeGoldPercent(goldPercent);
     this.turn = 0;
     this.onLeave = onLeave;
     this.players = new Map();
@@ -68,12 +72,17 @@ export class GameClient {
     this.cityShots = [];
     this.cargo = new Map();          // your transports: ship id -> [{ t, hp }] of the units on board
     this.plans = new Map();          // your units with Shift-queued orders: id -> [kind, x, y, ...], current order first
+    // Your transports with a landing ahead that Shift gave orders for: ship id -> { from: [x, y] the beach where
+    // they land, points: [kind, x, y, ...] where they go from there }.
+    this.landPlans = new Map();
     this.setPorts(ports || []);
     this.setBeaches(beaches);        // before the renderer: it draws them on the map
 
     this.selection = new Set();
     this.selectedCities = new Set();   // own cities; several can be selected at once
     this.inspect = null;
+    this.hoverRegion = -1;             // the region whose stat the mouse is on, in the city panel: lit on the map
+    this.hoverCity = -1;               // the city of that panel: the light spreads from it
     // Goes up whenever the player changes the selection (not when units leave it by dying or going
     // on board). boardRound: the selection version that sent the last board order, or -1 after any
     // other order. Transports clicked in a row by the same selection share its units out.
@@ -302,8 +311,9 @@ export class GameClient {
     if (msg.st !== undefined) this.serverTickMs = msg.st;
     this.turn = msg.turn;
     this.nextTurnAt = msg.next;
-    this.research = msg.r ? { tech: TECH_TYPES[msg.r[0]], progress: msg.r[1] } : null;   // yours, if any
-    this.researchQueue = (msg.rq || []).map((i) => TECH_TYPES[i]);
+    this.research = msg.r ? { tech: TECH_TYPES[msg.r[0]], progress: msg.r[1], cost: msg.r[2] } : null;   // yours, if any
+    this.researchQueue = (msg.rq || []).map(([i]) => TECH_TYPES[i]);
+    this.researchQueueCosts = (msg.rq || []).map(([, cost]) => cost);     // the gold paid for each
     this.myQueues.clear();
     for (const [city, progress, queue, rx, ry, sx, sy, honorPaid] of msg.q) {
       // honorPaid: the honor paid for each queue entry (0: gold), or 0 when all of it was paid in gold.
@@ -324,6 +334,8 @@ export class GameClient {
     for (let i = 0; i < k.length; i += 6) this.docks.set(k[i], { x: k[i + 1], y: k[i + 2], lx: k[i + 3], ly: k[i + 4], load: k[i + 5] === 0 });
     this.plans.clear();
     for (const [id, ...points] of msg.w || []) this.plans.set(id, points);
+    this.landPlans.clear();
+    for (const [id, x, y, ...points] of msg.wl || []) this.landPlans.set(id, { from: [x, y], points });
     for (let i = 0; i < msg.d.length; i += 4) {
       this.effects.deaths.push({ x: msg.d[i], y: msg.d[i + 1], color: this.colorOf(msg.d[i + 2]), t0: now });
     }
@@ -406,6 +418,22 @@ export class GameClient {
         const skipped = msg.skipped ? ` · ${msg.skipped} more don't fit and stay` : '';
         this.hud.feed(`${msg.count} unit${msg.count === 1 ? ' heads' : 's head'} to the transport${skipped}`);
       }
+    } else if (msg.kind === 'autoload') {
+      // Autoload (L): how many of your units head to transports (only you get this).
+      if (msg.reason === 'full') {
+        this.hud.feed('The selected transports are full', 'bad');
+      } else if (msg.reason === 'none') {
+        this.hud.feed(`No idle units within ${NAVAL.autoloadRange} km of the selected transports that they can take on board`, 'bad');
+      } else if (msg.reason === 'noship') {
+        this.hud.feed(`No transport with room within ${NAVAL.autoboardRange} km of the selected units ` +
+          '(only transports lying idle or waiting at a beach come)', 'bad');
+      } else if (msg.reason === 'assigned') {
+        this.hud.feed('Every selected unit is already on its way to a transport');
+      } else {
+        const left = msg.left ? ` · ${msg.left} more find no place and stay` : '';
+        this.hud.feed(`Autoload: ${msg.count} unit${msg.count === 1 ? ' heads' : 's head'} to ` +
+          `${msg.ships === 1 ? 'a transport' : `${msg.ships} transports`}${left}`);
+      }
     } else if (msg.kind === 'rally') {
       // A right-click on the water with cities selected that can't send ships there.
       this.hud.feed(msg.reason === 'inland' ? 'A rally point on the water is for ships: only coastal cities have one'
@@ -420,7 +448,8 @@ export class GameClient {
     } else if (msg.kind === 'researched') {
       const def = TECHS[msg.tech];
       const what = msg.tech === 'seafaring' ? ': coastal cities build transports (B), and your units can go on board'
-        : msg.tech === 'gunnery' ? `: coastal cities build battleships (${UNITS.battleship.hotkey})` : '';
+        : msg.tech === 'gunnery' ? `: coastal cities build battleships (${UNITS.battleship.hotkey})`
+          : msg.tech === 'navigation' ? `: your ships sail ${TECHS.navigation.speedPercent}% faster` : '';
       this.hud.feed(`Research complete: ${def.name}${def.levels.length > 1 ? ` ${msg.level}` : ''}${what}`, 'good');
       playSound('tech-learned');
     } else if (msg.kind === 'liberator') {
@@ -638,9 +667,13 @@ export class GameClient {
   }
 
   // A unit's numbers (UNITS). A Hero has its own HP and damage but the speed and range of its kind, which
-  // its snapshot flags carry (shared/protocol.js).
+  // its snapshot flags carry (shared/protocol.js). A ship is faster while its owner has Navigation.
   unitStats(u) {
     const def = UNITS[UNIT_TYPES[u.t]];
+    if (def.naval) {
+      const f = shipSpeedFactor(this.players.get(u.owner)?.tech);
+      return f === 1 ? def : { ...def, moveSpeed: Math.round(def.moveSpeed * f * 10) / 10 };
+    }
     if (!def.hero) return def;
     const kind = UNITS[this.heroKind(u)];
     return { ...def, moveSpeed: kind.moveSpeed, attackRange: kind.attackRange };
@@ -809,6 +842,8 @@ export class GameClient {
 
   // Gold every player's cities pay at the end of the turn (Farms included), by player id.
   // City owners and upgrades of the whole map are in every snapshot, so this is known for everyone.
+  // Yours is scaled by your gold percentage, as the host pays it; the others' gold percentages are
+  // secret, so theirs are shown as their cities pay it.
   incomes() {
     const out = new Map();
     for (let i = 0; i < this.cityOwner.length; i++) {
@@ -820,6 +855,7 @@ export class GameClient {
     for (const p of this.players.values()) {
       if (p.liberator) out.set(p.id, liberatorIncome(p.tech) + (flows.gain.get(p.id) || 0));
     }
+    if (out.has(this.you)) out.set(this.you, scaleGoldWhole(out.get(this.you), this.goldPercent));
     return out;
   }
 
@@ -918,11 +954,13 @@ export class GameClient {
   startResearch(key) { this.link.send({ t: 'research', tech: key }); }
   // Cancels that level of `key`, running or queued, and the higher levels of it queued after it.
   cancelResearch(key, level) { this.link.send({ t: 'cancelResearch', tech: key, level }); }
-  // The research running and the queue after it, in order: [{ tech, level }].
+  // The research running and the queue after it, in order: [{ tech, level, cost }] (cost: the gold paid,
+  // what cancelling gives back).
   researchPlan() {
     const levels = { ...this.myTech() };
     const keys = this.research ? [this.research.tech, ...this.researchQueue] : [];
-    return keys.map((tech) => ({ tech, level: levels[tech] = (levels[tech] || 0) + 1 }));
+    const costs = this.research ? [this.research.cost, ...(this.researchQueueCosts || [])] : [];
+    return keys.map((tech, i) => ({ tech, level: levels[tech] = (levels[tech] || 0) + 1, cost: costs[i] ?? 0 }));
   }
   // The level of `key` once the research running and the queue are done.
   plannedTechLevel(key) {
@@ -980,10 +1018,15 @@ export class GameClient {
   }
 
   // ---------------------------------------------------------------- map editing (admins)
-  // Edit map mode: cities can be dragged to new places. The server checks admin rights again.
+  // Edit map mode: cities and region names can be dragged to new places. The server checks admin rights again.
   setMapEdit(on) {
+    if (!on && this.mapEdit && this.input) this.input.flushLabelWheel();   // a name being resized is kept
     this.mapEdit = !!on && this.admin;
-    if (!this.mapEdit && this.input) this.input.cityDrag = null;
+    if (!this.mapEdit && this.input) {
+      this.input.cityDrag = null;
+      if (this.input.labelDrag) { this.input.labelDrag = null; this.onLabelEdit(); }   // back where it was
+      this.input.hoverLabel = -1;
+    }
     if (!this.mapEdit) this.brush = null;
     this.hud?.mapEditChanged();
   }
@@ -1008,6 +1051,25 @@ export class GameClient {
   // Mountains were painted on or off (main.js has put them into the map): draw them anew.
   onMountainEdit() {
     this.renderer.mountainsChanged();
+  }
+
+  // Edit map: region `region`'s name put at (edit.x, edit.y), its centre in map units, edit.scale times its own
+  // size; or given back to automatic placing (edit null). Shown at once; unless `send` is false (a resize
+  // still going on) the server saves it and tells everyone.
+  editLabel(region, edit, send = true) {
+    if (!this.admin || !this.mapEdit || !this.map.countries[region]) return;
+    const name = this.map.countries[region].n;
+    this.map.labelEdits = this.map.labelEdits || {};
+    if (edit) this.map.labelEdits[name] = edit;
+    else delete this.map.labelEdits[name];
+    this.onLabelEdit();
+    if (send) this.net.send(edit ? { t: 'mapLabel', region, ...edit } : { t: 'mapLabel', region, reset: true });
+  }
+
+  // A region's name was moved or resized (main.js has put it into the map): place the names anew.
+  onLabelEdit() {
+    this.renderer.placeCountryLabels(this.map);
+    this.renderer.mapKey = '';
   }
 
   // Drop of a dragged city. Shown at once; the server answers with the final place (snapped onto
@@ -1183,14 +1245,44 @@ export class GameClient {
   }
 
   // `queue` (Shift held): the units do it after the orders they already have, one after another.
-  commandMove(x, y, amove, queue = false) {
+  // `facing`: the way their formation faces there, in radians (the right button dragged); null: the way they go.
+  commandMove(x, y, amove, queue = false, facing = null) {
     const ids = [...this.selection];
     if (!ids.length) return;
     this.boardRound = -1;
     this.link.send({
       t: 'move', ids, x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, amove: !!amove, ...(queue ? { queue: true } : {}),
+      ...(Number.isFinite(facing) ? { f: Math.round(facing * 1000) / 1000 } : {}),
     });
     this.marker(x, y, amove ? '#ff9a3c' : '#9dff6a');
+  }
+
+  // Where your selected units would go for a move to (x, y) (commandMove): [{ u, x, y }], for the grey
+  // ghosts shown while the right button is held. The formations are laid out as the host lays them out
+  // (shared/formation.js), and grouped the same way: land units in one (with Shift, those busy with orders in
+  // another, from where their orders end), ships in another. The page
+  // doesn't know the land grid: a place that falls in the sea or the mountains (which the host moves to
+  // open ground near it) is shown where the formation puts it. Transports that will land their units
+  // (a move onto land) are left out.
+  formationPreview(x, y, facing = null, queue = false) {
+    const units = [...this.selection].map((id) => this.unitById.get(id)).filter((u) => u && u.owner === this.you);
+    const role = (u) => formationRole(UNIT_TYPES[u.t], this.heroKind(u));
+    const end = (u) => {
+      const p = queue ? this.plans.get(u.id) : null;
+      return p && p.length >= 3 ? [p[p.length - 2], p[p.length - 1]] : [u.x, u.y];
+    };
+    const out = [];
+    const add = (group, spacing) => {
+      for (const [u, [px, py]] of formationSlots(group, x, y, { spacing, facing, pos: end, role })) out.push({ u, x: px, y: py });
+    };
+    const land = units.filter((u) => !this.isNaval(u.t));
+    const onLand = this.renderer.isLand(x, y);
+    const ships = units.filter((u) => this.isNaval(u.t) && !(onLand && u.flags >> CARGO_SHIFT && hasSeafaring(this.myTech())));
+    const later = queue ? land.filter((u) => this.plans.has(u.id) || u.flags & 3) : [];   // queued orders, moving or attacking
+    add(later, GAME.formationSpacing);
+    add(land.filter((u) => !later.includes(u)), GAME.formationSpacing);
+    add(ships, SHIP_SPACING);
+    return out;
   }
 
   commandAttack(k, id, x, y, queue = false) {
@@ -1298,6 +1390,21 @@ export class GameClient {
     this.boardRound = this.selectionVersion;
     this.link.send({ t: 'board', ship: ship.id, ids, keep });
     this.marker(ship.x, ship.y, '#7fd8ff');
+  }
+
+  // Autoload (L, the Autoload and Board buttons), each unit to the nearest transport with room: selected land
+  // units find your transports around them (within NAVAL.autoboardRange), whatever transports are selected
+  // with them; selected transports alone take your idle land units around them (within NAVAL.autoloadRange).
+  // The host says how many go.
+  commandAutoload() {
+    const land = this.selectedLandUnits(), ships = land.length ? [] : this.selectedTransports();
+    if ((!ships.length && !land.length) || !this.hasSeafaring(true)) return;
+    this.boardRound = -1;
+    this.link.send({ t: 'autoload', ids: land.length ? land : ships });
+    for (const id of ships) {
+      const u = this.unitById.get(id);
+      if (u) this.marker(u.x, u.y, '#7fd8ff');
+    }
   }
 
   // Unload button (U): the next click on land or a city picks where the units go ashore.

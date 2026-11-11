@@ -18,12 +18,15 @@
 //   in the server's land grid and map (`mountains` in /map.json), in every game (its host's grid) and
 //   in every browser. They are saved to server/data/mountain-edits.json (grid cells painted on, and
 //   cleared) and put back on top of the built mountains after a restart or a rebuild.
+// - A region's name can be moved and resized, or given back to automatic placing. It takes effect at once
+//   in every browser; it is saved to server/data/label-edits.json (by region name: { x, y, scale }) as
+//   `labelEdits` in /map.json, and holds after restarts and rebuilds.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { NavGrid } from './nav.js';
 import { markCityObstacles } from './City.js';
-import { CITY, NAVAL } from '../shared/config.js';
+import { CITY, NAVAL, LABEL_EDIT } from '../shared/config.js';
 import { decodeMask, encodeMask, MOUNTAIN_RULES } from '../shared/mountains.js';
 
 const SNAP_DIST = 40;                    // km: a drop in the sea (or the mountains) this close to open land lands there
@@ -37,7 +40,7 @@ export { markCityObstacles };
 
 export class MapEditor {
   // map: the server's map object (shared with every game); nav: the shared NavGrid;
-  // games(): the running games; files: { root, map, nav, positions, coastal, beaches, mountains } paths.
+  // games(): the running games; files: { root, map, nav, positions, coastal, beaches, mountains, labels } paths.
   constructor({ map, nav, games, files }) {
     this.map = map;
     this.nav = nav;
@@ -45,6 +48,7 @@ export class MapEditor {
     this.files = files;
     this.positions = this.loadJson(files.positions);
     this.coastal = this.loadJson(files.coastal);   // city name -> true (coastal) or false (inland)
+    this.labels = this.loadJson(files.labels);     // region name -> { x, y, scale } of its name on the map
     const edits = this.loadJson(files.beaches);
     this.beachEdits = { beach: new Set(edits.beach || []), cliff: new Set(edits.cliff || []) };
     const peaks = this.loadJson(files.mountains);
@@ -58,6 +62,7 @@ export class MapEditor {
     this.applyCoastal();
     this.applyBeachEdits();
     this.applyMountainEdits();
+    this.applyLabelEdits();
     if (!nav.obstacle) markCityObstacles(nav, map.cities, map);   // beaches to paint on
   }
 
@@ -121,6 +126,12 @@ export class MapEditor {
     this.json = null;
   }
 
+  // Region names an admin placed go to the map (/map.json), so every browser prints them there.
+  applyLabelEdits() {
+    this.map.labelEdits = { ...this.labels };
+    this.json = null;
+  }
+
   applyPositions() {
     this.map.cities.forEach((c) => {
       const p = this.positions[c.n];
@@ -140,7 +151,7 @@ export class MapEditor {
   }
 
   // ---------------------------------------------------------------- messages from browsers
-  // A map-editing message ('mapMove', 'mapCoast', 'mapBeach', 'mapMountain' or 'mapRebuild'). Admins only: anyone else gets an error and
+  // A map-editing message ('mapMove', 'mapCoast', 'mapBeach', 'mapMountain', 'mapLabel' or 'mapRebuild'). Admins only: anyone else gets an error and
   // nothing changes, whatever their page shows. `clients` are all connected clients
   // ({ name, admin, send }). Returns a promise that settles when the request is done.
   handle(client, msg, clients) {
@@ -184,6 +195,13 @@ export class MapEditor {
       const res = this.paintMountains(msg.pts, msg.r, msg.on);
       if (res.error) client.send({ t: 'error', msg: res.error });
       else if (res.cells.length) sendAll({ t: 'mountainEdit', cells: res.cells, on: msg.on });
+      return Promise.resolve();
+    }
+
+    if (msg.t === 'mapLabel') {
+      const res = this.editLabel(msg.region, msg);
+      if (res.error) client.send({ t: 'error', msg: res.error });
+      else sendAll({ t: 'labelEdit', region: msg.region, edit: res.edit });
       return Promise.resolve();
     }
 
@@ -249,6 +267,29 @@ export class MapEditor {
     this.applyCoastal();
     for (const g of this.games()) g.setPortOverride(id, value);
     return { coastal: value };
+  }
+
+  // The name of region `region` put at (msg.x, msg.y), its centre in map units, msg.scale times the size it
+  // gets by itself (within LABEL_EDIT); or, with msg.reset, given back to automatic placing.
+  // Returns { edit } ({ x, y, scale }, or null when automatic) or { error }.
+  editLabel(region, msg) {
+    const co = Number.isInteger(region) ? this.map.countries[region] : null;
+    if (!co) return { error: 'No such region' };
+    if (msg.reset === true) {
+      delete this.labels[co.n];
+    } else {
+      const x = Number(msg.x), y = Number(msg.y), scale = Number(msg.scale);
+      if (![x, y, scale].every(Number.isFinite)) return { error: 'Invalid request' };
+      const b = this.map.bounds, clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+      this.labels[co.n] = {
+        x: r1(clamp(x, b.x0, b.x1)),
+        y: r1(clamp(y, b.y0, b.y1)),
+        scale: Math.round(clamp(scale, LABEL_EDIT.minScale, LABEL_EDIT.maxScale) * 100) / 100,
+      };
+    }
+    if (this.files.labels) this.saveJson(this.files.labels, this.labels);
+    this.applyLabelEdits();
+    return { edit: this.labels[co.n] || null };
   }
 
   // The beach brush: every coast cell within r km of the points becomes a beach (on) or a cliff.
@@ -363,6 +404,7 @@ export class MapEditor {
     Object.assign(this.nav, NavGrid.load(this.files.nav));
     this.builtMountains = this.map.mountains?.code || '';
     this.applyMountainEdits();         // the same
+    this.applyLabelEdits();            // the same
     markCityObstacles(this.nav, this.map.cities, this.map);
     for (const g of this.games()) {
       this.map.cities.forEach((c, i) => {

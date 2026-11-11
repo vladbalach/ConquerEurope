@@ -104,6 +104,57 @@ test('every unit of a big group order has its way at once', () => {
   assert.ok(units.every((u) => u.route), 'all on their way after one tick');
 });
 
+// A big army round Amsterdam sent to Berlin (as attack-move) used to follow one path, planned for the unit
+// in its middle: every unit walked to that path's first corner, even with nothing in its own way, and
+// some never got out of the crowd there. Now each unit goes its own way.
+test('a big group order sends each unit its own way, not through one gathering point', () => {
+  const { game, a, spawn, run } = setup();
+  for (const c of game.cities) c.owner = a.id;           // nobody in the way to fight
+  game.checkCityVictory = () => {};                       // ...and holding every city doesn't end the game
+  game.recount();
+  const ams = city('Amsterdam'), land = nav.landmass(ams.x, ams.y);
+  const units = [];
+  for (let i = -6; i <= 6; i++) {
+    for (let j = -6; j <= 6; j++) {
+      const x = ams.x + 40 + i * 14, y = ams.y - 30 + j * 14;
+      if (nav.landmass(x, y) === land && nav.walkable(x, y) && Math.hypot(x - ams.x, y - ams.y) > 20) units.push(spawn(a.id, 'infantry', x, y));
+    }
+  }
+  const to = city('Berlin');
+  game.handleCommand(a, { t: 'move', ids: units.map((u) => u.id), x: to.x + 40, y: to.y + 40, amove: true });
+  const straight = units.filter((u) => nav.clear(u.x, u.y, u.order.x, u.order.y));
+  assert.ok(straight.length > units.length / 2, `most can walk straight there (${straight.length} of ${units.length})`);
+  assert.ok(straight.every((u) => u.route && !u.route.pts), 'and they do, with no waypoint on the way');
+  const firsts = new Map();
+  for (const u of units) {
+    const p = u.route?.pts?.[0];
+    if (p) firsts.set(`${p[0]},${p[1]}`, (firsts.get(`${p[0]},${p[1]}`) || 0) + 1);
+  }
+  const most = Math.max(0, ...firsts.values());
+  // Neighbours may share a corner (a path found for one serves the others within 50 km), the army may not.
+  assert.ok(most <= units.length / 4, `no point the whole army heads for first (${most} of ${units.length} share one)`);
+  for (let t = 0; t < 60 && units.some((u) => u.order.kind !== 'idle'); t++) run(1);
+  assert.equal(units.filter((u) => u.order.kind !== 'idle').length, 0, 'every unit gets there');
+});
+
+test('no place in a group\'s formation is inside a city\'s walls', () => {
+  const { game, a, spawn, run } = setup();
+  const berlin = game.cities.find((c) => c.name === 'Berlin');
+  berlin.owner = a.id;
+  const units = [];
+  for (let i = 0; i < 40; i++) {
+    const x = berlin.x + 60 + (i % 8) * 14, y = berlin.y - 40 + Math.floor(i / 8) * 14;
+    if (nav.walkable(x, y)) units.push(spawn(a.id, 'infantry', x, y));
+  }
+  game.handleCommand(a, { t: 'move', ids: units.map((u) => u.id), x: berlin.x, y: berlin.y });
+  for (const u of units) {
+    const d = Math.hypot(u.order.x - berlin.x, u.order.y - berlin.y);
+    assert.ok(d >= berlin.r + u.r, `place ${d.toFixed(1)} km from the centre: outside the walls`);
+  }
+  for (let t = 0; t < 30 && units.some((u) => u.order.kind !== 'idle'); t++) run(1);
+  assert.equal(units.filter((u) => u.order.kind !== 'idle').length, 0, 'nobody is left pressed against the walls');
+});
+
 // A packed crowd next to a city, on hold (nobody walks off): units 12 km wide, 9 km apart, on land
 // and outside the walls.
 function crowd(name) {

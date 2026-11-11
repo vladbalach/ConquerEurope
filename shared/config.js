@@ -112,7 +112,7 @@ export const UNITS = {
     reload: 1.5,
     attackRange: 60,
     moveSpeed: 32,
-    accelTime: 1.5,
+    accelTime: 0.75,
     size: 12,
     hpRegen: 1,
     harbourFactor: 2,
@@ -158,6 +158,8 @@ export const NAVAL = {
   editPortRange: 100, // Edit map can make a city coastal when the sea is at most this far
   boardRadius: 30,    // units this close to their transport go on board
   returnRange: 150,   // a transport that lay at anchor this close to the beach it loads at sails back afterwards
+  autoloadRange: 200, // Autoload: a transport takes your idle land units this close to it on board
+  autoboardRange: 500, // Autoload with land units selected: they look for your transports this close to them
   harbourRange: 40,   // a ship this close to the pier of one of its owner's coastal cities is in harbour...
   harbourRegen: 5,    // ...where it regains this much HP per second instead of its hpRegen (a ship with a
                       // harbourFactor, the battleship: that many times its hpRegen instead)
@@ -260,7 +262,7 @@ export const TRADITIONS = {
   mercy: { name: 'Order of Mercy', cost: 1500, time: 30 },
   brotherhood: { name: 'Brotherhood of Arms', cost: 1500, time: 30, barracksHonor: 30, barracksBuildSpeed: 2 },
   honoredDead: { name: 'Honored Dead', cost: 1500, time: 30, lossShare: 0.25 },
-  eternalGlory: { name: 'Eternal Glory', cost: 4000, time: 120, ultimate: true, unitHonorFactor: 2 },
+  eternalGlory: { name: 'Eternal Glory', cost: 4000, time: 120, ultimate: true, unitHonorFactor: 3 },
 };
 // Order matters: it is the tradition id used on the network.
 export const TRADITION_TYPES = ['heroes', 'mercy', 'brotherhood', 'honoredDead', 'eternalGlory'];
@@ -299,6 +301,8 @@ export const LIBERATOR = {
   goldPerTurn: 20,            // paid to a liberator at the end of every turn
   cooldownTurns: 2,           // turns between two cities taken this way
   protectedCities: 5,         // a player holding this many cities or fewer can't have one taken this way
+  rebellionCost: 0.5,         // Rebellion technologies ordered while a liberator cost this share of their price
+                              // (rounded up); ordered before falling, the full price (and refunds give back what was paid)
 };
 
 // ------------------------------------------------------------------ technologies
@@ -307,7 +311,8 @@ export const LIBERATOR = {
 //  levels: cost and research time of every level, in order (so the number of levels is the maximum).
 //
 //  Tab 'rebellion' exists only with the game option Death: Liberator. Its technologies can be
-//  researched at any time, but work only while the player is a liberator (see LIBERATOR).
+//  researched at any time, but work only while the player is a liberator (see LIBERATOR). A liberator
+//  pays only LIBERATOR.rebellionCost of their price.
 //    supporters  +goldPerTurnPerLevel liberator gold per turn for every level
 //    influencer  a liberator marks ("influences") cities, one per turn, and liberates them all at once:
 //                when as many are marked as the limit, or earlier on request. The limit is 1 without
@@ -319,6 +324,8 @@ export const LIBERATOR = {
 //  Tab 'sea' exists in every game; its technologies work as soon as they are researched.
 //    seafaring   coastal cities build transports, and units go on board them and land from them
 //    gunnery     coastal cities build battleships (UNITS.battleship)
+//    navigation  every ship of the player sails speedPercent percent faster (transports and battleships,
+//                those already at sea too; a battleship still needs its accelTime to reach full speed)
 //
 //  requires: a technology that must be researched, or ordered before it, first. Cancelling that one
 //  cancels this one too (its gold comes back).
@@ -326,14 +333,14 @@ const levels = (n, cost, time) => Array.from({ length: n }, (_, i) => ({ cost: A
 export const TECHS = {
   supporters: {
     tab: 'rebellion', name: 'Supporters', goldPerTurnPerLevel: 20,
-    levels: levels(3, [100, 180, 260], 120),
+    levels: levels(3, 120, 120),
   },
   influencer: {
     tab: 'rebellion', name: 'Influencer', citiesPerLevel: 1,
     levels: levels(3, 100, 120),
   },
   smuggling: {
-    tab: 'rebellion', name: 'Smuggling', citiesPerLevel: 1, share: 0.5,
+    tab: 'rebellion', name: 'Smuggling', citiesPerLevel: 1, share: 1,
     levels: levels(3, 30, 60),
   },
   seafaring: {
@@ -344,9 +351,13 @@ export const TECHS = {
     tab: 'sea', name: 'Gunnery', requires: 'seafaring',
     levels: levels(1, 150, 60),
   },
+  navigation: {
+    tab: 'sea', name: 'Navigation', requires: 'seafaring', speedPercent: 20,
+    levels: levels(1, 120, 45),
+  },
 };
 // Order matters: it is the technology id used on the network.
-export const TECH_TYPES = ['supporters', 'influencer', 'smuggling', 'seafaring', 'gunnery'];
+export const TECH_TYPES = ['supporters', 'influencer', 'smuggling', 'seafaring', 'gunnery', 'navigation'];
 // Tabs of the Tech window, in order (the window opens on the first). `death`: the tab exists only
 // with this game option.
 export const TECH_TABS = [
@@ -371,6 +382,11 @@ export const GAME = {
   // host leaves, another player's browser takes the game over from the last one, so at most this much is lost.
   checkpointEvery: 5,
 };
+
+// ------------------------------------------------------------------ map editing
+//  Edit map (admins): a region's name can be dragged to a new place and resized with the mouse wheel.
+//  Its size stays between these multiples of the size it gets by itself (from the region's area).
+export const LABEL_EDIT = { minScale: 0.3, maxScale: 4 };
 
 // ------------------------------------------------------------------ colours
 export const PLAYER_COLORS = [

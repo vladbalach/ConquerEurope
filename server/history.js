@@ -13,6 +13,7 @@
 // Runs in the host's browser too (served as /sim/): no Node-only modules here.
 import { UNITS } from '../shared/config.js';
 import { liberatorIncome } from '../shared/tech.js';
+import { scaleGoldWhole } from '../shared/options.js';
 
 // The numbers kept for every player in every frame, in this order (results.js reads them by name).
 export const SERIES = ['cities', 'units', 'army', 'income', 'kills', 'losses'];
@@ -80,7 +81,7 @@ export class History {
     const p = [];
     for (const pl of game.players.values()) {
       this.roster.set(pl.id, pl.color);
-      const gold = pl.liberator ? liberatorIncome(pl.tech) : income.get(pl.id) || 0;
+      const gold = scaleGoldWhole(pl.liberator ? liberatorIncome(pl.tech) : income.get(pl.id) || 0, pl.goldPercent);
       p.push(pl.id, pl.cityCount, pl.unitCount, round(army.get(pl.id) || 0), round(gold), round(pl.kills), round(pl.losses));
     }
     this.frames.push({ t: turn, s: Math.round(game.time), o: own, p });

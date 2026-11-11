@@ -1,5 +1,112 @@
 # Patch notes
 
+## 11 November 2026: Smoother big battles
+
+- **No more stutter with a big army selected:** the panel of selected units was built again from scratch every time
+  one of them died: with 470 units selected that took about 18 ms, a whole frame, and in a battle it happened up to
+  10 times a second. Now only the fallen units' icons leave the panel (about 2 ms).
+
+## 11 November 2026: Eternal Glory costs more
+
+- **Eternal Glory:** a unit paid with honor now costs **3 times its gold cost**, not 2 (Infantry 36, Archers 30,
+  Cavalry 60, Knight 450, Transport 30, Battleship 600).
+
+## 11 November 2026: Formations
+
+- **See where they go:** hold the right button with units selected and grey, see-through ghosts of your units show
+  where each of them will stand. Let go to give the move; Esc while holding cancels it.
+- **Turn the formation:** drag while holding the right button and the formation turns to face the way you drag; an
+  arrow shows it. Without a drag it faces the way the group goes, as before. Works with A (attack-move) and Shift
+  (queued moves) too.
+- **Infantry in front, archers behind, cavalry on the wings:** a mixed group now lines up with the infantry in front,
+  the archers in the rows behind it and Healers at the very back. Cavalry and knights split into two wings on the left
+  and right. A Hero stands with its kind. At sea, battleships sail ahead of the transports.
+- **Big armies keep their formation:** each unit keeps its place once there. Pushed off it by units walking through,
+  or held up on the way by the crowd, it walks back to it. Before, a big army ended in a mixed crowd: units stopped
+  wherever the crowd held them up and never got to their places.
+- **One formation per order:** a whole army sent somewhere forms one formation, however spread out it is. Before,
+  parts more than 150 km apart each formed their own round the same place, on top of each other.
+- **Units at their places make way:** your units standing in formation step aside for your units walking through,
+  and close up behind them.
+- A move order is now given when you let go of the right button, not when you press it. Attacks, going on board and
+  rally points still happen on the press.
+
+## 11 November 2026: Gold percentage, start gold
+
+- **Gold percentage per player:** in the waiting room the host sets a percentage for each player, next to their name
+  (100% by default, 10–500%), to even out players of different strength: less gold for a strong player, more for a
+  weaker one. The gold the player earns in the game is scaled by it: city pay every turn (regions and Farms
+  included), liberator pay and smuggled gold, and kill gold. The start gold is the same for everyone, and refunds
+  give back exactly what was paid.
+- **Start gold** is a new game option in the waiting room: the gold every player starts with (50 by default).
+- Everyone in the waiting room sees the percentages that are not 100%. In the game you see only your own: the feed
+  tells you at the start, your income in the top bar includes it, and the gold tooltip and F1 → Economy mention it.
+  Other players' percentages stay secret, so they can't tell who is who.
+
+## 11 November 2026: Autoload
+
+- **Navigation:** a new technology on the Sea tab of the Tech window (120 gold, 45 s). All your ships sail 20%
+  faster, transports and battleships alike, the ones already at sea too. It needs Seafaring first, like Gunnery.
+  A battleship still takes 1.5 s to gather speed after a stop, but its full speed is higher.
+- **Smuggling takes it all:** a liberator now gets the whole income of each city they smuggle from, not half of it.
+  Its owner gets nothing from that city while the mark lasts.
+- **Rebellion technologies at half price for the fallen:** as a liberator you pay half for Supporters, Influencer and
+  Smuggling (the Tech window shows the full price struck out). Levels ordered before you fell keep the price you
+  paid, and cancelling always gives back exactly what was paid. Sea technologies cost the same for everyone.
+- **Supporters costs 120 gold per level** (it was 100 / 180 / 260): 60 per level as a liberator.
+- **Autoload (L):** a new button next to Unload in the panel of your transports. Press it and the selected transports
+  take your idle land units within 200 km of them on board, with no need to select the troops. Select a whole fleet
+  and it shares out the army around it: each unit goes to the nearest transport that still has room, and each
+  transport sails to the free beach nearest to its own share, so the fleet spreads along the shore instead of
+  queuing at one beach.
+- Only idle units go: units walking somewhere, fighting, holding position or already on their way to a transport
+  keep their orders. The feed says how many units head to how many transports.
+- **L works for land units too (Board transports):** select an army and press L (or the Board transports button in
+  its panel), and its units find your transports with room within 500 km and go on board, each to the nearest one,
+  whatever they were doing. Only transports lying idle or already waiting at a beach answer; one sailing somewhere
+  or landing units is left alone. With units and transports selected together, the units
+  ask: a free transport nearby takes them, even when the selected ones are full.
+- **Enemies no longer see how many units your transports carry:** the number on the boat and the On board count
+  in its panel are for you only. Other players see a boat and nothing more.
+- **Shift with loaded transports: park here, then go there.** Hold Shift and click on the water to give your
+  transports a path; the first click on land, with or without Shift, is where they park and land the units. Every
+  later Shift + right-click **on land** is for the units on board: once ashore they set off from the beach for the
+  places you Shift-clicked, or attack the enemy units and cities you Shift-clicked (A + Shift: attack-move), one
+  after another, without marching to the parking place first. With no such orders they march to it, as before.
+  Shift + right-click **on the water** after that is the transports' own again: they sail there once everyone is
+  ashore. Selected transports show their path, where they park, and the units' way on from the beach.
+- **Big armies no longer gather before they march:** a group sent somewhere (move or attack-move, A + right click)
+  used to follow one route, planned for the unit in its middle, so every unit first walked to that route's first
+  corner, even with nothing in its own way, and a big army jammed there, some units for good. Now each unit goes
+  its own way to its place in the formation: straight when it can, otherwise round what is in its way, sharing
+  the way only with units close to it.
+- **No more units pressed against city walls** at the end of a march: a formation spread over a city (a big army
+  is 250 km wide) used to give some units places inside its walls, which they never reached. Those places are now
+  just outside the walls.
+- **A landing fleet no longer sends its army to one spot:** transports sent to land at one place use beaches all
+  along the coast, and each gave its own units the same few places round the target, so hundreds of units headed
+  for one spot and jammed there. Now everyone on board gets a place of their own in one formation for the whole
+  fleet, as seen from where their transport lands them, and each finds its own way there from its beach. The
+  same goes for what you Shift-click on land for them while they sail.
+- **Formations by the coast stay on land:** places that fell in the sea or in the mountains used to send their
+  units to the very centre of the formation. They now go to the free open ground nearest to them.
+- **Storming a port lands everyone:** by ports such as Belfast, Dublin or Plymouth the beach lies next to the walls,
+  and a full transport storming the city landed only 4 to 6 units: the rest stayed on board, to go down with it
+  under the city's guns. Now everyone steps ashore at once, squeezing in among the others by the beach (the crowd
+  pushes itself apart on land) or a little farther along the coast. Transports still arriving after the city has
+  fallen land everyone too, instead of waiting for room on a beach full of victors.
+
+## 10 November 2026: Regions in the city panel
+
+- **Hover the Region stat** in the city panel and the whole region lights up on the map and the minimap: its land
+  washed in light, its outline traced in gold. It fades in with a quick wave of light from the city out to the
+  region's borders, which flash as it passes, and a ring of light spreads round each city of the region as the wave
+  reaches it. The region's name shines in gold over everything on the map, cities and units included, with a gleam
+  running across its letters. Move the mouse away and it all fades out.
+- **Neutral cities show it too:** how many cities of the region you hold, and which are still to take. A spectator
+  or liberator sees how many cities the region has and who holds each.
+- The stat now updates as soon as another city of the region changes hands.
+
 ## 10 November 2026: Mountains
 
 - **Mountains:** the great ranges of Europe, North Africa and Anatolia are on the map, and **no unit can cross them**:
@@ -11,8 +118,8 @@
 - Mountains keep 12 km off the sea, so a road always runs along the coast past them, and 35 km off every city. They
   wall no city in: every city can still reach every city of its landmass by land, as before.
 - Close up they are drawn as rows of hill signs on rocky ground, as on an old map; zoomed out, on the minimap and
-  on the results timeline, as darker ground. The ground is opaque: the colour of the region doesn't show through
-  the mountains, only its borders cross them. What you see is exactly where units can't go.
+  on the results timeline, as darker ground. They are solid: neither the colour of the region nor its borders show
+  through them. What you see is exactly where units can't go.
 - **Paint mountains / Erase mountains** in Edit map (admins): drag over the land to raise mountains or clear them,
   the built ones too. They block units at once in every game, and are saved for every game after. They keep 35 km
   off every city, and a stroke that would wall in a city or any big stretch of land is refused (a small valley it
@@ -33,7 +140,7 @@
   32. They shell ships, troops on the shore and cities, like archers do on land: one shot of **30 damage every 1.5
   seconds**. The guns reload while the ship sails, so you can shoot, move and shoot again: pull it back after a shot,
   and it fires the moment you order the attack again once it has reloaded. Attack-move (A + right click) works for
-  them; a plain move never shoots. They are heavy: from a standstill, also after stopping to shoot, they need 1.5 s
+  them; a plain move never shoots. They are heavy: from a standstill, also after stopping to shoot, they need 0.75 s
   to reach full speed, so a ship that keeps running gains on one that stops to fire. In harbour they repair at twice
   their own regeneration (2 HP per second), not at the transports' 5.
 - **Battleships take coastal cities:** a shot that brings a coastal city's HP to zero captures it, as any attack
@@ -70,20 +177,33 @@
   Skopje, Larissa, Patras, Iași and Heraklion. **Saxony is gone:** Dresden now belongs to Prussia. **Macedonia is
   gone:** Tirana stands farther east, towards Skopje. Greece gets Kalamata in the Peloponnese. Venice and
   Switzerland are one-city regions.
+- **France and Prussia thinned out:** Paris had Rouen and Orléans each just over 100 km away. Rouen is gone, and
+  Orléans makes way for **Tours**, farther down the Loire: France is now Paris, Tours and Reims. Prussia loses
+  Magdeburg, so close to Berlin and Hanover.
+- **Wider straits:** the Bosporus and the Dardanelles are now 12 to 20 km of open water instead of a thin crack,
+  easy to see and to sail. Istanbul stands a little farther west, on its shore.
+- **No more Cyclades:** the small islands of the central Aegean, and those north-east of Euboea, are gone.
 - **Land without a city is shared out:** Slovenia, North Macedonia, Luxembourg, Kosovo and the microstates are split
   between the cities nearest to them, like the rest of the map, instead of going whole to one city (or staying
   neutral).
 - **More cities in the east:** Sivas, Van and Urfa in Anatolia; Veliky Ustyug in Muscovy, in the gap between
-  Arkhangelsk, Ukhta and Nizhny Novgorod; Tuapse and Grozny in the Golden Horde, in the Caucasus.
+  Arkhangelsk, Ukhta and Nizhny Novgorod; Tuapse and Grozny in the Golden Horde, in the Caucasus; Pustozersk on the
+  lower Pechora and Khanty-Mansiysk beyond the Urals in Yugra.
 - **Inland Scandinavia:** Kiruna and Vilhelmina in Sweden, Otta in Norway.
 - **Pomorye:** a new region on the White Sea, split off from Novgorod: Murmansk, Arkhangelsk and the new city of
   Kem. Novgorod keeps Saint Petersburg, Novgorod and Petrozavodsk.
-- The map now has **223 cities in 63 regions** (the default target is still 120).
+- **White Ruthenia:** a new region split off from Lithuania: Minsk, Brest-Litovsk, Gomel and Vitebsk. Lithuania
+  keeps Vilnius and Klaipėda.
+- The map now has **223 cities in 64 regions** (the default target is still 120).
 - **All of the coast is beach:** transports take units on board and land them anywhere on the coast, every island's
   too. The cliffs are gone (admins can still paint some in Edit map).
 - **The view goes past the edges:** the camera can now be moved a little beyond every edge of the map, so the land
   along it, such as North Africa at the bottom, can be seen clear of the minimap and the panels. Where the map's
   edge cuts the land off, it is no longer drawn as a coast.
+- Region names on the map are darker, with a faint white border round the letters: easier to read.
+- **Edit map: region names.** Admins can drag a region's name to a new place, make it bigger or smaller with the
+  mouse wheel, and double-click it to put it back where the game would place it. Everyone sees it at once, and it is
+  saved for every game.
 
 ## 10 November 2026: Surrender, and Restart for duels
 

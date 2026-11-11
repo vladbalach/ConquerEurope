@@ -2,7 +2,7 @@
 // badge of coastal cities. Sprites are 64x64 logical px, rendered at 2x for crisp scaling.
 import { UNIT_CLASSES } from './units/index.js';
 import { UPGRADE_TYPES, UNIT_TYPES, TRADITIONS } from '/shared/config.js';
-import { drawTradition, drawTraditionSmall } from './tradition-icons.js';
+import { drawTradition, drawTraditionSmall, drawTechEmblem } from './tradition-icons.js';
 
 const RES = 2;
 const SIZE = 64;
@@ -703,6 +703,7 @@ export function traditionSmallIconURL(key, color) {
 // The picture of a technology in the Tech window (data URL), in the player's colour:
 //   seafaring   the transport it unlocks
 //   gunnery     the battleship it unlocks
+//   navigation  a compass rose in silver and gold, north in the player's colour (tradition-icons.js)
 //   supporters  a crowd behind a gold coin (liberator gold every turn)
 //   influencer  a castle in the dashed ring that marks a city about to be liberated
 //   smuggling   gold flowing from a castle to a coin rimmed in your colour (the smuggling mark)
@@ -715,7 +716,9 @@ export function techIconURL(key, color) {
   const [c, ctx] = makeCanvas();
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  if (key === 'supporters') {
+  if (key === 'navigation') {
+    drawTechEmblem(ctx, key, color);
+  } else if (key === 'supporters') {
     drawPerson(ctx, 14, 20, 0.95, color);
     drawPerson(ctx, 50, 20, 0.95, color);
     drawPerson(ctx, 32, 14, 1.2, color);

@@ -39,7 +39,8 @@ const nav = NavGrid.load(NAV_FILE);
 // Admin map editing (Edit map in a game): moved cities are saved in server/data/city-positions.json
 // and apply to every game; "Rebuild navigation" rebuilds territories and pathfinding from them.
 // Cities made coastal or inland are saved in server/data/city-coastal.json, painted beaches in
-// server/data/beach-edits.json, painted mountains in server/data/mountain-edits.json.
+// server/data/beach-edits.json, painted mountains in server/data/mountain-edits.json, region names moved
+// or resized in server/data/label-edits.json.
 const editor = new MapEditor({
   map, nav, games: () => games.values(),
   files: {
@@ -48,6 +49,7 @@ const editor = new MapEditor({
     coastal: process.env.CITY_COASTAL || path.join(ROOT, 'server', 'data', 'city-coastal.json'),
     beaches: process.env.BEACH_EDITS || path.join(ROOT, 'server', 'data', 'beach-edits.json'),
     mountains: process.env.MOUNTAIN_EDITS || path.join(ROOT, 'server', 'data', 'mountain-edits.json'),
+    labels: process.env.LABEL_EDITS || path.join(ROOT, 'server', 'data', 'label-edits.json'),
   },
 });
 
@@ -332,7 +334,8 @@ async function handOver(g) {
   const epoch = (g.hostEpoch = (g.hostEpoch || 0) + 1);
   const ice = await iceConfig();
   if (g.hostEpoch !== epoch || g.status !== 'running') return;
-  const roster =[...g.players.values()].map((p) => ({ id: p.id, color: p.color }));
+  // With each player's gold percentage (set in the waiting room): the host's browser pays them by it.
+  const roster = [...g.players.values()].map((p) => ({ id: p.id, color: p.color, goldPercent: p.goldPercent }));
   for (const p of g.players.values()) {
     if (!p.client) continue;
     if (p.id === g.hostId) {
@@ -522,6 +525,12 @@ function handle(client, msg) {
       if (g && client.player && g.hostId === client.player.id && g.setOptions(msg.options)) lobbyDirty = true;
       return;
     }
+    case 'setGoldPercent': {
+      // A player's gold percentage (`player`: their id in the waiting room): only the host, only there.
+      const g = client.game;
+      if (g && client.player && g.hostId === client.player.id) g.setGoldPercent(msg.player, msg.percent);
+      return;
+    }
     case 'signal': {
       // WebRTC connection messages (offer, answer, ICE candidates) between a player and the host.
       // Players reach only the host; the host reaches any player of its game.
@@ -601,6 +610,7 @@ function handle(client, msg) {
     case 'mapCoast':
     case 'mapBeach':
     case 'mapMountain':
+    case 'mapLabel':
     case 'mapRebuild':
       // Edit map: admins only. MapEditor.handle refuses it from anyone else, whatever the page shows.
       editor.handle(client, msg, clients);

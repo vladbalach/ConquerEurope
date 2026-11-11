@@ -1,7 +1,7 @@
 // Technologies (Tech window) and the Rebellion tab: Supporters, Influencer, Smuggling. Run with: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LIBERATOR, TECHS, ECONOMY } from '../shared/config.js';
+import { LIBERATOR, TECHS, TECH_TYPES, ECONOMY } from '../shared/config.js';
 import { liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows } from '../shared/tech.js';
 import { setup, map, nav } from './helpers.js';
 import { Game } from '../server/game.js';
@@ -46,6 +46,34 @@ test('research costs gold up front and takes game time; cancelling refunds it', 
   assert.equal(a.research, null);
   assert.ok(events.a.some((m) => m.kind === 'researched' && m.tech === 'smuggling' && m.level === 1));
   assert.equal(game.playerList().find((p) => p.id === a.id).tech.smuggling, 1, 'levels are public');
+});
+
+test(`a liberator pays ${LIBERATOR.rebellionCost * 100}% for Rebellion technologies, the full price for the others; refunds give back what was paid`, () => {
+  const { game, b, strip, order, events } = game2();
+  const S = TECHS.supporters.levels, sea = TECHS.seafaring.levels[0].cost;
+  b.gold = 1000;
+  order(b, { t: 'research', tech: 'supporters' });           // still in the game: the full price
+  assert.equal(b.gold, 1000 - S[0].cost);
+  strip(b);
+  assert.ok(b.liberator, 'fallen');
+  b.gold = 1000;
+  order(b, { t: 'research', tech: 'supporters' });           // level 2, queued as a liberator
+  const less = Math.ceil(S[1].cost * LIBERATOR.rebellionCost);
+  assert.ok(less < S[1].cost);
+  assert.equal(b.gold, 1000 - less);
+  order(b, { t: 'research', tech: 'seafaring' });
+  assert.equal(b.gold, 1000 - less - sea, 'a Sea technology: the full price');
+
+  // Each player's page learns what was paid, for the refunds it shows.
+  game.sendSnapshots();
+  const snap = events.b.filter((m) => m.t === 'snap').pop();
+  assert.deepEqual([snap.r[0], snap.r[2]], [TECH_TYPES.indexOf('supporters'), S[0].cost]);
+  assert.deepEqual(snap.rq, [[TECH_TYPES.indexOf('supporters'), less], [TECH_TYPES.indexOf('seafaring'), sea]]);
+
+  // Cancelling level 1 takes level 2 out too: each gives back what it cost, level 1 the full price.
+  order(b, { t: 'cancelResearch', tech: 'supporters', level: 1 });
+  assert.equal(b.gold, 1000 - sea + S[0].cost);
+  assert.equal(b.research?.tech, 'seafaring');
 });
 
 test('research ordered while one runs is queued, paid at once, and starts when the one before it is done', () => {
@@ -175,7 +203,7 @@ test('without Influencer a mark liberates the city at once, as before', () => {
   assert.equal(c.owner, b.id);
 });
 
-test('Smuggling: half of a marked city\'s income goes from its owner to the liberator', () => {
+test(`Smuggling: ${TECHS.smuggling.share * 100}% of a marked city's income goes from its owner to the liberator`, () => {
   const { game, a, b, strip, citiesOf, order, research, events } = game2();
   research(b, 'smuggling', 2);                        // two marks
   assert.equal(smugglingLimit(b.tech), 2);
@@ -186,7 +214,8 @@ test('Smuggling: half of a marked city\'s income goes from its owner to the libe
   order(b, { t: 'smuggle', city: c2.id });
   order(b, { t: 'smuggle', city: c3.id });
   assert.deepEqual(b.smuggle, [c1.id, c2.id], 'two marks only');
-  const expected = Math.floor(c1.goldPerTurn / 2) + Math.floor(c2.goldPerTurn / 2);
+  const share = TECHS.smuggling.share;
+  const expected = Math.floor(c1.goldPerTurn * share) + Math.floor(c2.goldPerTurn * share);
   const aIncome = citiesOf(a).reduce((sum, c) => sum + c.goldPerTurn, 0);
   const [aGold, bGold] = [a.gold, b.gold];
   game.endTurn();
@@ -202,8 +231,9 @@ test('Smuggling: half of a marked city\'s income goes from its owner to the libe
 
 test('Smuggling works only while a liberator, and its marks are gone once back in the game; neutral cities pay nothing', () => {
   const flows = smugglingFlows([{ id: 1, tech: { smuggling: 2 }, cities: [5, 6] }], (ci) => (ci === 6 ? -1 : 0), () => 12);
-  assert.equal(flows.gain.get(1), 6, 'half of 12');
-  assert.equal(flows.loss.get(0), 6);
+  const take = Math.floor(12 * TECHS.smuggling.share);
+  assert.equal(flows.gain.get(1), take, `${TECHS.smuggling.share * 100}% of 12`);
+  assert.equal(flows.loss.get(0), take);
   assert.equal(flows.byCity.has(6), false, 'neutral: nothing');
 
   const { game, a, b, strip, citiesOf, order, research } = game2();

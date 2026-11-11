@@ -4,7 +4,9 @@ import { GameClient } from './client.js';
 import { GAME, DEBUG } from '/shared/config.js';
 import { PROTOCOL_VERSION } from '/shared/protocol.js';
 import { applyBalance } from '/shared/balance.js';
-import { OPTION_LIMITS, sanitizeOptions, summarizeOptions, describeOptions } from '/shared/options.js';
+import {
+  OPTION_LIMITS, GOLD_PERCENT, sanitizeOptions, sanitizeGoldPercent, summarizeOptions, describeOptions,
+} from '/shared/options.js';
 import { initTooltips } from './tooltip.js';
 import { HostSession, PeerSession } from './p2p.js';
 import { initSound } from './sound.js';
@@ -210,48 +212,95 @@ function renderRoom() {
   $('room-info').textContent = isHost
     ? `${room.players.length}/${GAME.maxPlayers} players. Start whenever you are ready — you can also start alone to practise against neutral cities.`
     : `${room.players.length}/${GAME.maxPlayers} players. Waiting for the host to start the game…`;
+  renderRoomPlayers(isHost);
+  renderOptions(room.options, isHost);
+  $('room-start').hidden = !isHost;
+}
+
+// One row per player, kept by player id: rows are updated in place, so a gold percentage the host is
+// typing in keeps its focus when someone joins or leaves meanwhile.
+const roomRows = new Map();          // player id -> { li, name, tag, gold, input, text }
+const GOLD_TIP = 'Gold this player earns in the game, in % of normal: city pay, liberator pay and kill gold ' +
+  `(${GOLD_PERCENT.min}–${GOLD_PERCENT.max}%; the start gold is the same for everyone). Less for a strong player, more for a weaker one. ` +
+  'In the game each player sees only their own.';
+
+function roomRow(id) {
+  let row = roomRows.get(id);
+  if (row) return row;
+  const li = elem('li');
+  const name = elem('span');            // no colour: it is dealt at random when the game starts
+  const tag = elem('span', 'tag');
+  const gold = elem('label', 'room-gold');
+  gold.title = GOLD_TIP;
+  const input = elem('input');
+  Object.assign(input, { type: 'number', step: 5, min: GOLD_PERCENT.min, max: GOLD_PERCENT.max, inputMode: 'numeric' });
+  input.setAttribute('aria-label', 'Gold percentage');
+  input.addEventListener('change', () => sendGoldPercent(id, input));
+  const text = elem('span', 'room-gold-text');
+  gold.append(elem('span', 'coin'), input, text);
+  li.append(name, tag, gold);
+  row = { li, name, tag, gold, input, text };
+  roomRows.set(id, row);
+  return row;
+}
+
+// `force`: also overwrite the percentage the host is typing in (they just committed it).
+function renderRoomPlayers(isHost, force = false) {
   const ul = $('room-players');
-  ul.textContent = '';
-  for (const p of room.players) {
-    const li = document.createElement('li');
-    const nm = document.createElement('span');
-    nm.textContent = p.name;
-    li.append(nm);           // no colour: it is dealt at random when the game starts
+  const ids = new Set(room.players.map((p) => p.id));
+  for (const [id, row] of roomRows) if (!ids.has(id)) { row.li.remove(); roomRows.delete(id); }
+  room.players.forEach((p, i) => {
+    const row = roomRow(p.id);
+    row.name.textContent = p.name;
     const tags = [];
     if (p.id === room.hostId) tags.push('host');
     if (p.id === joined.playerId) tags.push('you');
-    if (tags.length) {
-      const t = document.createElement('span');
-      t.className = 'tag';
-      t.textContent = tags.join(' · ');
-      li.append(t);
-    }
-    ul.append(li);
-  }
-  renderOptions(room.options, isHost);
-  $('room-start').hidden = !isHost;
+    row.tag.textContent = tags.join(' · ');
+    row.tag.hidden = !tags.length;
+    // The host sets every player's percentage; the others see it only when it isn't the usual 100%.
+    const pct = sanitizeGoldPercent(p.goldPercent);
+    row.input.hidden = !isHost;
+    if (force || document.activeElement !== row.input) row.input.value = String(pct);
+    row.text.textContent = isHost ? '%' : `${pct}% gold`;
+    row.gold.hidden = !isHost && pct === GOLD_PERCENT.default;
+    row.gold.classList.toggle('changed', pct !== GOLD_PERCENT.default);
+    if (ul.children[i] !== row.li) ul.insertBefore(row.li, ul.children[i] || null);   // moved only if out of place
+  });
+}
+
+function sendGoldPercent(id, input) {
+  if (!room || !joined || room.hostId !== joined.playerId || room.status !== 'lobby') return;
+  const p = room.players.find((q) => q.id === id);
+  if (!p) return;
+  p.goldPercent = sanitizeGoldPercent(input.value);   // show it at once; the server's copy follows in `room`
+  renderRoomPlayers(true, true);
+  net.send({ t: 'setGoldPercent', player: id, percent: p.goldPercent });
 }
 
 // ------------------------------------------------------------------ game options (waiting room)
 // The host picks them; everyone else sees them read-only. The server keeps the real values and
 // sends them with every `room` message.
-const OPTION_INPUTS = ['opt-countdown', 'opt-countdown-turn', 'opt-win-cities', 'opt-death'];
+const OPTION_INPUTS = ['opt-countdown', 'opt-countdown-turn', 'opt-win-cities', 'opt-death', 'opt-start-gold'];
 const cityCount = () => (map ? map.cities.length : Infinity);
 
 // `force`: also overwrite the field the player is typing in (they just committed a value).
 function renderOptions(options, isHost, force = false) {
   const o = sanitizeOptions(options, cityCount());
   const set = (el, v) => { if (force || document.activeElement !== el) el.value = String(v); };
-  const turn = $('opt-countdown-turn'), win = $('opt-win-cities');
+  const turn = $('opt-countdown-turn'), win = $('opt-win-cities'), gold = $('opt-start-gold');
   turn.min = OPTION_LIMITS.countdownTurn.min;
   turn.max = OPTION_LIMITS.countdownTurn.max;
   win.min = OPTION_LIMITS.winCities.min;
   if (map) win.max = map.cities.length;
   win.title = `Cities a player must hold to win (${win.min}–${map ? map.cities.length : '…'})`;
+  gold.min = OPTION_LIMITS.startGold.min;
+  gold.max = OPTION_LIMITS.startGold.max;
+  gold.title = `Gold every player has at the start (${gold.min}–${gold.max}), the same for everyone`;
   set($('opt-countdown'), o.countdown);
   set(turn, o.countdownTurn);
   set(win, o.winCities);
   set($('opt-death'), o.death);
+  set(gold, o.startGold);
   turn.hidden = o.countdown !== 'turn';
   for (const id of OPTION_INPUTS) $(id).disabled = !isHost;
   $('opt-summary').textContent = describeOptions(o);
@@ -264,6 +313,7 @@ function sendOptions() {
     countdownTurn: $('opt-countdown-turn').value,
     winCities: $('opt-win-cities').value,
     death: $('opt-death').value,
+    startGold: $('opt-start-gold').value,
   }, cityCount());
   room.options = o;                    // show it at once; the server's copy follows in `room`
   renderOptions(o, true, true);
@@ -417,7 +467,11 @@ const GAME_MESSAGES = {
     game = new GameClient({
       map, net, link, gameId: joined.gameId, you: msg.you, title: msg.title, options: msg.options, players: msg.players,
       ports: msg.ports, beaches: msg.beaches, onLeave: leaveGame, debug, admin: isAdmin, mapState, prestart: msg.prestart,
+      goldPercent: msg.goldPercent,
     });
+    if (game.goldPercent !== GOLD_PERCENT.default) {
+      game.hud.feed(`The host set your gold to ${game.goldPercent}%: everything you earn is scaled by it.`);
+    }
     if (session && session.relay) game.hud.feed('No direct connection to the host: your game goes through the server.');
   },
   room(msg) { if (game) game.setPlayers(msg.players); },
@@ -565,6 +619,15 @@ net.on('mountainEdit', (msg) => {
   m.code = encodeMask(mask);
   if (session && session.isHost) session.mountainEdit(msg);
   if (game) game.onMountainEdit();
+});
+// A region's name an admin moved or resized ({ x, y, scale }), or gave back to automatic placing (null).
+net.on('labelEdit', (msg) => {
+  const co = map && map.countries[msg.region];
+  if (!co) return;
+  map.labelEdits = map.labelEdits || {};
+  if (msg.edit) map.labelEdits[co.n] = msg.edit;
+  else delete map.labelEdits[co.n];
+  if (game) game.onLabelEdit();
 });
 net.on('mapRebuilt', async () => {
   if (!map) return;

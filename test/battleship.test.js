@@ -212,6 +212,70 @@ test('other units, transports too, go at full speed at once', () => {
   assert.ok(Math.abs(y - t.y - UNITS.transport.moveSpeed * DT) < 1e-6);
 });
 
+const NAV = TECHS.navigation;
+
+test('Navigation needs Seafaring first: refused before, queued after it', () => {
+  const { a, order } = setup({});
+  a.gold = 1000;
+  order(a, { t: 'research', tech: 'navigation' });
+  assert.equal(a.research, null, 'refused without Seafaring');
+  assert.equal(a.gold, 1000);
+  order(a, { t: 'research', tech: 'seafaring' });
+  order(a, { t: 'research', tech: 'navigation' });
+  assert.deepEqual(a.researchQueue.map((e) => e.tech), ['navigation']);
+  assert.equal(a.gold, 1000 - TECHS.seafaring.levels[0].cost - NAV.levels[0].cost);
+});
+
+test(`Navigation: its owner's ships sail ${NAV.speedPercent}% faster, those at sea too; nobody else's`, () => {
+  const ctx = setup();
+  const { a, b, order } = ctx;
+  const [x, y] = openSea(ctx);
+  const f = 1 + NAV.speedPercent / 100, T = UNITS.transport;
+  const mine = ctx.spawn(a.id, 'transport', x, y);
+  const theirs = ctx.spawn(b.id, 'transport', x + 40, y);
+  order(a, { t: 'move', ids: [mine.id], x, y: y - 300 });
+  order(b, { t: 'move', ids: [theirs.id], x: x + 40, y: y - 300 });
+  // How far each sails in one tick.
+  const tick = () => {
+    const [m, t] = [mine.y, theirs.y];
+    ctx.game.tick(DT);
+    return [m - mine.y, t - theirs.y];
+  };
+  let [m, t] = tick();
+  assert.ok(Math.abs(m - T.moveSpeed * DT) < 1e-6 && Math.abs(t - T.moveSpeed * DT) < 1e-6, 'without it: moveSpeed');
+
+  a.tech = { ...a.tech, navigation: 1 };       // researched while it sails
+  [m, t] = tick();
+  assert.ok(Math.abs(m - T.moveSpeed * f * DT) < 1e-6, `${m} km per tick: ${NAV.speedPercent}% faster at once`);
+  assert.ok(Math.abs(t - T.moveSpeed * DT) < 1e-6, "the other player's: as fast as before");
+
+  const knight = ctx.spawn(a.id, 'knight', ctx.city('Madrid').x, ctx.city('Madrid').y);
+  assert.equal(knight.moveSpeed, UNITS.knight.moveSpeed, 'land units: as fast as before');
+});
+
+test(`Navigation: a battleship still gathers speed for ${B.accelTime} s, up to a higher full speed`, () => {
+  const ctx = setup({ seafaring: 1, gunnery: 1, navigation: 1 });
+  const [x, y] = openSea(ctx);
+  const ship = ctx.spawn(ctx.a.id, 'battleship', x, y);
+  const fast = { ...B, moveSpeed: B.moveSpeed * (1 + NAV.speedPercent / 100) };
+  ctx.order(ctx.a, { t: 'move', ids: [ship.id], x, y: y - 300 });
+  ctx.run(B.accelTime);
+  assert.ok(Math.abs(y - ship.y - rampDistance(fast, B.accelTime)) < 0.5, `${y - ship.y} km while gathering speed`);
+  assert.ok(Math.abs(ship.speed - fast.moveSpeed) < 1e-6, `full speed ${ship.speed}`);
+});
+
+test('a save from before Navigation existed: not researched, and it can be', () => {
+  const ctx = setup();
+  const save = JSON.parse(JSON.stringify(saveGame(ctx.game)));
+  for (const p of save.players) delete p.tech.navigation;
+  const copy = restoreGame(save, { map, nav, hostId: 0 });
+  const p = copy.players.get(ctx.a.id);
+  assert.equal(p.tech.navigation, 0);
+  p.gold = 1000;
+  copy.startResearch(p, 'navigation');
+  assert.equal(p.research?.tech, 'navigation');
+});
+
 test(`in harbour a battleship repairs ${B.harbourFactor} times its regeneration; a transport at NAVAL.harbourRegen`, () => {
   const ctx = setup();
   const port = ctx.city('Lisbon').port;                  // A's city

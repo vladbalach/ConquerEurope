@@ -1,10 +1,11 @@
 // Game options the host sets in the waiting room: how many cities win the game, whether that
-// number counts down as the game goes on, and what happens to a player who loses everything.
+// number counts down as the game goes on, what happens to a player who loses everything, and the
+// gold everyone starts with. Also each player's gold percentage (GOLD_PERCENT below).
 //
 // The lobby server keeps them with the game and hands them to the host's browser at the start
 // (server/game.js runs there and decides who wins); every player's page gets them in `start` and
 // shows the current target. Both sides use citiesToWin() below, so they always agree.
-import { GAME, LIBERATOR } from './config.js';
+import { GAME, LIBERATOR, ECONOMY } from './config.js';
 
 // Countdown: 'none'  the target never changes
 //            'start' it drops by one city at the end of every turn
@@ -21,11 +22,13 @@ export const DEFAULT_OPTIONS = Object.freeze({
   countdownTurn: 10,
   winCities: GAME.winCities,
   death: 'liberator',
+  startGold: ECONOMY.startGold,     // every player's gold at the start (not scaled by gold percentages)
 });
 
 export const OPTION_LIMITS = {
   winCities: { min: GAME.startCities + 1 },   // max: the number of cities on the map
   countdownTurn: { min: 1, max: 999 },
+  startGold: { min: 0, max: 100000 },
 };
 
 const int = (v, fallback, min, max) => {
@@ -38,13 +41,38 @@ const int = (v, fallback, min, max) => {
 export function sanitizeOptions(raw, cityCount = Infinity) {
   const o = raw && typeof raw === 'object' ? raw : {};
   const maxCities = Math.max(OPTION_LIMITS.winCities.min, Number.isFinite(cityCount) ? cityCount : 9999);
-  const { countdownTurn: ct } = OPTION_LIMITS;
+  const { countdownTurn: ct, startGold: sg } = OPTION_LIMITS;
   return {
     countdown: COUNTDOWN_MODES.includes(o.countdown) ? o.countdown : DEFAULT_OPTIONS.countdown,
     countdownTurn: int(o.countdownTurn, DEFAULT_OPTIONS.countdownTurn, ct.min, ct.max),
     winCities: int(o.winCities, Math.min(DEFAULT_OPTIONS.winCities, maxCities), OPTION_LIMITS.winCities.min, maxCities),
     death: DEATH_MODES.includes(o.death) ? o.death : DEFAULT_OPTIONS.death,
+    startGold: int(o.startGold, DEFAULT_OPTIONS.startGold, sg.min, sg.max),
   };
+}
+
+// Gold percentage: the host sets one for each player in the waiting room, to even out players of
+// different strength (less for a strong player, more for a weak one). The gold the player earns in the
+// game is multiplied by it: what their cities pay each turn (or their pay as a liberator, smuggled gold
+// included) and kill gold. The start gold is the same for everyone (the startGold option). Refunds only
+// give back what was paid, and the developer console's "gold N" sets gold outright: neither is changed.
+//
+// It goes to the browser that runs the game with the player's id, but to no other player: in the game
+// you learn your own percentage only, since everyone saw them by nickname in the waiting room.
+export const GOLD_PERCENT = Object.freeze({ min: 10, max: 500, default: 100 });
+
+export function sanitizeGoldPercent(v) {
+  return int(v, GOLD_PERCENT.default, GOLD_PERCENT.min, GOLD_PERCENT.max);
+}
+
+// `gold` as a player with `percent` receives it: exact, for kill gold (halves count).
+export function scaleGold(gold, percent) {
+  return percent === undefined || percent === GOLD_PERCENT.default ? gold : (gold * percent) / 100;
+}
+
+// Turn pay, scaled: whole gold. The host pays it and the player's page shows it from this.
+export function scaleGoldWhole(gold, percent) {
+  return Math.round(scaleGold(gold, percent));
 }
 
 // Cities a player must hold to win once `turn` turns are over (the turn counter in the game).
@@ -62,7 +90,8 @@ export function summarizeOptions(options) {
   const o = options || DEFAULT_OPTIONS;
   const countdown = o.countdown === 'none' ? 'no countdown'
     : o.countdown === 'start' ? 'countdown from the start' : `countdown after turn ${o.countdownTurn}`;
-  return `${o.winCities} cities to win · ${countdown} · death: ${o.death === 'liberator' ? 'liberator' : 'spectator'}`;
+  const gold = o.startGold !== undefined && o.startGold !== DEFAULT_OPTIONS.startGold ? ` · ${o.startGold} start gold` : '';
+  return `${o.winCities} cities to win · ${countdown} · death: ${o.death === 'liberator' ? 'liberator' : 'spectator'}${gold}`;
 }
 
 // What happens to a player who loses everything, in a sentence.
