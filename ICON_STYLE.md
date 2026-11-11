@@ -54,10 +54,10 @@ comes from the top left.
 3. **Subject**: a function returning `{ box, layers }` in a -50..50 box, drawn by `drawSubject` centred
    on the field (about x 32, y 30 to 31) at 34 to 39 px across. Every filled layer gets its gradient, a
    bevel (white 55% / black 35%) and a 1 px ink outline; the whole subject casts a small shadow on the field.
-4. **Tier II** (Eternal Glory, Last Stand: `ultimate: true` in config): the same shield with a double border: `GOLD`, then `shieldPath(2.2)` in
+4. **Tier II** (Eternal Glory: `ultimate: true` in config): the same shield with a double border: `GOLD`, then `shieldPath(2.2)` in
    crimson `#7a1016`, `shieldPath(3.1)` in `GOLD`, the field at `shieldPath(4.8)`, plus a faint red radial
    halo behind the shield (`rgba(190,24,30,0.55)` → 0). Nothing more around it. The subject itself should look
-   strong: mostly gold, richer in parts (a red sash, leather strips), up to 40 px across.
+   strong: mostly gold, richer in parts (a red ribbon), up to 40 px across.
 
 ## Small icon recipe
 
@@ -67,7 +67,7 @@ comes from the top left.
    Compose for a square: the level handshake of the big icon became forearms rising from the bottom
    corners to a big clasp.
 3. Fill with `STEEL`; gold (`LEAF_GOLD`) for accents; exactly one part, the layer marked `tint: true`,
-   in the player's colour (helmet crest, the cross, the sleeves, the brazier, the star, the pteruges). Ink outline
+   in the player's colour (helmet crest, the cross, the sleeves, the brazier, the star). Ink outline
    2.6 px on every filled shape; openings stay plain ink.
 4. Tier II: a soft red glow behind (`rgba(200,40,40,0.5)` → 0). The Players list adds its red frame in CSS.
 
@@ -83,7 +83,6 @@ where possible. Current ones:
 | Brotherhood of Arms | Two gauntlets clasped over two crossed swords, points up |
 | Honored Dead | A flame burning in a brazier on a stepped foot |
 | Eternal Glory | The silver honor star in a gold laurel wreath tied with a red ribbon |
-| Last Stand | A gold muscled cuirass with leather pteruges and a red sash, over two crossed swords, points up |
 
 ## Layers and roles
 
@@ -121,4 +120,4 @@ Canvas shadows ignore the transform, so `shadow()` scales them by `R` (device px
 - Identifying an icon by the player's colour alone; dark colours vanish on dark panels.
 - Thick outlines on big icons, thin outlines on small ones.
 - Text or numbers inside an icon.
-- A bare round shield with spears: it reads as tribal, not heraldic (tried and rejected for Last Stand).
+- A bare round shield with spears: it reads as tribal, not heraldic (tried and rejected).

@@ -5,31 +5,65 @@
 //
 // It wraps the same Game class the server tests use, with the same fixed-step loop the server
 // used to run. Node tests drive it directly.
+//
+// Every few seconds the page sends the lobby server a checkpoint of the game (checkpoint()): when the
+// host leaves, another player's browser takes the game over from the last one (`save`).
 import { Game } from './game.js';
 import { NavGrid } from './nav.js';
 import { markCityObstacles } from './City.js';
 import { GAME } from '../shared/config.js';
 import { applyBalance } from '../shared/balance.js';
+import { saveGame, restoreGame } from './save.js';
+import { encodeMask } from '../shared/mountains.js';
 
 const DT = 1 / GAME.tickRate;
 
+// The land grid with the mountains of the map: /map.json (served from the lobby server's memory) has the
+// ones admins painted since the grid file was built too.
+const withMountains = (navData, map) => (map.mountains ? { ...navData, mountains: map.mountains.code } : navData);
+
 export class HostEngine {
-  // roster: [{ id, color }] from the lobby server (no nicknames). options: the host's game options
+  // roster: [{ id, color, goldPercent }] from the lobby server (no nicknames). options: the host's game options
   // (shared/options.js). send(to, msg): deliver to a player. onEnded(winner): the game is over, so
   // the page can tell the lobby server.
-  constructor({ gameId, title, map, navData, balance, roster, hostId, options, send, onEnded }) {
+  // Taking over a game from a host who left: `save` (server/save.js) instead of a roster, and
+  // `departed`, the ids of players who left the game through the lobby (their empire falls apart here
+  // if the save still has it).
+  constructor({ gameId, title, map, navData, balance, roster, hostId, options, save = null, departed = [], send, onEnded }) {
     if (balance) applyBalance(balance);
     this.map = map;
-    this.nav = new NavGrid(navData);
+    this.nav = new NavGrid(withMountains(navData, map));
     this.send = send;
     this.onEnded = onEnded || (() => {});
-    this.game = Game.hosted({ id: gameId, title, map, nav: this.nav, roster, hostId, options });
+    this.game = save
+      ? restoreGame(save, { map, nav: this.nav, hostId })
+      : Game.hosted({ id: gameId, title, map, nav: this.nav, roster, hostId, options });
     // Pathfinding tables (about half a second): now, while players are still loading, not on the first order.
     this.nav.buildLandmarks();
     this.reportedEnd = false;
     this.timer = 0;
     this.waitSteps = 0;                 // steps before the start, for the snapshots sent meanwhile
     this.acc = 0;                       // game seconds owed to the simulation (see advance)
+    // After a takeover, the players who were online have GAME.startWait seconds to connect to this
+    // host before they show as offline (their pages connect again on their own, without "is back").
+    this.awaiting = null;
+    if (save) {
+      for (const id of departed) if (this.game.players.has(id)) this.game.removePlayer(id);
+      this.awaiting = new Set([...this.game.players.values()].filter((p) => p.connected && p.id !== hostId).map((p) => p.id));
+      this.awaitSteps = GAME.startWait * GAME.tickRate;
+    }
+  }
+
+  // ---------------------------------------------------------------- checkpoints
+  // The game as it is now (server/save.js), for the lobby server: another player's browser takes it
+  // over from there if this one goes. Null once the game is over.
+  checkpoint() {
+    return this.game.status === 'running' ? saveGame(this.game) : null;
+  }
+
+  // Players still in the game (not eliminated): the lobby server prefers them as the next host.
+  activePlayers() {
+    return [...this.game.players.values()].filter((p) => !p.eliminated).map((p) => p.id);
   }
 
   // ---------------------------------------------------------------- players
@@ -40,6 +74,7 @@ export class HostEngine {
     const g = this.game, p = g.players.get(id);
     if (!p) return;
     const client = { send: (msg) => this.send(id, msg) };
+    this.awaiting?.delete(id);
     if (!p.everConnected) {
       p.everConnected = true;
       p.client = client;
@@ -59,13 +94,18 @@ export class HostEngine {
     if (p && p.connected) this.game.disconnect(p);
   }
 
-  // A message from a player: a command, or 'leave' (giving up: their cities become neutral).
+  // A message from a player: a command, 'leave' (giving up: their cities become neutral), or
+  // 'surrender' (the same, but they stay to watch the game). Both work during the countdown too.
   message(from, msg) {
     const p = this.game.players.get(from);
     if (!p || !msg || typeof msg.t !== 'string') return;
     if (msg.t === 'leave') {
       this.game.removePlayer(from);
       if (this.game.prestart) this.game.sendPrestart();   // one player fewer to wait for
+      return;
+    }
+    if (msg.t === 'surrender') {
+      this.game.surrender(from);
       return;
     }
     this.game.handleCommand(p, msg);
@@ -101,11 +141,21 @@ export class HostEngine {
     this.game.sendPorts();
   }
 
+  // An admin painted mountains on (on) or off at these cells (the lobby server checked them): units walk
+  // round them from now on. Every player's page draws them from the same message; on the coast they also
+  // change the beaches (none under mountains), which go to the players with the ports.
+  editMountains(cells, on) {
+    if (!Array.isArray(cells)) return;
+    const changed = this.nav.editMountains(cells.filter(Number.isInteger), !!on);
+    if (this.map.mountains) this.map.mountains.code = encodeMask(this.nav.mountain);
+    if (changed.some((c) => this.nav.isCoast[c])) this.game.sendPorts();
+  }
+
   // The map was rebuilt: new territories, land grid and the areas paths avoid around cities.
   mapRebuilt(map, navData) {
     for (const key of Object.keys(this.map)) delete this.map[key];
     Object.assign(this.map, map);
-    Object.assign(this.nav, new NavGrid(navData));
+    Object.assign(this.nav, new NavGrid(withMountains(navData, map)));
     markCityObstacles(this.nav, this.map.cities, this.map);
     this.map.cities.forEach((c, i) => {
       const gc = this.game.cities[i];
@@ -123,6 +173,14 @@ export class HostEngine {
   // neutral because its player left.
   step() {
     const g = this.game;
+    if (this.awaiting && --this.awaitSteps <= 0) {
+      // A takeover: whoever has not connected to this host by now is offline.
+      for (const id of this.awaiting) {
+        const p = g.players.get(id);
+        if (p && p.connected && !p.client) g.disconnect(p);
+      }
+      this.awaiting = null;
+    }
     if (g.status === 'running' && g.prestart) {
       g.stepPrestart();
       if (++this.waitSteps % GAME.snapshotEvery === 0) g.sendSnapshots();

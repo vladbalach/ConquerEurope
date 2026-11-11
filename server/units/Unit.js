@@ -1,15 +1,26 @@
 // Base class for every unit. Holds the behaviour all units share: following
 // orders, picking targets, walking around water and fighting. Unit types
 // (Infantry.js, Archer.js, Cavalry.js, Knight.js) extend it, and all numbers come
-// from UNITS in shared/config.js. Ships (Ship.js) extend it too and sail instead of walking.
-import { UNITS, UNIT_TYPES, CITY, COMBAT, DISBAND, NAVAL, HERO, TRADITIONS } from '../../shared/config.js';
+// from UNITS in shared/config.js. Ships (Ship.js) extend it too and sail instead of walking;
+// battleships fight with the same targeting and orders as land units.
+import { UNITS, UNIT_TYPES, CITY, COMBAT, DISBAND, NAVAL, HERO } from '../../shared/config.js';
 
 const SCAN_INTERVAL = 0.3;          // seconds between searches for a new target
 const REPLAN_INTERVAL = 0.5;        // minimum seconds between two path searches
 const SLIDE_ANGLES = [0.6, -0.6, 1.2, -1.2, 1.6, -1.6];   // radians tried when the coast blocks the way
 const SLIDE_REPLAN = 1;             // seconds of sliding along the coast before looking for a new route
 const WAYPOINT_REACH = 1.5;         // km from a waypoint at which it counts as reached
-const MAX_QUEUED = 20;              // orders a unit keeps waiting behind the current one (Shift)
+// A land unit's place at the end of a move, its post (settle): pushed further off it than SETTLE_DIST km, it
+// walks back. Held up on the way for SETTLE_STUCK seconds, it waits SETTLE_WAIT seconds and tries again; held
+// up SETTLE_TRIES times in a row, it gives the place up and stands where it is.
+const SETTLE_DIST = 3;
+const SETTLE_STUCK = 1;
+const SETTLE_WAIT = 1.5;
+const SETTLE_TRIES = 12;
+const MAKE_WAY = 4;                 // km: a unit of its owner on the move this close to touching it goes by first...
+const MAKE_WAY_WAIT = 0.5;          // ...and waits this many seconds after the last step aside before walking back
+const MAKE_WAY_LOOK = 0.2;          // seconds between two looks for such a unit while none is pressing
+export const MAX_QUEUED = 20;       // orders a unit keeps waiting behind the current one (Shift)
 
 export class Unit {
   static type = '';
@@ -27,6 +38,7 @@ export class Unit {
     this.order = { kind: 'idle' };
     this.queue = [];                    // orders given with Shift: each starts when the one before is done
     this.guardX = x; this.guardY = y;   // where an idle unit stands guard
+    this.post = null;                   // its place at the end of a move, kept while idle: { x, y, tries, wait, going, look } (settle)
     this.target = null;                 // { k: 'u' | 'c', id }
     this.route = null;                  // { pts, idx, gx, gy, time }
     this.unreachable = false;
@@ -39,29 +51,34 @@ export class Unit {
     this.lastPlayerHit = null;          // { owner, time } of the last hit by another player's unit or city
     this.disbanding = false;            // Delete key: losing HP until dead
     this.inspired = false;              // near one of its owner's Heroes this tick (Game.inspire)
-    this.standFirm = false;             // Last Stand: outnumbered, taking less damage (Game.checkStandFirm)
-    this.standCheckAt = 0;              // game time of its next outnumbered check
     this.stuck = 0;
     this.wantMove = 0;
     this.attacking = false;
     this.engaged = 0;
     this.slide = 1;
+    // Units that fire single shots (`reload` in UNITS: battleships): the game time their guns are loaded
+    // again, and the time of their last shot (sendSnapshots tells the browsers, which draw it).
+    this.readyAt = 0;
+    this.shotAt = -1;
+    // Units with `accelTime` (battleships): how fast they go now, and the last tick they moved (currentSpeed).
+    this.speed = 0;
+    this.movedTick = -1;
   }
 
   // ---------------------------------------------------------------- attributes
   get stats() { return UNITS[this.type]; }
+  // Full speed (km/s): its moveSpeed, faster for ships with Navigation (Ship).
+  get moveSpeed() { return this.stats.moveSpeed; }
   get maxHp() { return this.stats.hp; }
   get r() { return this.stats.size; }
   get isCity() { return false; }
   get isRanged() { return this.stats.attackRange > 0; }
   get naval() { return false; }
-  // Near one of its owner's Heroes: HERO.auraBonus more damage. With the tradition Last Stand: always
-  // TRADITIONS.lastStand.damageBonus more. The two add up.
+  // Can it fight at all? Every land unit can; ships only with guns (Ship.armed).
+  get armed() { return true; }
+  // Near one of its owner's Heroes: HERO.auraBonus more damage.
   get damage() {
-    let f = 1;
-    if (this.inspired) f += HERO.auraBonus;
-    if (this.game.hasTradition(this.owner, 'lastStand')) f += TRADITIONS.lastStand.damageBonus;
-    return this.stats.damage * f;
+    return this.inspired ? this.stats.damage * (1 + HERO.auraBonus) : this.stats.damage;
   }
 
   // Centre-to-centre distance at which this unit can hit `target`.
@@ -73,6 +90,12 @@ export class Unit {
     return Math.hypot(o.x - this.x, o.y - this.y);
   }
 
+  // Can it hit `o` from where it stands? Within reach and, for ranged units (archers, battleships), with no
+  // mountains between them: arrows and shells don't fly over them (NavGrid.lineOfFire).
+  canHit(o) {
+    return this.dist(o) <= this.reach(o) && (!this.isRanged || this.game.nav.lineOfFire(this.x, this.y, o.x, o.y));
+  }
+
   // ---------------------------------------------------------------- orders
   // Every order* method (and makeIdle) is a new order: it replaces the current one and drops the
   // queued ones. Shift + order goes through queueOrder instead.
@@ -81,14 +104,24 @@ export class Unit {
     this.order = { kind: 'idle' };
     this.guardX = this.x;
     this.guardY = this.y;
+    this.post = null;
     this.target = null;
     this.route = null;
     this.unreachable = false;
   }
 
-  orderMove(x, y, amove, route = null) {
+  // Idle at (x, y), its place at the end of a move: it stands guard there and walks back to it when pushed
+  // off it (settle).
+  keepPost(x, y) {
+    this.post = { x, y, tries: 0, wait: 0, going: false, look: 0 };
+    this.guardX = x;
+    this.guardY = y;
+  }
+
+  // `place`: (x, y) is its own place in a group's formation, which it keeps once there (walkOrder).
+  orderMove(x, y, amove, route = null, place = false) {
     this.queue.length = 0;
-    this.order = { kind: amove ? 'amove' : 'move', x, y };
+    this.order = { kind: amove ? 'amove' : 'move', x, y, ...(place ? { place: true } : {}) };
     this.setOff(route);
   }
 
@@ -102,6 +135,7 @@ export class Unit {
   // REPLAN_INTERVAL throttles re-planning along the way, not new orders (otherwise a player
   // clicking again within that time would leave the units standing still until it runs out).
   setOff(route) {
+    this.post = null;
     this.target = null;
     this.stuck = 0;
     this.sliding = 0;
@@ -162,7 +196,7 @@ export class Unit {
 
   startQueued(o) {
     if (o.kind === 'attack') this.orderAttack(o.tk, o.tid);
-    else this.orderMove(o.x, o.y, o.kind === 'amove');
+    else this.orderMove(o.x, o.y, o.kind === 'amove', null, !!o.place);
   }
 
   // Where an order takes the unit (an attack: where its target is now), or null for orders that
@@ -237,6 +271,8 @@ export class Unit {
       if (!target) {
         if (this.order.kind === 'amove') {
           this.walkOrder(dt);
+        } else if (this.post) {
+          this.settle(dt);
         } else if (Math.hypot(this.x - this.guardX, this.y - this.guardY) > 30) {
           // Drift back to the guard post after a chase or after being pushed.
           if (this.travel(this.guardX, this.guardY, dt, 0, true) || this.unreachable) {
@@ -250,8 +286,82 @@ export class Unit {
     this.engage(target, dt);
   }
 
+  // A move or attack-move: once there (or held up close to it by the crowd there), the next queued order.
+  // With none, a unit sent to its own place in a group's formation (order `place`) stays idle with that place
+  // as its post (settle), so a unit held up on the way by others, or pushed off its place by units passing
+  // through, still gets to it. That keeps a big army's formation in shape. Units sent to a spot they share
+  // (a city's rally point, a single unit's move) just stop where the crowd there lets them.
   walkOrder(dt) {
-    if (this.travel(this.order.x, this.order.y, dt, 0, true) || this.unreachable) this.done();
+    if (!this.travel(this.order.x, this.order.y, dt, 0, true) && !this.unreachable) return;
+    const place = this.order.place && !this.unreachable && !this.naval ? [this.order.x, this.order.y] : null;
+    this.done();
+    if (place && this.order.kind === 'idle') this.keepPost(...place);
+  }
+
+  // Idle with a post: a unit of its owner on the move pressing against it goes by first: this one steps aside
+  // (stepAside), so units at their places, or on their way back to them, never wall others in, not even in a
+  // narrow pass. Further than SETTLE_DIST off its post, walk back all the way. Held up on the way, wait a
+  // little and try again; held up SETTLE_TRIES times in a row (its place is taken for good), or no way
+  // there, give it up and stand guard where it is.
+  settle(dt) {
+    const p = this.post, g = this.game;
+    const by = g.time >= p.look ? this.makingWay() : null;
+    if (!by && g.time >= p.look) p.look = g.time + MAKE_WAY_LOOK;
+    if (by) {
+      this.route = null;
+      this.stepAside(by, dt);
+      p.going = true;
+      p.wait = g.time + MAKE_WAY_WAIT;
+      return;
+    }
+    if (!p.going && Math.hypot(this.x - p.x, this.y - p.y) <= SETTLE_DIST) return;
+    if (g.time < p.wait) return;
+    if (this.stuck > SETTLE_STUCK) {
+      this.stuck = 0;
+      this.route = null;
+      if (++p.tries >= SETTLE_TRIES) { this.makeIdle(); return; }
+      p.wait = g.time + SETTLE_WAIT;
+      return;
+    }
+    p.going = true;
+    if (this.travel(p.x, p.y, dt, 0, false)) {
+      p.going = false;
+      p.tries = 0;
+      return;
+    }
+    if (this.unreachable) this.makeIdle();
+  }
+
+  // A land unit of its owner on the move (walking somewhere, to a fight or to a transport, not fighting)
+  // pressing against it, within MAKE_WAY km of touching, or null. Uses this tick's unit grid.
+  makingWay() {
+    let by = null;
+    this.game.unitGrid.forEachNear(this.x, this.y, this.r + MAKE_WAY + 12, (o) => {
+      if (by || o === this || o.owner !== this.owner || o.naval || o.attacking) return;
+      if (!o.busy && o.order.kind !== 'board') return;
+      if (Math.hypot(o.x - this.x, o.y - this.y) < this.r + o.r + MAKE_WAY) by = o;
+    });
+    return by;
+  }
+
+  // Out of the way of `by`, a unit of its owner on the move: a step across its way, to the side this unit
+  // is on (along the coast or round a city when one is in the way, as stepToward slides).
+  stepAside(by, dt) {
+    let hx = by.x - by.px, hy = by.y - by.py;          // its way: where it went last...
+    if (Math.hypot(hx, hy) < 0.01) {                   // ...or, held up, where it is going
+      const wp = by.route?.pts?.[by.route.idx] || (by.order.x !== undefined ? [by.order.x, by.order.y] : [this.x, this.y]);
+      hx = wp[0] - by.x; hy = wp[1] - by.y;
+    }
+    const len = Math.hypot(hx, hy);
+    let sx, sy;
+    if (len < 0.01) {                                  // no way to tell: straight away from it
+      const d = this.dist(by) || 1;
+      sx = (this.x - by.x) / d; sy = (this.y - by.y) / d;
+    } else {
+      sx = -hy / len; sy = hx / len;
+      if ((this.x - by.x) * sx + (this.y - by.y) * sy < 0) { sx = -sx; sy = -sy; }
+    }
+    this.stepToward(this.x + sx * 10, this.y + sy * 10, dt, 0);
   }
 
   // Walk to the transport's gather point; close enough to the transport, go on board (the game
@@ -273,7 +383,7 @@ export class Unit {
   // enemy within reach. Nothing out of reach is chased.
   holdGround(dt) {
     let t = this.target ? this.game.resolve(this.target.k, this.target.id, this.owner) : null;
-    if (!t || this.dist(t) > this.reach(t)) {
+    if (!t || !this.canHit(t)) {
       t = this.findInReach();
       this.target = t ? { k: t.isCity ? 'c' : 'u', id: t.id } : null;
     }
@@ -304,6 +414,20 @@ export class Unit {
       }
       if (!target) { this.target = null; this.route = null; this.unreachable = false; }
     }
+    // Attack-move: a unit it went for that has moved out of reach is not chased like the target of an
+    // attack order. At every scan the nearest enemy unit in sight is taken instead (the same one while it
+    // is still the nearest); with none in sight the unit lets it go and walks on.
+    if (target && !target.isCity && this.order.kind === 'amove' && g.time >= this.nextScanAt &&
+        !this.canHit(target)) {
+      this.nextScanAt = g.time + SCAN_INTERVAL;
+      const nearest = this.findEnemyUnit();
+      if (nearest !== target) {
+        target = nearest;
+        this.target = nearest ? { k: 'u', id: nearest.id } : null;
+        this.route = null;
+        this.unreachable = false;
+      }
+    }
     // Busy with a city: drop it as soon as an enemy unit shows up.
     if (target && target.isCity && g.time >= this.nextScanAt) {
       this.nextScanAt = g.time + SCAN_INTERVAL;
@@ -326,9 +450,9 @@ export class Unit {
     return target;
   }
 
-  // Can this unit fight `o` from here: already in reach, or walkable straight line?
+  // Can this unit fight `o` from here: can hit it already, or walkable straight line?
   canEngage(o) {
-    if (this.dist(o) <= this.reach(o)) return true;
+    if (this.canHit(o)) return true;
     return this.game.nav.los(this.x, this.y, o.x, o.y);
   }
 
@@ -378,21 +502,20 @@ export class Unit {
     g.unitGrid.forEachNear(this.x, this.y, extra + 8, (o) => {
       if (o.owner === this.owner || o.hp <= 0) return;
       const d = this.dist(o) - o.r;
-      if (d <= extra && d < bd) { bd = d; best = o; }
+      if (d <= extra && d < bd && this.canHit(o)) { bd = d; best = o; }
     });
     if (best) return best;
     g.cityGrid.forEachNear(this.x, this.y, extra + CITY.size, (c) => {
       if (c.owner === this.owner) return;
       const d = this.dist(c) - c.r;
-      if (d <= extra && d < bd) { bd = d; best = c; }
+      if (d <= extra && d < bd && this.canHit(c)) { bd = d; best = c; }
     });
     return best;
   }
 
   // ---------------------------------------------------------------- combat
   engage(target, dt) {
-    const reach = this.reach(target);
-    if (this.dist(target) <= reach) {
+    if (this.canHit(target)) {
       this.route = null;
       this.hit(target, dt);
       return;
@@ -401,15 +524,38 @@ export class Unit {
       const alt = this.findInReach();
       if (alt) { this.hit(alt, dt); return; }
     }
-    this.travel(target.x, target.y, dt, reach * 0.9, false);
+    const spot = this.approach(target);
+    if (spot) this.travel(spot[0], spot[1], dt, spot[2], false);
+    else this.unreachable = true;
     if (this.unreachable && this.order.kind === 'attack') this.done();
   }
 
+  // Where to go to hit `target`, [x, y, how close]: towards the target itself, until within reach of it.
+  // A ranged unit with mountains in its line of fire goes on towards it (round them, as paths do) until
+  // it has a clear shot (engage fires as soon as canHit). Ships override it (a target on land is shelled
+  // from the water nearest to it with a clear line of fire). Null: nowhere.
+  approach(target) {
+    const blocked = this.isRanged && !this.game.nav.lineOfFire(this.x, this.y, target.x, target.y);
+    return [target.x, target.y, blocked ? this.r + target.r : this.reach(target) * 0.9];
+  }
+
+  // Damage every second; units with `reload` (battleships) instead fire one shot of `damage` whenever
+  // their guns are loaded. Reloading goes on whatever the unit does, moving included, so it can sail
+  // off between two shots and fire at once on coming back.
   hit(target, dt) {
     this.attacking = true;
     this.lastCombat = this.game.time;
     this.engaged = target.isCity ? -(target.id + 1) : target.id;
-    target.receiveDamage(this.damage * dt, this);
+    const reload = this.stats.reload;
+    if (!reload) {
+      target.receiveDamage(this.damage * dt, this);
+      return;
+    }
+    const now = this.game.time;
+    if (now < this.readyAt - 1e-6) return;          // still loading (1e-6: ticks add up to a little less)
+    this.readyAt = now + reload;
+    this.shotAt = now;
+    target.receiveDamage(this.damage, this);
   }
 
   // This unit replaces `u` where it stands (a unit made a Hero): the same orders, guard post, target
@@ -420,6 +566,7 @@ export class Unit {
     this.order = u.order;
     this.queue = u.queue;
     this.guardX = u.guardX; this.guardY = u.guardY;
+    this.post = u.post;
     this.target = u.target;
     this.route = u.route;
     this.unreachable = u.unreachable;
@@ -431,9 +578,8 @@ export class Unit {
     this.value = u.value ?? UNITS[u.type].cost;
   }
 
-  // Standing firm (Last Stand, outnumbered): TRADITIONS.lastStand.damageCut less damage, from units and cities alike.
   receiveDamage(amount, attacker) {
-    this.hp -= this.standFirm ? amount * (1 - TRADITIONS.lastStand.damageCut) : amount;
+    this.hp -= amount;
     this.lastHitOwner = attacker.owner;   // who gets the kill if this was the last hit
     if (this.game.players.has(attacker.owner)) this.lastPlayerHit = { owner: attacker.owner, time: this.game.time };
     this.lastCombat = this.game.time;
@@ -526,7 +672,7 @@ export class Unit {
     const dx = x - this.x, dy = y - this.y;
     const d = Math.hypot(dx, dy);
     if (d <= stopDist + 0.01) return;
-    const step = Math.min(this.stats.moveSpeed * dt, d - stopDist);
+    const step = Math.min(this.currentSpeed(dt) * dt, d - stopDist);
     this.wantMove = step;
     let nx = this.x + (dx / d) * step, ny = this.y + (dy / d) * step;
     if (this.blocked(nx, ny)) {
@@ -548,5 +694,18 @@ export class Unit {
     }
     this.x = nx;
     this.y = ny;
+    this.movedTick = this.game.tickCount;
+  }
+
+  // How fast it goes this tick. A unit with `accelTime` (battleships) that stood still the tick before
+  // (stopped to shoot, idle, on hold, held up) starts again from rest and reaches full speed (moveSpeed)
+  // after accelTime seconds, so a ship that stops to fire falls behind one that keeps going. Every other
+  // unit goes at full speed at once.
+  currentSpeed(dt) {
+    const s = this.stats, max = this.moveSpeed;
+    if (!s.accelTime) return max;
+    if (this.movedTick !== this.game.tickCount - 1) this.speed = 0;
+    this.speed = Math.min(max, this.speed + (max / s.accelTime) * dt);
+    return this.speed;
   }
 }

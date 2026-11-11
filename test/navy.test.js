@@ -225,6 +225,8 @@ test('transports steer clear of the guns of coastal cities where the sea allows'
   for (const c of game.cities) c.owner = -1;              // every city shoots at A's ship...
   const rome = ctx.city('Rome');
   rome.owner = a.id;                                      // ...except its home port
+  rome.portOverride = true;                               // Rome stands inland now: made coastal, as an admin can
+  rome.updatePort();
   game.recount();
   const ship = game.spawnUnit(rome, 'transport');
   for (const u of troops(ctx, a, 4, rome.x + 30, rome.y)) { game.units.delete(u.id); ship.cargo.push(u); }
@@ -435,6 +437,54 @@ test('a right-click on land with a loaded transport lands its units there; on wa
   assert.equal(ship.order.kind, 'move');
 });
 
+// The place clicked for a landing only says where the transports land (park there); what Shift adds on land
+// is where the units go (go there), straight from the beach.
+test('Shift while landing units: an order on land is for the units on board once ashore, one on the water for the ship', () => {
+  const ctx = setup();
+  const { game, a, b, run, city } = ctx;
+  const { c: brest, ship } = harbour(ctx, a, 'Brest');
+  const army = troops(ctx, a, 3, brest.x + 30, brest.y);
+  game.handleCommand(a, { t: 'board', ship: ship.id, ids: army.map((u) => u.id) });
+  run(15);
+  assert.equal(ship.cargo.length, 3);
+  // Britain is yours, but for York.
+  const london = city('London'), britain = nav.landmass(london.x, london.y);
+  for (const c of game.cities) if (nav.landmass(c.x, c.y) === britain) c.owner = a.id;
+  const york = city('York');
+  york.owner = b.id;
+
+  game.handleCommand(a, { t: 'unload', ids: [ship.id], x: london.x + 20, y: london.y + 20 });
+  const field = nav.nearestWalkable(london.x - 40, london.y - 60, 40);
+  assert.equal(nav.landmass(field[0], field[1]), britain, 'the field is in Britain');
+  game.handleCommand(a, { t: 'move', ids: [ship.id], x: field[0], y: field[1], queue: true });
+  game.handleCommand(a, { t: 'attack', ids: [ship.id], k: 'c', id: york.id, queue: true });
+  const [wx, wy] = seaSpot(nav.seaAt(ship.x, ship.y), [london.x, london.y], 60, 200);
+  game.handleCommand(a, { t: 'move', ids: [ship.id], x: wx, y: wy, queue: true });
+  assert.equal(ship.order.kind, 'unload', 'the transport still lands them');
+  assert.deepEqual(ship.order.then.map((q) => q.kind), ['move', 'attack'], 'the orders on land are for the units on board');
+  assert.equal(ship.queue.length, 1, 'the one on the water is the ship\'s');
+
+  // Your browser draws their way from the shore: the field, then York (not the place clicked for the landing).
+  const snap = [];
+  a.client = { send: (m) => { if (m.t === 'snap') snap.push(m); } };
+  game.sendSnapshots();
+  const plan = snap[0].wl.find(([id]) => id === ship.id);
+  assert.deepEqual(plan.slice(1, 3), [Math.round(ship.order.lx), Math.round(ship.order.ly)], 'from the beach where they land');
+  assert.deepEqual(plan.slice(3, 6), [0, Math.round(field[0]), Math.round(field[1])]);
+  assert.deepEqual(plan.slice(6), [2, Math.round(york.x), Math.round(york.y)]);
+
+  for (let t = 0; t < 60 && ship.cargo.length; t += 0.05) run(0.05);
+  assert.equal(ship.cargo.length, 0, 'everyone is ashore');
+  for (const u of army) {
+    assert.equal(u.order.kind, 'move', 'they set off for the field straight from the beach');
+    assert.ok(Math.hypot(u.order.x - field[0], u.order.y - field[1]) < 40, 'to their places by the field');
+    assert.deepEqual(u.queue.map((q) => q.kind), ['attack'], 'then York');
+    assert.equal(u.queue[0].tid, york.id);
+  }
+  assert.equal(ship.order.kind, 'move', 'the transport sails on to the water it was sent to');
+  assert.ok(Math.hypot(ship.order.x - wx, ship.order.y - wy) < 40);
+});
+
 test('units step ashore only where there is room; the others wait on board until there is', () => {
   const ctx = setup();
   const { game, a, run, city } = ctx;
@@ -600,9 +650,9 @@ test('a transport at anchor far from the beach stays there after taking units on
 });
 test('transports find their way through narrow waters, round capes and peninsulas', () => {
   // Beaches where a transport at anchor 50 km out used to slide along the coast for ever, or give up
-  // there, on its way to take one unit on board or back: the fjords by Tromsø, the Baltic islands,
-  // a channel one cell wide off Africa.
-  for (const [bx, by] of [[238, -1937], [368, -627], [403, -632], [1848, 2038], [1858, 2038]]) {
+  // there, on its way to take one unit on board or back: the strait between Tromsø and its islands, the
+  // Baltic islands, a channel one cell wide off Africa.
+  for (const [bx, by] of [[250, -1925], [368, -627], [403, -632], [1848, 2038], [1858, 2038]]) {
     const ctx = setup();
     const { game, a, b, run, city } = ctx;
     for (const c of game.cities) c.owner = a.id;                 // no guns on the way...
@@ -628,21 +678,23 @@ test('transports find their way through narrow waters, round capes and peninsula
   }
 });
 
-test('about a fifth of the coast is beach: only there do ships take units on board and land them', () => {
+test('all of the coast is beach: ships take units on board and land them anywhere on it', () => {
   const { game, a, city } = setup();
-  // The coastline as the map draws it: every piece shows the shore cell nearest to it, beach or cliff.
-  // That is about a fifth of the drawn coast, every beach is drawn, and every beach drawn takes ships.
+  // The coastline as the map draws it: every piece shows the shore cell nearest to it. All of them are
+  // beaches; only the pieces around islets too small for the land grid have no shore cell (no land to
+  // land on), and are drawn as plain coast. Every beach is drawn, and every beach drawn takes ships.
   const dockable = new Set();
   for (const list of nav.landing.values()) for (let k = 0; k < list.length; k += 2) dockable.add(list[k]);
   const drawn = new Set();
-  let pieces = 0, onBeach = 0;
+  let pieces = 0, onShore = 0, onBeach = 0;
   forEachCoastPiece(map, (ax, ay, bx, by) => {
     pieces++;
     const c = nearestCell(nav, (ax + bx) / 2, (ay + by) / 2, (k) => nav.shore[k] === 1);
+    if (c >= 0) onShore++;
     if (c >= 0 && nav.beach[c]) { onBeach++; drawn.add(c); }
   });
-  const share = onBeach / pieces;
-  assert.ok(share >= 0.2 && share <= 0.25, `${(share * 100).toFixed(1)}% of the drawn coast is beach`);
+  assert.equal(onBeach, onShore, 'every piece of drawn coast with land behind it is beach');
+  assert.ok(onBeach / pieces > 0.97, `${(onBeach / pieces * 100).toFixed(1)}% of the drawn coast is beach`);
   let beaches = 0;
   for (let c = 0; c < nav.beach.length; c++) {
     if (!nav.beach[c]) continue;
@@ -650,20 +702,22 @@ test('about a fifth of the coast is beach: only there do ships take units on boa
     assert.ok(drawn.has(c), 'every beach is drawn on the map');
   }
   for (const c of drawn) assert.ok(dockable.has(c), 'and every beach drawn takes ships');
-  // Every landmass with a city, or bigger than 40 cells (1,000 km²), has a beach on each of its seas;
-  // tiny ones without a city have none.
+  // Every island has beaches on each of its seas, the tiny ones without a city too.
   const size = new Map();
   for (let c = 0; c < nav.comp.length; c++) if (nav.comp[c]) size.set(nav.comp[c], (size.get(nav.comp[c]) || 0) + 1);
   const settled = new Set(game.cities.map((c) => nav.landmass(c.x, c.y)));
   let tiny = 0;
-  for (const key of nav.coasts.keys()) {
-    const land = Math.floor(key / 65536), may = settled.has(land) || size.get(land) >= 40;
-    if (!may) tiny++;
-    assert.equal(nav.landing.has(key), may, may ? 'a beach on every island that may have one' : 'none on tiny islets without a city');
+  for (const [key, list] of nav.coasts) {
+    let shore = false;
+    for (let k = 0; k < list.length; k += 2) if (nav.shore[list[k]]) shore = true;
+    if (!shore) continue;                                    // not on the drawn coastline
+    assert.ok(nav.landing.has(key), 'a beach on every island, on each of its seas');
+    const land = Math.floor(key / 65536);
+    if (!settled.has(land) && size.get(land) < 40) tiny++;
   }
-  assert.ok(tiny > 100, 'there are many such islets');
+  assert.ok(tiny > 100, `islets without a city have beaches too (${tiny})`);
   // A harbour by every coastal city.
-  for (const name of ['Lisbon', 'Brest', 'Genoa', 'Athens', 'Plymouth']) {
+  for (const name of ['Lisbon', 'Brest', 'Nice', 'Athens', 'Plymouth']) {
     const c = city(name);
     const near = nav.coastNear(c.x, c.y, nav.landmass(c.x, c.y), c.port.sea, 35);
     assert.ok(near, `${name} has a beach next to it`);
@@ -685,10 +739,10 @@ test('about a fifth of the coast is beach: only there do ships take units on boa
 test('the units pick the beach nearest to them, and the transport sails there', () => {
   const ctx = setup();
   const { game, a, city } = ctx;
-  // A transport out in the Atlantic, units by Marseille on the Mediterranean (one sea, one landmass).
-  const brest = city('Brest'), marseille = city('Marseille');
+  // A transport out in the Atlantic, units by Montpellier on the Mediterranean (one sea, one landmass).
+  const brest = city('Brest'), montpellier = city('Montpellier');
   const ship = ctx.spawn(a.id, 'transport', brest.port.x - 150, brest.port.y);
-  const army = troops(ctx, a, 3, marseille.x, marseille.y - 40);
+  const army = troops(ctx, a, 3, montpellier.x, montpellier.y - 40);
   game.handleCommand(a, { t: 'board', ship: ship.id, ids: army.map((u) => u.id) });
   assert.equal(ship.order.kind, 'dock');
   const cx = army.reduce((s, u) => s + u.x, 0) / 3, cy = army.reduce((s, u) => s + u.y, 0) / 3;
@@ -700,8 +754,313 @@ test('the units pick the beach nearest to them, and the transport sails there', 
 
   // More units clicked onto the same transport while it is on its way: they join the same place.
   const dock = [ship.order.x, ship.order.y];
-  const more = troops(ctx, a, 2, marseille.x - 100, marseille.y - 60);
+  const more = troops(ctx, a, 2, montpellier.x - 100, montpellier.y - 60);
   game.handleCommand(a, { t: 'board', ship: ship.id, ids: more.map((u) => u.id) });
   assert.deepEqual([ship.order.x, ship.order.y], dock, 'the meeting place stays where it was');
   assert.ok(more.every((u) => u.order.kind === 'board'));
+});
+
+test('Autoload: the selected transports take the idle units around them on board, each unit the nearest one with room', () => {
+  const ctx = setup();
+  const { game, a, run } = ctx;
+  const { c, events } = harbour(ctx, a, 'Brest');
+  const sea = c.port.sea;
+  const fleet = [0, 1, 2].map((k) => {
+    const [x, y] = nav.nearestSea(c.port.x - 10 - k * 25, c.port.y + k * 10, 40, sea);
+    return ctx.spawn(a.id, 'transport', x, y);
+  });
+  const [bx, by] = nav.nearestSea(c.port.x - 20, c.port.y - 30, 40, sea);
+  const battleship = ctx.spawn(a.id, 'battleship', bx, by);
+  const army = troops(ctx, a, 30, c.x + 40, c.y);
+  // Units with orders stay, and so do idle units out of reach.
+  const [walker, holder] = troops(ctx, a, 2, c.x + 20, c.y - 50);
+  game.handleCommand(a, { t: 'move', ids: [walker.id], x: c.x + 60, y: c.y - 50 });
+  game.handleCommand(a, { t: 'hold', ids: [holder.id] });
+  const land = nav.landmass(c.x, c.y);
+  const farSpot = nav.nearestWalkable(c.x + NAVAL.autoloadRange + 150, c.y, 60);
+  assert.equal(nav.landmass(farSpot[0], farSpot[1]), land, 'the far spot is on the same land');
+  const [far] = troops(ctx, a, 1, farSpot[0], farSpot[1]);
+
+  game.handleCommand(a, { t: 'autoload', ids: [...fleet, battleship].map((s) => s.id) });
+  const goingTo = (ship) => army.filter((u) => u.order.kind === 'board' && u.order.ship === ship.id);
+  for (const ship of fleet) {
+    assert.equal(ship.order.kind, 'dock', 'each transport sails to a beach');
+    assert.equal(goingTo(ship).length, UNITS.transport.capacity, 'and gets a full load');
+  }
+  assert.equal(army.filter((u) => u.order.kind === 'idle').length, 30 - 3 * UNITS.transport.capacity, 'the rest stay');
+  assert.deepEqual(events.at(-1), { t: 'event', kind: 'autoload', count: 24, ships: 3 });
+  assert.equal(walker.order.kind, 'move', 'a unit walking somewhere keeps going');
+  assert.equal(holder.order.kind, 'hold', 'a unit holding its ground stays');
+  assert.equal(far.order.kind, 'idle', `units more than ${NAVAL.autoloadRange} km away stay`);
+  assert.notEqual(battleship.order.kind, 'dock', 'a battleship carries nobody');
+  for (let i = 0; i < fleet.length; i++) {
+    for (let j = i + 1; j < fleet.length; j++) {
+      const d = Math.hypot(fleet[i].order.x - fleet[j].order.x, fleet[i].order.y - fleet[j].order.y);
+      assert.ok(d >= 2 * fleet[0].r, `transports ${i} and ${j} get their own docks (${d.toFixed(1)} km apart)`);
+    }
+  }
+  // Each unit went to the nearest transport that had room: the first transport's load is no farther
+  // from it than the units left ashore.
+  const nearest = fleet.reduce((p, s) => {
+    const d = Math.min(...army.map((u) => Math.hypot(u.x - s.x, u.y - s.y)));
+    return !p || d < p.d ? { s, d } : p;
+  }, null).s;
+  const dist = (u) => Math.hypot(u.x - nearest.x, u.y - nearest.y);
+  const left = army.filter((u) => u.order.kind === 'idle');
+  assert.ok(Math.max(...goingTo(nearest).map(dist)) <= Math.min(...left.map(dist)), 'the closest units go');
+
+  for (let t = 0; t < 60 && fleet.some((s) => s.cargo.length < s.capacity); t += 1) run(1);
+  for (const ship of fleet) assert.equal(ship.cargo.length, UNITS.transport.capacity, 'all on board');
+
+  game.handleCommand(a, { t: 'autoload', ids: fleet.map((s) => s.id) });
+  assert.equal(events.at(-1).reason, 'full', 'full transports take nobody');
+  assert.ok(left.every((u) => u.order.kind === 'idle'));
+});
+
+test('Autoload: a transport already waiting at a beach fills up its places there', () => {
+  const ctx = setup();
+  const { game, a } = ctx;
+  const { c, ship, events } = harbour(ctx, a, 'Brest');
+  const first = troops(ctx, a, 3, c.x + 30, c.y);
+  game.handleCommand(a, { t: 'board', ship: ship.id, ids: first.map((u) => u.id) });
+  const dock = [ship.order.x, ship.order.y];
+  const more = troops(ctx, a, 10, c.x + 30, c.y + 60);
+  game.handleCommand(a, { t: 'autoload', ids: [ship.id] });
+  assert.deepEqual([ship.order.x, ship.order.y], dock, 'the meeting place stays where it was');
+  assert.equal(more.filter((u) => u.order.kind === 'board').length, 5, 'only the places still free are filled');
+  assert.ok(first.every((u) => u.order.kind === 'board' && u.order.ship === ship.id), 'the ones on their way keep going');
+  assert.deepEqual(events.at(-1), { t: 'event', kind: 'autoload', count: 5, ships: 1 });
+});
+
+test('Autoload: nobody to take, or no Seafaring', () => {
+  const ctx = setup();
+  const { game, a } = ctx;
+  const { c, ship, events } = harbour(ctx, a, 'Brest');
+  game.handleCommand(a, { t: 'autoload', ids: [ship.id] });
+  assert.equal(events.at(-1).reason, 'none', 'no idle units nearby');
+  const army = troops(ctx, a, 4, c.x + 30, c.y);
+  a.tech = { ...a.tech, seafaring: 0 };
+  const before = events.length;
+  game.handleCommand(a, { t: 'autoload', ids: [ship.id] });
+  assert.equal(events.length, before, 'without Seafaring the order is ignored');
+  assert.ok(army.every((u) => u.order.kind === 'idle'));
+  assert.equal(ship.order.kind, 'idle');
+});
+
+test('Autoload with land units selected: they find your transports around them and go on board', () => {
+  const ctx = setup();
+  const { game, a, run } = ctx;
+  const { c, ship, events } = harbour(ctx, a, 'Brest');
+  const sea = c.port.sea;
+  const [x2, y2] = nav.nearestSea(c.port.x - 40, c.port.y + 20, 40, sea);
+  const second = ctx.spawn(a.id, 'transport', x2, y2);
+  // A transport busy elsewhere (sailing off) is left alone; one out of reach too.
+  const [x3, y3] = nav.nearestSea(c.port.x - 30, c.port.y - 30, 40, sea);
+  const busy = ctx.spawn(a.id, 'transport', x3, y3);
+  game.handleCommand(a, { t: 'move', ids: [busy.id], x: x3 - 200, y: y3 });
+  const far = ctx.spawn(a.id, 'transport', c.port.x - NAVAL.autoboardRange - 300, c.port.y);
+  assert.ok(nav.seaAt(far.x, far.y) > 0);
+  const army = troops(ctx, a, 20, c.x + 60, c.y);
+  game.handleCommand(a, { t: 'move', ids: army.slice(0, 5).map((u) => u.id), x: c.x + 100, y: c.y });
+
+  game.handleCommand(a, { t: 'autoload', ids: army.map((u) => u.id) });
+  const goingTo = (s) => army.filter((u) => u.order.kind === 'board' && u.order.ship === s.id);
+  assert.equal(goingTo(ship).length + goingTo(second).length, 16, 'two transports, 8 places each: walking units come too');
+  assert.equal(goingTo(busy).length + goingTo(far).length, 0, 'a transport sailing off, or far away, is not called');
+  assert.equal(busy.order.kind, 'move');
+  assert.deepEqual(events.at(-1), { t: 'event', kind: 'autoload', count: 16, ships: 2, left: 4 });
+  for (let t = 0; t < 60 && ship.cargo.length + second.cargo.length < 16; t++) run(1);
+  assert.equal(ship.cargo.length + second.cargo.length, 16, 'all on board');
+
+  // Nobody left with room: the rest are told so.
+  const rest = army.filter((u) => game.units.has(u.id));
+  game.handleCommand(a, { t: 'autoload', ids: rest.map((u) => u.id) });
+  assert.equal(events.at(-1).reason, 'noship');
+  assert.ok(rest.every((u) => u.order.kind !== 'board'));
+});
+
+test('Autoload with transports and land units selected: the units look for transports, the full selected one is no matter', () => {
+  const ctx = setup();
+  const { game, a } = ctx;
+  const { c, ship, events } = harbour(ctx, a, 'Brest');
+  // The selected transport is full; a free one lies nearby, not selected.
+  for (const u of troops(ctx, a, UNITS.transport.capacity, c.x + 30, c.y - 80)) { game.units.delete(u.id); ship.cargo.push(u); }
+  const [x2, y2] = nav.nearestSea(c.port.x - 40, c.port.y + 20, 40, c.port.sea);
+  const free = ctx.spawn(a.id, 'transport', x2, y2);
+  const picked = troops(ctx, a, 6, c.x + 30, c.y);
+  const idle = troops(ctx, a, 4, c.x + 30, c.y + 60);     // idle and near, but not selected
+  game.handleCommand(a, { t: 'autoload', ids: [ship.id, ...picked.map((u) => u.id)] });
+  assert.ok(picked.every((u) => u.order.kind === 'board' && u.order.ship === free.id), 'the selected units go to the free transport');
+  assert.equal(ship.order.kind, 'idle', 'the full one stays where it is');
+  assert.ok(idle.every((u) => u.order.kind === 'idle'), 'units not selected stay: the units asked, not the transport');
+  assert.deepEqual(events.at(-1), { t: 'event', kind: 'autoload', count: 6, ships: 1 });
+  // Selected again: they already have a transport.
+  game.handleCommand(a, { t: 'autoload', ids: [ship.id, ...picked.map((u) => u.id)] });
+  assert.equal(events.at(-1).reason, 'assigned');
+});
+
+test('only its owner sees how many units a transport carries', () => {
+  const ctx = setup();
+  const { game, a, b, run } = ctx;
+  const { c, ship } = harbour(ctx, a, 'Brest');
+  const army = troops(ctx, a, 3, c.x + 30, c.y);
+  game.handleCommand(a, { t: 'board', ship: ship.id, ids: army.map((u) => u.id) });
+  run(15);
+  assert.equal(ship.cargo.length, 3);
+  const snaps = new Map();
+  for (const p of [a, b]) {
+    p.view = { x0: c.x - 500, y0: c.y - 500, x1: c.x + 500, y1: c.y + 500 };
+    p.client = { send: (m) => { if (m.t === 'snap') snaps.set(p, m); } };
+  }
+  game.sendSnapshots();
+  const flagsFor = (p) => { const u = snaps.get(p).u, i = u.indexOf(ship.id); return u[i + 6]; };
+  assert.equal(flagsFor(a) >> CARGO_SHIFT, 3, 'the owner sees 3 on board');
+  assert.ok(snaps.get(b).u.includes(ship.id), 'the enemy sees the transport');
+  assert.equal(flagsFor(b) >> CARGO_SHIFT, 0, 'but not how many it carries');
+  assert.equal(snaps.get(b).b.length, 0, 'nor who');
+});
+
+// A fleet sent to land at one place uses docks all along the coast. Each transport used to give its own units
+// the same few places round the target, so hundreds of units headed for the same spots and jammed there.
+test('a fleet landing along a long coast gives every unit a place of its own, and they all get there', () => {
+  const ctx = setup();
+  const { game, a, run, city } = ctx;
+  const ships = [];
+  for (const name of ['Lisbon', 'Porto', 'Valencia', 'Bilbao']) {
+    const port = city(name).port;
+    for (let k = 0; k < 3; k++) {
+      const [x, y] = nav.nearestSea(port.x - 15 * k, port.y + 12 * k, 60, port.sea);
+      const ship = ctx.spawn(a.id, 'transport', x, y);
+      for (const u of troops(ctx, a, UNITS.transport.capacity, city(name).x + 30, city(name).y)) { game.units.delete(u.id); ship.cargo.push(u); }
+      ships.push(ship);
+    }
+  }
+  const ids = ships.map((s) => s.id);
+  const lisbon = city('Lisbon'), land = nav.landmass(lisbon.x, lisbon.y);
+  game.handleCommand(a, { t: 'move', ids, x: lisbon.x + 60, y: lisbon.y });
+  assert.ok(ships.every((s) => s.order.kind === 'unload'));
+  const distinct = (places) => {
+    for (let i = 0; i < places.length; i++) {
+      for (let j = i + 1; j < places.length; j++) {
+        if (Math.hypot(places[i][0] - places[j][0], places[i][1] - places[j][1]) < 5) return false;
+      }
+    }
+    return true;
+  };
+  const places = ships.flatMap((s) => s.cargo.map((u) => s.order.slots[u.id]));
+  assert.equal(places.length, 96);
+  assert.ok(places.every((p) => p && nav.walkable(p[0], p[1]) && nav.landmass(p[0], p[1]) === land), 'every place is on open land');
+  assert.ok(distinct(places), 'no two units of the fleet get the same place');
+
+  // Shift + right-click on land while they sail: one formation there for all of them too.
+  const madrid = city('Madrid');
+  game.handleCommand(a, { t: 'move', ids, x: madrid.x - 40, y: madrid.y + 40, queue: true });
+  const next = ships.flatMap((s) => s.cargo.map((u) => s.order.then[0].slots[u.id]));
+  assert.ok(next.every(Boolean) && distinct(next), 'nor the same place after it');
+
+  const cargo = ships.flatMap((s) => s.cargo);
+  const there = () => cargo.every((u) => game.units.has(u.id) && u.order.kind === 'idle');
+  for (let t = 0; t < 200 && !there(); t += 2) run(2);
+  assert.ok(there(), `every unit got there (${cargo.filter((u) => !game.units.has(u.id) || u.order.kind !== 'idle').length} not yet)`);
+  const far = cargo.filter((u) => Math.hypot(u.x - (madrid.x - 40), u.y - (madrid.y + 40)) > 150);
+  assert.equal(far.length, 0, 'all by Madrid, where Shift sent them after landing');
+});
+
+// By a port such as Plymouth the beach is next to the walls: a full transport storming it used to land 4 and keep
+// 4 on board, to go down with it under the city's guns.
+test('a transport storming a city lands everyone at once, even with little room by the beach', () => {
+  const ctx = setup();
+  const { game, a, b, run, city } = ctx;
+  const plymouth = city('Plymouth');
+  plymouth.owner = b.id;
+  const [x, y] = nav.nearestSea(plymouth.port.x - 100, plymouth.port.y - 30, 100, plymouth.port.sea);
+  const ship = ctx.spawn(a.id, 'transport', x, y);
+  for (const u of troops(ctx, a, UNITS.transport.capacity, ...brestSpot(city))) { game.units.delete(u.id); ship.cargo.push(u); }
+  const cargo = [...ship.cargo];
+  game.handleCommand(a, { t: 'attack', ids: [ship.id], k: 'c', id: plymouth.id });
+  assert.equal(ship.order.kind, 'unload');
+  // Shift + right-click on land after it: storming, they take the city first (it is not just where to land).
+  const field = nav.nearestWalkable(plymouth.x + 80, plymouth.y - 30, 40);
+  game.handleCommand(a, { t: 'move', ids: [ship.id], x: field[0], y: field[1], queue: true });
+  for (let t = 0; t < 30 && !cargo.some((u) => game.units.has(u.id)); t += 0.05) run(0.05);
+  assert.equal(cargo.filter((u) => game.units.has(u.id)).length, 8, 'all 8 step ashore at once');
+  assert.equal(ship.cargo.length, 0, 'nobody stays on board');
+  assert.ok(cargo.every((u) => u.order.kind === 'attack' && u.order.tid === plymouth.id), 'and they storm the city');
+  assert.ok(cargo.every((u) => u.queue.length === 1 && u.queue[0].kind === 'move'), 'then on to the field');
+  run(1);
+  assert.ok(cargo.every((u) => !game.units.has(u.id) || nav.walkable(u.x, u.y)), 'the crowd spreads out on land, not into the sea');
+});
+
+// Where a test's troops are made before they are put on board: by Brest.
+function brestSpot(city) {
+  const c = city('Brest');
+  return [c.x + 30, c.y];
+}
+
+// The whole Shift chain with a loaded transport: clicks on the water are its path, the first click on land is
+// where it parks and lands them, the next ones on land are where they go from the beach, one after another,
+// and a click on the water after that is the transport's again.
+test('Shift chain: sail there, park here, then the units go there and there, then the transport sails on', () => {
+  const ctx = setup();
+  const { game, a, run, city } = ctx;
+  const { c: brest, ship } = harbour(ctx, a, 'Brest');
+  for (const u of troops(ctx, a, 4, brest.x + 30, brest.y)) { game.units.delete(u.id); ship.cargo.push(u); }
+  const cargo = [...ship.cargo];
+  const london = city('London'), britain = nav.landmass(london.x, london.y);
+  for (const c of game.cities) if (nav.landmass(c.x, c.y) === britain) c.owner = a.id;
+  const sea = nav.seaAt(ship.x, ship.y);
+  const w1 = seaSpot(sea, [brest.port.x, brest.port.y], 60, 120);
+  const w2 = seaSpot(sea, [london.x, london.y + 60], 40, 140);
+  const shift = (x, y) => game.handleCommand(a, { t: 'move', ids: [ship.id], x, y, queue: true });
+  shift(...w1);
+  shift(...w2);
+  assert.equal(ship.order.kind, 'move', 'it sails along its path');
+  const park = nav.nearestWalkable(london.x + 20, london.y + 20, 30);
+  shift(...park);
+  assert.deepEqual(ship.queue.map((q) => q.kind), ['move', 'unload'], 'the first click on land: where it lands them, after its path');
+  const f1 = nav.nearestWalkable(london.x - 60, london.y - 60, 40), f2 = nav.nearestWalkable(london.x - 20, london.y - 160, 40);
+  shift(...f1);
+  shift(...f2);
+  const w3 = seaSpot(sea, [london.x, london.y + 60], 60, 200, (x, y) => Math.hypot(x - w2[0], y - w2[1]) > 30);
+  shift(...w3);
+  const landing = ship.queue.find((q) => q.kind === 'unload');
+  assert.deepEqual(landing.then.map((q) => q.kind), ['move', 'move'], 'the next clicks on land are for the units');
+  assert.deepEqual(ship.queue.map((q) => q.kind), ['move', 'unload', 'move'], 'the one on the water after them is the transport\'s');
+
+  // Your map shows where it parks (its path) and the units' way on from the beach.
+  const snap = [];
+  a.client = { send: (m) => { if (m.t === 'snap') snap.push(m); } };
+  game.sendSnapshots();
+  const path = snap[0].w.find(([id]) => id === ship.id);
+  assert.ok(path.length >= 1 + 4 * 3, 'the transport\'s path: its sails, its dock, its sail after');
+  const way = snap[0].wl.find(([id]) => id === ship.id);
+  assert.deepEqual(way.slice(1, 3), [Math.round(landing.lx), Math.round(landing.ly)], 'the units\' way starts at the beach');
+  assert.equal(way.length, 3 + 2 * 3, 'then the two places, not the place it parks at');
+
+  for (let t = 0; t < 120 && ship.cargo.length; t += 0.5) run(0.5);
+  assert.equal(ship.cargo.length, 0, 'everyone landed');
+  for (const u of cargo) {
+    assert.ok(Math.hypot(u.order.x - f1[0], u.order.y - f1[1]) < 40, 'straight from the beach to the first place');
+    assert.equal(u.queue.length, 1, 'then the second');
+  }
+  assert.equal(ship.order.kind, 'move', 'the transport sails on');
+  assert.ok(Math.hypot(ship.order.x - w3[0], ship.order.y - w3[1]) < 40);
+});
+
+test('a click on land after its path, with nothing after it: the units march there, as without Shift', () => {
+  const ctx = setup();
+  const { game, a, run, city } = ctx;
+  const { c: brest, ship } = harbour(ctx, a, 'Brest');
+  for (const u of troops(ctx, a, 3, brest.x + 30, brest.y)) { game.units.delete(u.id); ship.cargo.push(u); }
+  const cargo = [...ship.cargo];
+  const london = city('London'), britain = nav.landmass(london.x, london.y);
+  for (const c of game.cities) if (nav.landmass(c.x, c.y) === britain) c.owner = a.id;
+  const w1 = seaSpot(nav.seaAt(ship.x, ship.y), [brest.port.x, brest.port.y], 60, 120);
+  game.handleCommand(a, { t: 'move', ids: [ship.id], x: w1[0], y: w1[1], queue: true });
+  const park = nav.nearestWalkable(london.x - 30, london.y - 30, 30);
+  game.handleCommand(a, { t: 'move', ids: [ship.id], x: park[0], y: park[1], queue: true });
+  assert.deepEqual(ship.queue.map((q) => q.kind), ['unload']);
+  for (let t = 0; t < 120 && ship.cargo.length; t += 0.5) run(0.5);
+  assert.equal(ship.cargo.length, 0);
+  for (const u of cargo) assert.ok(Math.hypot(u.order.x - park[0], u.order.y - park[1]) < 40, 'they march to the place clicked');
 });

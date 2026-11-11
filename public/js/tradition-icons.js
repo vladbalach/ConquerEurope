@@ -8,8 +8,9 @@
 //   brotherhood   two gauntlets clasped over two crossed swords
 //   honoredDead   a remembrance flame in a brazier
 //   eternalGlory  the honor star in a laurel wreath tied with a red ribbon
-//   lastStand     a gold muscled cuirass over two crossed swords
 // The tier II traditions are set apart by a double gold border with a crimson line between, and a faint red halo.
+// Technologies in the same style, the subject alone without the shield (drawTechEmblem):
+//   navigation    a compass rose, its north point in the player's colour
 
 const INK = '#1a120a';
 const rgbOf = (hex) => { const n = parseInt(hex.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
@@ -284,91 +285,49 @@ function laurel(small = false) {
   return { box: [-45, -45, 45, 48], layers };
 }
 
-// A gold muscled cuirass over two crossed swords, points up. Leather pteruges hang at its waist and
-// shoulders; a red sash is knotted at the waist. `small`: four broad waist strips (the part in the
-// player's colour) and the pectorals only: no shoulder strips, sash or engraving.
-function cuirass(small = false) {
-  const layers = [];
-  // The swords, drawn pointing up with the guard D below the crossing, then tilted either way about it.
-  const BW = small ? 4.8 : 3.6, BL = small ? 80 : 84, G = small ? 1.25 : 1, D = 38, CROSS = -8, TILT = 43;
-  const blade = new Path2D();
-  blade.moveTo(-BW, D); blade.lineTo(-BW, D - BL + 8); blade.lineTo(0, D - BL); blade.lineTo(BW, D - BL + 8); blade.lineTo(BW, D);
-  blade.closePath();
-  const fuller = new Path2D(); fuller.moveTo(0, D - 4); fuller.lineTo(0, D - BL + 10);
-  const guard = new Path2D();
-  guard.moveTo(-12.5 * G, D - 1); guard.lineTo(12.5 * G, D - 1); guard.quadraticCurveTo(15 * G, D + 1.4, 12.5 * G, D + 4.6 * G);
-  guard.lineTo(-12.5 * G, D + 4.6 * G); guard.quadraticCurveTo(-15 * G, D + 1.4, -12.5 * G, D - 1); guard.closePath();
-  const grip = new Path2D(); grip.rect(-2.7 * G, D + 4.6 * G, 5.4 * G, 11);
-  const wrap = new Path2D();
-  for (let y = D + 8; y < D + 15; y += 3) { wrap.moveTo(-2.7, y); wrap.lineTo(2.7, y - 1.5); }
-  const pommel = new Path2D(); pommel.arc(0, D + 4.6 * G + 15, 4.6 * G, 0, Math.PI * 2);
-  for (const side of [-1, 1]) {
-    const m = new DOMMatrix().translate(0, CROSS).rotate(side * TILT);
-    const b = xf(blade, m), g = xf(grip, m);
-    layers.push({ role: 'blade', path: b });
-    if (!small) layers.push({ role: 'line', path: xf(fuller, m), clip: b, w: 0.9 });
-    layers.push({ role: small ? 'accent' : 'grip', path: g });
-    if (!small) layers.push({ role: 'line', path: xf(wrap, m), clip: g, w: 0.7 });
-    layers.push({ role: 'accent', path: xf(guard, m) }, { role: 'accent', path: xf(pommel, m) });
-  }
-  // The pteruges: leather strips at the waist, fanning out a little, and three at each shoulder.
-  const strips = new Path2D();
-  const strip = (x, y, ang, w, h) => {
-    const s = new Path2D(); s.roundRect(-w / 2, 0, w, h, [0, 0, w * 0.45, w * 0.45]);
-    strips.addPath(s, new DOMMatrix().translate(x, y).rotate(ang));
+// A compass rose (technology Navigation): four long silver points at the cardinal directions, north
+// enamelled in the player's colour, four short gold ones between them, a gold ring and a gold boss. Each
+// point is cut along its ridge into a lit half and a shaded one.
+function compassRose() {
+  const points = (len, side, from) => {
+    const out = [];
+    for (let k = 0; k < 4; k++) {
+      const a = from + (k * Math.PI) / 2, at = (r, da) => [Math.cos(a + da) * r, Math.sin(a + da) * r];
+      const whole = new Path2D(), shade = new Path2D();
+      whole.moveTo(...at(len, 0)); whole.lineTo(...at(side, Math.PI / 4)); whole.lineTo(0, 0);
+      whole.lineTo(...at(side, -Math.PI / 4)); whole.closePath();
+      shade.moveTo(...at(len, 0)); shade.lineTo(...at(side, Math.PI / 4)); shade.lineTo(0, 0); shade.closePath();
+      out.push({ whole, shade });
+    }
+    return out;
   };
-  for (const x of small ? [-14, -4.7, 4.7, 14] : [-16.5, -11, -5.5, 0, 5.5, 11, 16.5]) strip(x, 17, -x * 0.55, small ? 8 : 5, small ? 19 : 18);
-  if (!small) for (const s of [-1, 1]) for (const [dx, dy, a] of [[0, 0, 22], [3.5, 3.5, 44], [5.5, 8, 66]]) strip(s * (17 + dx), -20 + dy, -s * a, 4.6, 11);
-  // The cuirass, its right half as [x, y] (line) or control points then the end point (curve), mirrored back up.
-  const P = [[0, -20], [8, -20, 12, -27], [19, -27.5], [24, -25, 22, -18], [15, -14, 16, -4], [16, 6, 15, 14, 18, 22], [9, 25, 0, 30]];
-  const body = new Path2D();
-  body.moveTo(0, -20);
-  for (const q of P.slice(1)) {
-    if (q.length === 2) body.lineTo(q[0], q[1]);
-    else if (q.length === 4) body.quadraticCurveTo(q[0], q[1], q[2], q[3]);
-    else body.bezierCurveTo(q[0], q[1], q[2], q[3], q[4], q[5]);
-  }
-  for (let i = P.length - 1; i >= 1; i--) {
-    const q = P[i], [x0, y0] = P[i - 1].slice(-2);
-    if (q.length === 2) body.lineTo(-x0, y0);
-    else if (q.length === 4) body.quadraticCurveTo(-q[0], q[1], -x0, y0);
-    else body.bezierCurveTo(-q[2], q[3], -q[0], q[1], -x0, y0);
-  }
-  body.closePath();
-  const muscles = new Path2D();
-  for (const s of [-1, 1]) {
-    muscles.moveTo(s * 17, -14); muscles.quadraticCurveTo(s * 10, -2, s * 1, -8);       // pectorals
-    if (!small) for (const y of [12, 18]) { muscles.moveTo(s * 10.5, y); muscles.quadraticCurveTo(s * 5.5, y + 3, s * 1, y); }
-  }
-  if (!small) { muscles.moveTo(0, -17); muscles.lineTo(0, 26); }
-  layers.push({ role: small ? 'main' : 'grip', path: strips, tint: true }, { role: 'accent', path: body },
-    { role: 'line', path: muscles, clip: body, w: 0.8 });
-  if (!small) {
-    const neck = new Path2D(); neck.moveTo(-11, -25); neck.quadraticCurveTo(0, -16.5, 11, -25);
-    const shine = new Path2D(); shine.ellipse(-9, -14, 2.2, 5, 0.9, 0, Math.PI * 2);
-    const sash = new Path2D();
-    sash.moveTo(-16.5, 2); sash.quadraticCurveTo(0, 7, 16.5, 2); sash.lineTo(16.3, 7); sash.quadraticCurveTo(0, 12, -16.3, 7); sash.closePath();
-    const ends = new Path2D();
-    ends.moveTo(-1, 8); ends.lineTo(-7, 21); ends.lineTo(-4, 20); ends.lineTo(-2.5, 23); ends.lineTo(1.5, 9.5); ends.closePath();
-    ends.moveTo(1, 8); ends.lineTo(6, 19); ends.lineTo(3, 18.5); ends.lineTo(1.5, 21.5); ends.lineTo(-1, 9.5); ends.closePath();
-    const knot = new Path2D(); knot.ellipse(0, 7.5, 3.6, 3, 0, 0, Math.PI * 2);
-    layers.push({ role: 'line', path: neck, clip: body, w: 0.8 }, { role: 'shine', path: shine },
-      { role: 'ribbon', path: ends }, { role: 'ribbon', path: sash }, { role: 'ribbon', path: knot });
-  }
-  return { box: [-46, -46, 46, 40], layers };
+  const ring = new Path2D();
+  ring.arc(0, 0, 26, 0, Math.PI * 2);
+  ring.moveTo(21, 0); ring.arc(0, 0, 21, 0, Math.PI * 2, true);
+  const boss = new Path2D(); boss.arc(0, 0, 4.5, 0, Math.PI * 2);
+  const layers = [];
+  for (const p of points(39, 10, -Math.PI / 4)) layers.push({ role: 'accent', path: p.whole }, { role: 'shade', path: p.shade });
+  layers.push({ role: 'accent', path: ring });
+  // North first in the list (k = 0: straight up), drawn in the player's colour.
+  points(49, 15, -Math.PI / 2).forEach((p, k) => layers.push({ role: k ? 'main' : 'enamel', path: p.whole }, { role: 'shade', path: p.shade }));
+  layers.push({ role: 'accent', path: boss });
+  return { box: [-50, -50, 50, 50], layers };
 }
 
 const SUBJECTS = {
   heroes: helmet, mercy: hospitallerCross, brotherhood, honoredDead: () => brazier(), eternalGlory: () => laurel(),
-  lastStand: () => cuirass(),
 };
+// Technologies drawn in this style, without the shield (drawTechEmblem).
+const TECH_SUBJECTS = { navigation: compassRose };
 
-// The subject in silver and gold, `size` px across, centred on (cx, cy).
-function drawSubject(ctx, key, color, cx, cy, size) {
-  const { box: [x0, y0, x1, y1], layers } = SUBJECTS[key]();
+// The subject in silver and gold, `size` px across, centred on (cx, cy). Roles of its own here: `enamel`, a
+// part in the player's colour; `shade`, the shaded half of a faceted part (laid flat over it).
+function drawSubject(ctx, key, color, cx, cy, size, subjects = SUBJECTS) {
+  const { box: [x0, y0, x1, y1], layers } = subjects[key]();
   const MAT = {
     main: SILVER, blade: SILVER, accent: GOLD, grip: LEATHER, hole: darken(color, 0.82),
     flame: FLAME, inner: '#fff3b8', ribbon: RED, star: SILVER, leaf: LEAF_GOLD,
+    enamel: [[0, lighten(color, 0.38)], [0.5, color], [1, darken(color, 0.45)]],
   };
   const s = size / Math.max(x1 - x0, y1 - y0);
   const px = (v) => v / s;
@@ -382,11 +341,13 @@ function drawSubject(ctx, key, color, cx, cy, size) {
   ctx.save();
   shadow(ctx, 1.5, 0.6, 1.2, 'rgba(0,0,0,0.6)');
   ctx.fillStyle = '#000';
-  for (const l of layers) if (!['line', 'shine', 'hole', 'inner'].includes(l.role)) ctx.fill(l.path);
+  for (const l of layers) if (!['line', 'shine', 'shade', 'hole', 'inner'].includes(l.role)) ctx.fill(l.path);
   ctx.restore();
   const leaves = layers.filter((l) => l.role === 'leaf');
   for (const l of layers) {
-    if (l.role === 'line') {
+    if (l.role === 'shade') {
+      ctx.fillStyle = 'rgba(20,12,4,0.32)'; ctx.fill(l.path);
+    } else if (l.role === 'line') {
       ctx.save();
       if (l.clip) ctx.clip(l.clip);
       ctx.strokeStyle = 'rgba(30,20,10,0.55)'; ctx.lineWidth = px(l.w); ctx.stroke(l.path);
@@ -471,17 +432,23 @@ export function drawTradition(ctx, key, color, ultimate = false) {
   ctx.lineWidth = 1.3; ctx.stroke(outer);
   const at = {
     heroes: [31, 37], mercy: [30, 34], brotherhood: [31, 39], honoredDead: [31, 37], eternalGlory: [30, ultimate ? 33 : 36],
-    lastStand: [31, ultimate ? 40 : 42],
   }[key];
   drawSubject(ctx, key, color, 32, at[0], at[1]);
   ctx.restore();
 }
 
+// A technology's picture in this style (TECH_SUBJECTS) on `ctx`, scaled to 64x64 logical px: the subject
+// alone, no shield, filling the box (the Tech window shows it at 54 px, the results at 24 px).
+export function drawTechEmblem(ctx, key, color) {
+  R = ctx.getTransform().a;
+  drawSubject(ctx, key, color, 32, 32, 58, TECH_SUBJECTS);
+}
+
 // ------------------------------------------------------------------ small pictures (22-24 px)
 // The same subjects as bold glyphs without the shield, for the Players list and the results: silver,
 // with one part in the player's colour (the `tint` layers): the crest, the cross, the sleeves, the
-// brazier, the star, the pteruges. The helmet and the clasp are redrawn simpler and bolder; the laurel,
-// the brazier and the cuirass are the big ones with fewer details.
+// brazier, the star. The helmet and the clasp are redrawn simpler and bolder; the laurel and the brazier
+// are the big ones with fewer details.
 
 function smallHelmet() {
   const crest = new Path2D();
@@ -569,7 +536,7 @@ function smallHands() {
 
 const SMALL_SUBJECTS = {
   heroes: smallHelmet, mercy: smallCross, brotherhood: smallHands,
-  honoredDead: () => brazier(true), eternalGlory: () => laurel(true), lastStand: () => cuirass(true),
+  honoredDead: () => brazier(true), eternalGlory: () => laurel(true),
 };
 const STEEL = [[0, '#ffffff'], [0.45, '#cfd5dc'], [1, '#7f8792']];
 const SMALL_MAT = {

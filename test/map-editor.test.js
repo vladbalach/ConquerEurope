@@ -9,8 +9,9 @@ import { fileURLToPath } from 'node:url';
 import { MapEditor } from '../server/map-editor.js';
 import { NavGrid } from '../server/nav.js';
 import { Game } from '../server/game.js';
-import { UNITS } from '../shared/config.js';
+import { UNITS, LABEL_EDIT } from '../shared/config.js';
 import { forEachCoastPiece, nearestCell } from '../shared/coastline.js';
+import { decodeMask } from '../shared/mountains.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -23,6 +24,8 @@ function setupEditor() {
     positions: path.join(dir, 'city-positions.json'),
     coastal: path.join(dir, 'city-coastal.json'),
     beaches: path.join(dir, 'beach-edits.json'),
+    mountains: path.join(dir, 'mountain-edits.json'),
+    labels: path.join(dir, 'label-edits.json'),
   };
   fs.copyFileSync(path.join(ROOT, 'public', 'map.json'), files.map);
   fs.copyFileSync(path.join(ROOT, 'server', 'data', 'navgrid.json'), files.nav);
@@ -191,28 +194,35 @@ test('coastal and inland cities set by an admin hold after a restart and a rebui
 test('admins paint beaches and cliffs on the coast; everyone gets them, and they hold after a restart', async () => {
   const { files, map, nav, editor, admin, player, clients, idOf } = setupEditor();
   const brest = map.cities[idOf('Brest')];
-  // Somewhere on the coast near Brest that is a cliff now.
-  const cliff = nav.coastCellsNear(brest.x, brest.y, 120).find((c) => !nav.beach[c]);
+  // Somewhere on the coast near Brest: a beach, as all of the coast is.
+  const cliff = nav.coastCellsNear(brest.x, brest.y, 120)[0];
   assert.ok(cliff >= 0);
+  assert.equal(nav.beach[cliff], 1);
   const [x, y] = nav.center(cliff);
 
-  await editor.handle(player, { t: 'mapBeach', pts: [[x, y]], r: 6, on: true }, clients);
+  await editor.handle(player, { t: 'mapBeach', pts: [[x, y]], r: 6, on: false }, clients);
   assert.match(player.inbox.at(-1).msg, /Only admins/);
-  assert.equal(nav.beach[cliff], 0, 'nothing changed for a player');
+  assert.equal(nav.beach[cliff], 1, 'nothing changed for a player');
 
-  await editor.handle(admin, { t: 'mapBeach', pts: [[x, y]], r: 6, on: true }, clients);
+  await editor.handle(admin, { t: 'mapBeach', pts: [[x, y]], r: 6, on: false }, clients);
   const msg = admin.inbox.at(-1);
   assert.equal(msg.t, 'beachEdit');
-  assert.ok(msg.cells.includes(cliff) && msg.on === true);
+  assert.ok(msg.cells.includes(cliff) && msg.on === false);
   assert.deepEqual(player.inbox.at(-1), msg, 'every browser is told, so the game hosts do the same');
-  assert.equal(nav.beach[cliff], 1, 'a beach now');
-  assert.ok(JSON.parse(editor.mapJson()).beachEdits.beach.includes(cliff), 'in the map new games load');
-  assert.ok(JSON.parse(fs.readFileSync(files.beaches, 'utf8')).beach.includes(cliff), 'and saved');
+  assert.equal(nav.beach[cliff], 0, 'a cliff now');
+  assert.ok(JSON.parse(editor.mapJson()).beachEdits.cliff.includes(cliff), 'in the map new games load');
+  assert.ok(JSON.parse(fs.readFileSync(files.beaches, 'utf8')).cliff.includes(cliff), 'and saved');
+
+  // Paint it back: a beach, saved as such.
+  await editor.handle(admin, { t: 'mapBeach', pts: [[x, y]], r: 6, on: true }, clients);
+  assert.equal(nav.beach[cliff], 1);
+  let saved = JSON.parse(fs.readFileSync(files.beaches, 'utf8'));
+  assert.ok(saved.beach.includes(cliff) && !saved.cliff.includes(cliff));
 
   // Erase it again: a cliff, saved as such.
   await editor.handle(admin, { t: 'mapBeach', pts: [[x, y]], r: 6, on: false }, clients);
   assert.equal(nav.beach[cliff], 0);
-  const saved = JSON.parse(fs.readFileSync(files.beaches, 'utf8'));
+  saved = JSON.parse(fs.readFileSync(files.beaches, 'utf8'));
   assert.ok(saved.cliff.includes(cliff) && !saved.beach.includes(cliff));
 
   // A restart: a fresh land grid and map get the painted cells back.
@@ -246,4 +256,167 @@ test('erasing a beach along the drawn coast removes all of it: no ship docks the
   assert.ok(dock && dock.d > 30, `the nearest beach is ${dock && dock.d.toFixed(0)} km away`);
   const cell = nav.cellOf(dock.land[0], dock.land[1]);
   assert.ok(nav.shore[cell] && nav.beach[cell], 'on the drawn shore');
+});
+
+test('painted mountains may reach the water: no road along the coast there, and the coast is cliffs', async () => {
+  const { map, nav, editor, admin, clients } = setupEditor();
+  // A beach of the mainland (its coast lists are the longest) far from any city.
+  let coast = -1;
+  for (const list of [...nav.landing.values()].sort((p, q) => q.length - p.length)) {
+    for (let k = 0; k < list.length && coast < 0; k += 2) {
+      const [x, y] = nav.center(list[k]);
+      if (map.cities.every((t) => Math.hypot(t.x - x, t.y - y) > 80)) coast = list[k];
+    }
+    if (coast >= 0) break;
+  }
+  const [x, y] = nav.center(coast);
+  const docks = () => [...nav.landing.values()].some((l) => { for (let k = 0; k < l.length; k += 2) if (l[k] === coast) return true; return false; });
+  assert.ok(docks() && nav.beach[coast], 'a beach ships dock at');
+  const code = nav.beachCode;
+  await editor.handle(admin, { t: 'mapMountain', pts: [[x, y]], r: 8, on: true }, clients);
+  const msg = admin.inbox.at(-1);
+  assert.equal(msg.t, 'mountainEdit');
+  assert.ok(msg.cells.includes(coast), 'right down to the water');
+  assert.ok(nav.mountainAt(x, y) && !nav.walkable(x, y), 'nobody walks along the coast there');
+  assert.ok(!docks(), 'no ship docks under mountains');
+  assert.notEqual(nav.beachCode, code, 'and the coast there is drawn as cliffs');
+  // Erased: a beach again.
+  await editor.handle(admin, { t: 'mapMountain', pts: [[x, y]], r: 8, on: false }, clients);
+  assert.ok(docks() && nav.walkable(x, y));
+  assert.equal(nav.beachCode, code);
+});
+
+// Mountains: open land far from the sea and any city (47.08 N 2.40 E, by Bourges), and the Alps (the Ortler).
+const BOURGES = [-725, 500], ORTLER = [-138, 604];
+const drawnMountain = (editor, nav, x, y) => {
+  const m = JSON.parse(editor.mapJson()).mountains;
+  return decodeMask(m.code, m.w * m.h)[nav.cellOf(x, y)] === 1;
+};
+
+test('players without admin rights cannot paint mountains', async () => {
+  const { files, nav, editor, player, clients } = setupEditor();
+  await editor.handle(player, { t: 'mapMountain', pts: [BOURGES], r: 20, on: true }, clients);
+  assert.match(player.inbox.at(-1).msg, /Only admins/);
+  assert.ok(nav.walkable(...BOURGES), 'still open land');
+  assert.ok(!fs.existsSync(files.mountains), 'nothing was saved');
+});
+
+test('admins paint mountains and clear them: units go round them at once, everyone is told, and they hold', async () => {
+  const { files, map, nav, editor, admin, player, clients, idOf } = setupEditor();
+  const tours = map.cities[idOf('Tours')], limoges = map.cities[idOf('Limoges')];
+  assert.equal(nav.los(tours.x, tours.y, BOURGES[0], BOURGES[1]), true, 'open country between them');
+
+  // A range by Bourges.
+  const stroke = [[BOURGES[0] - 30, BOURGES[1]], BOURGES, [BOURGES[0] + 30, BOURGES[1]]];
+  await editor.handle(admin, { t: 'mapMountain', pts: stroke, r: 15, on: true }, clients);
+  const msg = admin.inbox.at(-1);
+  assert.equal(msg.t, 'mountainEdit');
+  assert.ok(msg.on === true && msg.cells.includes(nav.cellOf(...BOURGES)));
+  assert.deepEqual(player.inbox.at(-1), msg, 'every browser is told: pages draw them, game hosts block them');
+  assert.ok(nav.mountainAt(...BOURGES) && !nav.walkable(...BOURGES), 'units cannot walk there');
+  assert.ok(drawnMountain(editor, nav, ...BOURGES), 'in the map new games and pages load');
+  const path = nav.findPath(tours.x, tours.y, limoges.x, limoges.y);
+  assert.ok(path, 'a way round');
+  let saved = JSON.parse(fs.readFileSync(files.mountains, 'utf8'));
+  assert.ok(saved.add.includes(nav.cellOf(...BOURGES)), 'saved');
+
+  // Clear part of it again, and part of the Alps.
+  await editor.handle(admin, { t: 'mapMountain', pts: [BOURGES, ORTLER], r: 10, on: false }, clients);
+  assert.equal(admin.inbox.at(-1).on, false);
+  assert.ok(nav.walkable(...BOURGES) && nav.walkable(...ORTLER), 'open land again');
+  assert.ok(nav.mountainAt(BOURGES[0] + 30, BOURGES[1]), 'the rest of the stroke stays');
+  saved = JSON.parse(fs.readFileSync(files.mountains, 'utf8'));
+  assert.ok(saved.clear.includes(nav.cellOf(...ORTLER)) && !saved.add.includes(nav.cellOf(...BOURGES)));
+
+  // A restart: the built map and land grid from disk get the painted ones back.
+  const fresh = JSON.parse(fs.readFileSync(files.map, 'utf8'));
+  const nav2 = NavGrid.load(files.nav);
+  assert.ok(nav2.mountainAt(...ORTLER) && !nav2.mountainAt(BOURGES[0] + 30, BOURGES[1]), 'not in the built files');
+  const editor2 = new MapEditor({ map: fresh, nav: nav2, games: () => [], files });
+  assert.ok(nav2.mountainAt(BOURGES[0] + 30, BOURGES[1]) && nav2.walkable(...ORTLER) && nav2.walkable(...BOURGES));
+  assert.ok(drawnMountain(editor2, nav2, BOURGES[0] + 30, BOURGES[1]) && !drawnMountain(editor2, nav2, ...ORTLER));
+
+  // A rebuild makes the built mountains anew: the painted ones go back on top.
+  const sent = admin.inbox.length;
+  await editor.handle(admin, { t: 'mapRebuild' }, clients);
+  const replies = admin.inbox.slice(sent).map((m) => m.t);
+  assert.ok(replies.includes('mapRebuilt') && !replies.includes('error'), replies.join(', '));
+  assert.ok(nav.mountainAt(BOURGES[0] + 30, BOURGES[1]) && nav.walkable(...ORTLER), 'they hold after a rebuild');
+  assert.ok(drawnMountain(editor, nav, BOURGES[0] + 30, BOURGES[1]));
+});
+
+test('painted mountains keep off the cities, and wall no land in', async () => {
+  const { map, nav, editor, admin, clients, idOf } = setupEditor();
+  // Beside a city on the coast, and beside one inland: only the land far enough from both takes them.
+  // (A disc round a city would make a ring round its clear ground: that walls it in, refused below.)
+  const brest = map.cities[idOf('Brest')], lyon = map.cities[idOf('Lyon')];
+  await editor.handle(admin, { t: 'mapMountain', pts: [[brest.x + 30, brest.y], [lyon.x + 40, lyon.y]], r: 35, on: true }, clients);
+  const cells = admin.inbox.at(-1).cells;
+  assert.ok(cells.length > 0, 'some land was far enough');
+  for (const c of cells) {
+    const [x, y] = nav.center(c);
+    for (const t of map.cities) assert.ok(Math.hypot(t.x - x, t.y - y) > 35, `cell ${c} by ${t.n}`);
+  }
+  assert.ok(nav.walkable(brest.x, brest.y) && nav.walkable(lyon.x, lyon.y));
+
+  // A ring round Madrid would wall it in: refused, nothing changes.
+  const madrid = map.cities[idOf('Madrid')];
+  const ring = (cx, cy, rad, n) => Array.from({ length: n + 1 }, (_, k) => [cx + rad * Math.cos((k / n) * 2 * Math.PI), cy + rad * Math.sin((k / n) * 2 * Math.PI)]);
+  const before = admin.inbox.length;
+  await editor.handle(admin, { t: 'mapMountain', pts: ring(madrid.x, madrid.y, 55, 60), r: 10, on: true }, clients);
+  assert.equal(admin.inbox.length, before + 1);
+  assert.match(admin.inbox.at(-1).msg, /wall land in/);
+  assert.ok(nav.walkable(madrid.x + 55, madrid.y), 'the stroke was not painted');
+  assert.equal(nav.cutOff().length, 0);
+
+  // A small ring in open country fills: nobody could reach the valley in it.
+  await editor.handle(admin, { t: 'mapMountain', pts: ring(BOURGES[0], BOURGES[1], 20, 40), r: 8, on: true }, clients);
+  const filled = admin.inbox.at(-1);
+  assert.equal(filled.t, 'mountainEdit');
+  assert.ok(filled.cells.includes(nav.cellOf(...BOURGES)), 'the valley inside is mountains too');
+  assert.ok(nav.mountainAt(...BOURGES));
+  assert.equal(nav.cutOff().length, 0, 'no land walled in');
+});
+
+test('players without admin rights cannot move or resize region names', async () => {
+  const { map, editor, player, clients } = setupEditor();
+  const hungary = map.countries.findIndex((co) => co.n === 'Hungary');
+  await editor.handle(player, { t: 'mapLabel', region: hungary, x: 0, y: 0, scale: 2 }, clients);
+  assert.match(player.inbox.at(-1).msg, /Only admins/);
+  assert.equal(map.labelEdits.Hungary, undefined, 'nothing changed');
+});
+
+test('an admin moves and resizes a region name: everyone is told, it is saved, and it holds', async () => {
+  const { files, map, editor, admin, player, clients } = setupEditor();
+  const hungary = map.countries.findIndex((co) => co.n === 'Hungary');
+  await editor.handle(admin, { t: 'mapLabel', region: hungary, x: 512.34, y: 300.06, scale: 1.5 }, clients);
+  const msg = admin.inbox.at(-1);
+  assert.deepEqual(msg, { t: 'labelEdit', region: hungary, edit: { x: 512.3, y: 300.1, scale: 1.5 } });
+  assert.deepEqual(player.inbox.at(-1), msg, 'every browser is told');
+  assert.deepEqual(JSON.parse(editor.mapJson()).labelEdits.Hungary, msg.edit, 'in the map new pages load');
+  assert.deepEqual(JSON.parse(fs.readFileSync(files.labels, 'utf8')), { Hungary: msg.edit }, 'saved by region name');
+
+  // Kept within the map, and within LABEL_EDIT's sizes; nonsense is refused.
+  await editor.handle(admin, { t: 'mapLabel', region: hungary, x: 1e9, y: -1e9, scale: 100 }, clients);
+  const far = admin.inbox.at(-1).edit;
+  assert.deepEqual([far.x, far.y], [map.bounds.x1, map.bounds.y0]);
+  assert.equal(far.scale, LABEL_EDIT.maxScale);
+  for (const bad of [{ region: 999, x: 0, y: 0, scale: 1 }, { region: hungary, x: 'a', y: 0, scale: 1 }]) {
+    await editor.handle(admin, { t: 'mapLabel', ...bad }, clients);
+    assert.equal(admin.inbox.at(-1).t, 'error');
+  }
+
+  // A restart and a rebuild (the built map knows nothing of it) keep it.
+  await editor.handle(admin, { t: 'mapLabel', region: hungary, x: 512, y: 300, scale: 0.8 }, clients);
+  const fresh = JSON.parse(fs.readFileSync(files.map, 'utf8'));
+  new MapEditor({ map: fresh, nav: NavGrid.load(files.nav), games: () => [], files });
+  assert.deepEqual(fresh.labelEdits.Hungary, { x: 512, y: 300, scale: 0.8 }, 'after a restart');
+  editor.reload();
+  assert.deepEqual(map.labelEdits.Hungary, { x: 512, y: 300, scale: 0.8 }, 'after a rebuild');
+
+  // Back to automatic placing.
+  await editor.handle(admin, { t: 'mapLabel', region: hungary, reset: true }, clients);
+  assert.deepEqual(admin.inbox.at(-1), { t: 'labelEdit', region: hungary, edit: null });
+  assert.equal(map.labelEdits.Hungary, undefined);
+  assert.deepEqual(JSON.parse(fs.readFileSync(files.labels, 'utf8')), {});
 });

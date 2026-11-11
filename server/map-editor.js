@@ -13,16 +13,25 @@
 // - Beaches (where ships take units on board and land them) can be painted onto the coast, or
 //   erased, with a brush. They are saved to server/data/beach-edits.json (grid cells) as
 //   `beachEdits` in /map.json, on top of the beaches worked out from the landscape.
+// - Mountains can be painted on and off with a brush (MOUNTAIN_RULES): never by a city, and never walling
+//   land in, but right down to the water if wanted (the coast under them is cliffs). They take effect at once:
+//   in the server's land grid and map (`mountains` in /map.json), in every game (its host's grid) and
+//   in every browser. They are saved to server/data/mountain-edits.json (grid cells painted on, and
+//   cleared) and put back on top of the built mountains after a restart or a rebuild.
+// - A region's name can be moved and resized, or given back to automatic placing. It takes effect at once
+//   in every browser; it is saved to server/data/label-edits.json (by region name: { x, y, scale }) as
+//   `labelEdits` in /map.json, and holds after restarts and rebuilds.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { NavGrid } from './nav.js';
 import { markCityObstacles } from './City.js';
-import { CITY, NAVAL } from '../shared/config.js';
+import { CITY, NAVAL, LABEL_EDIT } from '../shared/config.js';
+import { decodeMask, encodeMask, MOUNTAIN_RULES } from '../shared/mountains.js';
 
-const SNAP_DIST = 40;                    // km: a drop in the sea this close to land lands on the shore
+const SNAP_DIST = 40;                    // km: a drop in the sea (or the mountains) this close to open land lands there
 const MIN_CITY_GAP = CITY.size * 2 + 4;  // cities may not be dropped on top of each other
-const BRUSH = { min: 3, max: 80 };       // km: radius of the beach brush
+const BRUSH = { min: 3, max: 80 };       // km: radius of the beach and mountain brushes
 const BRUSH_POINTS = 200;                // points one brush message may carry
 
 const r1 = (v) => Math.round(v * 10) / 10;
@@ -31,7 +40,7 @@ export { markCityObstacles };
 
 export class MapEditor {
   // map: the server's map object (shared with every game); nav: the shared NavGrid;
-  // games(): the running games; files: { root, map, nav, positions, coastal, beaches } paths.
+  // games(): the running games; files: { root, map, nav, positions, coastal, beaches, mountains, labels } paths.
   constructor({ map, nav, games, files }) {
     this.map = map;
     this.nav = nav;
@@ -39,8 +48,12 @@ export class MapEditor {
     this.files = files;
     this.positions = this.loadJson(files.positions);
     this.coastal = this.loadJson(files.coastal);   // city name -> true (coastal) or false (inland)
+    this.labels = this.loadJson(files.labels);     // region name -> { x, y, scale } of its name on the map
     const edits = this.loadJson(files.beaches);
     this.beachEdits = { beach: new Set(edits.beach || []), cliff: new Set(edits.cliff || []) };
+    const peaks = this.loadJson(files.mountains);
+    this.mountainEdits = { add: new Set(peaks.add || []), clear: new Set(peaks.clear || []) };
+    this.builtMountains = map.mountains?.code || '';   // as tools/build-map.js made them, before any painting
     this.pending = new Set();     // cities moved since the last rebuild
     this.busy = false;
     this.json = null;
@@ -48,6 +61,8 @@ export class MapEditor {
     this.applyPositions();
     this.applyCoastal();
     this.applyBeachEdits();
+    this.applyMountainEdits();
+    this.applyLabelEdits();
     if (!nav.obstacle) markCityObstacles(nav, map.cities, map);   // beaches to paint on
   }
 
@@ -88,6 +103,35 @@ export class MapEditor {
     this.json = null;
   }
 
+  // The mountains admins painted on and cleared, on top of the built ones, under MOUNTAIN_RULES as things
+  // stand now: none by a city where it stands now, and no land walled in (a pass is cut where
+  // painted mountains would wall some in, which a moved city can bring about), but a hole an admin erased
+  // in a range stays open. Into the server's land grid and its map, which every game and browser loads.
+  applyMountainEdits() {
+    if (!this.map.mountains) return;
+    const nav = this.nav, n = nav.w * nav.h;
+    const want = decodeMask(this.builtMountains, n);
+    for (const c of this.mountainEdits.add) if (c >= 0 && c < n && nav.mountainAllowed(c, this.map.cities)) want[c] = 1;
+    for (const c of this.mountainEdits.clear) if (c >= 0 && c < n) want[c] = 0;
+    const on = [], off = [];
+    for (let c = 0; c < n; c++) if (want[c] !== nav.mountain[c]) (want[c] ? on : off).push(c);
+    nav.editMountains(on, true);
+    nav.editMountains(off, false);
+    nav.openWalls(this.map.cities, MOUNTAIN_RULES, this.mountainEdits.clear);
+    this.mountainsChanged();
+  }
+
+  mountainsChanged() {
+    this.map.mountains.code = encodeMask(this.nav.mountain);
+    this.json = null;
+  }
+
+  // Region names an admin placed go to the map (/map.json), so every browser prints them there.
+  applyLabelEdits() {
+    this.map.labelEdits = { ...this.labels };
+    this.json = null;
+  }
+
   applyPositions() {
     this.map.cities.forEach((c) => {
       const p = this.positions[c.n];
@@ -107,7 +151,7 @@ export class MapEditor {
   }
 
   // ---------------------------------------------------------------- messages from browsers
-  // A map-editing message ('mapMove', 'mapCoast' or 'mapRebuild'). Admins only: anyone else gets an error and
+  // A map-editing message ('mapMove', 'mapCoast', 'mapBeach', 'mapMountain', 'mapLabel' or 'mapRebuild'). Admins only: anyone else gets an error and
   // nothing changes, whatever their page shows. `clients` are all connected clients
   // ({ name, admin, send }). Returns a promise that settles when the request is done.
   handle(client, msg, clients) {
@@ -147,6 +191,20 @@ export class MapEditor {
       return Promise.resolve();
     }
 
+    if (msg.t === 'mapMountain') {
+      const res = this.paintMountains(msg.pts, msg.r, msg.on);
+      if (res.error) client.send({ t: 'error', msg: res.error });
+      else if (res.cells.length) sendAll({ t: 'mountainEdit', cells: res.cells, on: msg.on });
+      return Promise.resolve();
+    }
+
+    if (msg.t === 'mapLabel') {
+      const res = this.editLabel(msg.region, msg);
+      if (res.error) client.send({ t: 'error', msg: res.error });
+      else sendAll({ t: 'labelEdit', region: msg.region, edit: res.edit });
+      return Promise.resolve();
+    }
+
     if (msg.t === 'mapRebuild') {
       if (this.busy) {
         client.send({ t: 'error', msg: 'A rebuild is already running' });
@@ -176,7 +234,7 @@ export class MapEditor {
     x = Math.max(b.x0, Math.min(b.x1, x));
     y = Math.max(b.y0, Math.min(b.y1, y));
     const spot = this.nav.nearestWalkable(x, y, SNAP_DIST);
-    if (!spot) return { error: 'Cities must stand on land: drop it on land' };
+    if (!spot) return { error: 'Cities must stand on open land: drop it on land, off the mountains' };
     [x, y] = [r1(spot[0]), r1(spot[1])];
     const other = this.map.cities.find((c) => c !== city && Math.hypot(c.x - x, c.y - y) < MIN_CITY_GAP);
     if (other) return { error: `Too close to ${other.n}` };
@@ -211,6 +269,29 @@ export class MapEditor {
     return { coastal: value };
   }
 
+  // The name of region `region` put at (msg.x, msg.y), its centre in map units, msg.scale times the size it
+  // gets by itself (within LABEL_EDIT); or, with msg.reset, given back to automatic placing.
+  // Returns { edit } ({ x, y, scale }, or null when automatic) or { error }.
+  editLabel(region, msg) {
+    const co = Number.isInteger(region) ? this.map.countries[region] : null;
+    if (!co) return { error: 'No such region' };
+    if (msg.reset === true) {
+      delete this.labels[co.n];
+    } else {
+      const x = Number(msg.x), y = Number(msg.y), scale = Number(msg.scale);
+      if (![x, y, scale].every(Number.isFinite)) return { error: 'Invalid request' };
+      const b = this.map.bounds, clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+      this.labels[co.n] = {
+        x: r1(clamp(x, b.x0, b.x1)),
+        y: r1(clamp(y, b.y0, b.y1)),
+        scale: Math.round(clamp(scale, LABEL_EDIT.minScale, LABEL_EDIT.maxScale) * 100) / 100,
+      };
+    }
+    if (this.files.labels) this.saveJson(this.files.labels, this.labels);
+    this.applyLabelEdits();
+    return { edit: this.labels[co.n] || null };
+  }
+
   // The beach brush: every coast cell within r km of the points becomes a beach (on) or a cliff.
   // Returns { cells } (the cells it changed, for the games to do the same) or { error }.
   paintBeaches(pts, r, on) {
@@ -230,6 +311,54 @@ export class MapEditor {
     const list = [...cells];
     this.nav.editBeaches(list, on);
     return { cells: list };
+  }
+
+  // The mountain brush: mountains on (on) or off on the land within r km of the points. Painting keeps
+  // MOUNTAIN_RULES: no mountain goes within cityGap of a city (those cells are left alone; unlike the built
+  // ones they may reach the water), and a stroke that walls land in fills it when it is a small valley without a city, but is
+  // refused for anything bigger. Land cut off before it (a hole erased in a range) is none of its business.
+  // Erasing may leave such a hole: the rest of a pass being erased through a range often follows.
+  // Returns { cells } (the cells it changed, for every browser and game host to do the same) or { error }.
+  paintMountains(pts, r, on) {
+    if (this.busy) return { error: 'The map is being rebuilt; try again in a moment' };
+    if (!Array.isArray(pts) || typeof on !== 'boolean') return { error: 'Invalid request' };
+    if (!this.map.mountains) return { error: 'This map has no mountains' };
+    const nav = this.nav, cities = this.map.cities;
+    const radius = Math.max(BRUSH.min, Math.min(BRUSH.max, Number(r) || BRUSH.min));
+    const cells = new Set();
+    for (const p of pts.slice(0, BRUSH_POINTS)) {
+      if (!Array.isArray(p) || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
+      for (const c of nav.cellsNear(p[0], p[1], radius)) {
+        if (on ? !nav.mountain[c] && nav.mountainAllowed(c, cities) : nav.mountain[c]) cells.add(c);
+      }
+    }
+    const cutBefore = on ? nav.cutOffCells() : null;
+    let changed = nav.editMountains([...cells], on);
+    if (!changed.length) return { cells: [] };
+    // The land this stroke cuts off: pieces with a cell that was not cut off before.
+    const cut = on ? nav.cutOff().filter(({ id }) => {
+      for (let c = 0; c < nav.comp.length; c++) if (nav.comp[c] === id && !cutBefore.has(c)) return true;
+      return false;
+    }) : [];
+    if (cut.length) {
+      const withCity = new Set(cities.map((t) => nav.comp[nav.cellOf(t.x, t.y)]));
+      if (cut.some(({ id, size }) => size >= MOUNTAIN_RULES.pocket || withCity.has(id))) {
+        nav.editMountains(changed, false);
+        return { error: 'That would wall land in: leave a way through the mountains' };
+      }
+      const ids = new Set(cut.map(({ id }) => id)), valley = [];
+      for (let c = 0; c < nav.comp.length; c++) if (ids.has(nav.comp[c])) valley.push(c);
+      changed = changed.concat(nav.editMountains(valley, true));
+    }
+    const add = on ? this.mountainEdits.add : this.mountainEdits.clear;
+    const drop = on ? this.mountainEdits.clear : this.mountainEdits.add;
+    for (const c of changed) { add.add(c); drop.delete(c); }
+    if (this.files.mountains) {
+      const sorted = (set) => [...set].sort((a, b) => a - b);
+      this.saveJson(this.files.mountains, { add: sorted(this.mountainEdits.add), clear: sorted(this.mountainEdits.clear) });
+    }
+    this.mountainsChanged();
+    return { cells: changed };
   }
 
   // Rebuilds territories, borders and the land grid from the current city positions and
@@ -273,6 +402,9 @@ export class MapEditor {
     this.applyCoastal();               // not part of the built map: kept on top of it
     this.applyBeachEdits();            // the same
     Object.assign(this.nav, NavGrid.load(this.files.nav));
+    this.builtMountains = this.map.mountains?.code || '';
+    this.applyMountainEdits();         // the same
+    this.applyLabelEdits();            // the same
     markCityObstacles(this.nav, this.map.cities, this.map);
     for (const g of this.games()) {
       this.map.cities.forEach((c, i) => {

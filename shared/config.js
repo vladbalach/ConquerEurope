@@ -16,11 +16,18 @@ export const DEBUG = false;
 
 // ------------------------------------------------------------------ units
 //  hp           maximum hit points
-//  damage       damage dealt per second while attacking
+//  damage       damage dealt per second while attacking; per shot for units with `reload`
+//  reload       (optional) the unit fires single shots, one every `reload` seconds, instead of
+//               dealing its damage every second. The guns reload whatever the unit does, so it
+//               may move between shots and fire at once when it attacks again
 //  attackRange  reach from the unit's centre to the target's edge; 0 = melee
 //  moveSpeed    kilometres per second
+//  accelTime    (optional) seconds from standing still to moveSpeed. Without it a unit is at full
+//               speed at once; with it, every stop (to shoot, too) costs it ground
 //  size         radius of the unit's collision circle (units never overlap)
 //  hpRegen      HP regained per second once out of combat (see COMBAT.regenDelay)
+//  harbourFactor  (optional, ships) in harbour (NAVAL.harbourRange) the ship regains this many times its
+//               hpRegen, so the rate follows hpRegen; ships without it regain NAVAL.harbourRegen there
 //  cost         gold
 //  buildTime    seconds to produce in a city
 //  hotkey       key that builds the unit while one of your cities is selected
@@ -75,10 +82,12 @@ export const UNITS = {
   },
   // Ships (naval: true) sail on the sea and are built only in coastal cities (see NAVAL).
   // Barracks don't speed them up.
+  //   tech       the technology (TECHS) a player needs before cities build it
   //   capacity   units a transport carries, one slot each
   transport: {
     name: 'Transport',
     naval: true,
+    tech: 'seafaring',
     hp: 150,
     damage: 0,
     attackRange: 0,
@@ -89,6 +98,27 @@ export const UNITS = {
     buildTime: 12,
     hotkey: 'B',
     capacity: 8,
+  },
+  // A warship: shells ships, units ashore and cities within its range, like archers on land, one shot
+  // every `reload` seconds. Its shots take a coastal city like any attack; an inland city in reach goes
+  // down to 1 HP and no further, for troops to take. Between its shots a city doesn't regenerate
+  // (City.receiveDamage).
+  battleship: {
+    name: 'Battleship',
+    naval: true,
+    tech: 'gunnery',
+    hp: 500,
+    damage: 30,        // per shot
+    reload: 1.5,
+    attackRange: 60,
+    moveSpeed: 32,
+    accelTime: 0.75,
+    size: 12,
+    hpRegen: 1,
+    harbourFactor: 2,
+    cost: 200,
+    buildTime: 20,
+    hotkey: 'N',
   },
   // Hero and Healer (`promoted`): never trained in a city. Any plain land unit of yours becomes one for
   // honor, once you have the tradition (Cult of Heroes: see HERO; Order of Mercy: see HEALER). No cost,
@@ -117,7 +147,7 @@ export const UNITS = {
 };
 
 // Order matters: it is the unit type id used on the network and in sprites.
-export const UNIT_TYPES = ['infantry', 'archer', 'cavalry', 'knight', 'transport', 'hero', 'healer'];
+export const UNIT_TYPES = ['infantry', 'archer', 'cavalry', 'knight', 'transport', 'hero', 'healer', 'battleship'];
 // The unit types cities train (all but the ones made from other units: Hero, Healer).
 export const TRAINED_UNITS = UNIT_TYPES.filter((type) => !UNITS[type].promoted);
 
@@ -128,8 +158,11 @@ export const NAVAL = {
   editPortRange: 100, // Edit map can make a city coastal when the sea is at most this far
   boardRadius: 30,    // units this close to their transport go on board
   returnRange: 150,   // a transport that lay at anchor this close to the beach it loads at sails back afterwards
+  autoloadRange: 200, // Autoload: a transport takes your idle land units this close to it on board
+  autoboardRange: 500, // Autoload with land units selected: they look for your transports this close to them
   harbourRange: 40,   // a ship this close to the pier of one of its owner's coastal cities is in harbour...
-  harbourRegen: 5,    // ...where it regains this much HP per second instead of its hpRegen
+  harbourRegen: 5,    // ...where it regains this much HP per second instead of its hpRegen (a ship with a
+                      // harbourFactor, the battleship: that many times its hpRegen instead)
                       // (like any regeneration, only after COMBAT.regenDelay seconds without being hit)
 };
 
@@ -138,7 +171,7 @@ export const CITY = {
   hp: 100,
   damage: 20,         // per second, against the nearest enemy unit in range
   attackRange: 70,    // from the city's centre to the target's edge
-  hpRegen: 5,         // per second, always (even while under attack)
+  hpRegen: 5,         // per second, always (even while under attack), but not between a battleship's shots
   size: 11,           // radius of the city's collision circle
   captureHp: 40,      // HP a city has right after being captured
 };
@@ -220,23 +253,19 @@ export const HONOR = {
 //                  Losses column). Disbanded units only when an enemy hit them in their last
 //                  DISBAND.killCreditSeconds, as for kills; so do the units on board a ship that sank that way.
 //  Tier II traditions (`ultimate`; the Honor window tags them Tier II) open only once every tier I tradition
-//  is learned; they don't need each other. While someone learns one, the Players list shows its countdown;
-//  every player is told once it is learned.
+//  is learned. While someone learns one, the Players list shows its countdown; every player is told once it
+//  is learned.
 //    eternalGlory  every unit a city trains can be paid with unitHonorFactor times its gold cost in honor.
-//    lastStand     every unit of yours deals damageBonus more damage (it adds up with a Hero's). A unit with
-//                  at least `odds` times as many enemy units as units of yours (itself included) within
-//                  `radius` km of it takes damageCut less damage, and glows red meanwhile (Game.checkStandFirm).
 //  Which traditions a player has, and the countdown of an ultimate one being learned, are public (Players list).
 export const TRADITIONS = {
   heroes: { name: 'Cult of Heroes', cost: 1500, time: 30 },
   mercy: { name: 'Order of Mercy', cost: 1500, time: 30 },
   brotherhood: { name: 'Brotherhood of Arms', cost: 1500, time: 30, barracksHonor: 30, barracksBuildSpeed: 2 },
   honoredDead: { name: 'Honored Dead', cost: 1500, time: 30, lossShare: 0.25 },
-  eternalGlory: { name: 'Eternal Glory', cost: 4000, time: 120, ultimate: true, unitHonorFactor: 2 },
-  lastStand: { name: 'Last Stand', cost: 4000, time: 120, ultimate: true, damageBonus: 0.3, damageCut: 0.3, radius: 80, odds: 2 },
+  eternalGlory: { name: 'Eternal Glory', cost: 4000, time: 120, ultimate: true, unitHonorFactor: 3 },
 };
 // Order matters: it is the tradition id used on the network.
-export const TRADITION_TYPES = ['heroes', 'mercy', 'brotherhood', 'honoredDead', 'eternalGlory', 'lastStand'];
+export const TRADITION_TYPES = ['heroes', 'mercy', 'brotherhood', 'honoredDead', 'eternalGlory'];
 
 //  Heroes (tradition Cult of Heroes). Select one of your land units and press Make Hero: for `cost` honor
 //  it becomes a Hero (UNITS.hero) where it stands, with its orders and its share of HP. It has the HP and
@@ -272,6 +301,8 @@ export const LIBERATOR = {
   goldPerTurn: 20,            // paid to a liberator at the end of every turn
   cooldownTurns: 2,           // turns between two cities taken this way
   protectedCities: 5,         // a player holding this many cities or fewer can't have one taken this way
+  rebellionCost: 0.5,         // Rebellion technologies ordered while a liberator cost this share of their price
+                              // (rounded up); ordered before falling, the full price (and refunds give back what was paid)
 };
 
 // ------------------------------------------------------------------ technologies
@@ -280,7 +311,8 @@ export const LIBERATOR = {
 //  levels: cost and research time of every level, in order (so the number of levels is the maximum).
 //
 //  Tab 'rebellion' exists only with the game option Death: Liberator. Its technologies can be
-//  researched at any time, but work only while the player is a liberator (see LIBERATOR).
+//  researched at any time, but work only while the player is a liberator (see LIBERATOR). A liberator
+//  pays only LIBERATOR.rebellionCost of their price.
 //    supporters  +goldPerTurnPerLevel liberator gold per turn for every level
 //    influencer  a liberator marks ("influences") cities, one per turn, and liberates them all at once:
 //                when as many are marked as the limit, or earlier on request. The limit is 1 without
@@ -290,28 +322,42 @@ export const LIBERATOR = {
 //                separate from influence marks.
 //
 //  Tab 'sea' exists in every game; its technologies work as soon as they are researched.
-//    seafaring   coastal cities build ships, and units go on board transports and land from them
+//    seafaring   coastal cities build transports, and units go on board them and land from them
+//    gunnery     coastal cities build battleships (UNITS.battleship)
+//    navigation  every ship of the player sails speedPercent percent faster (transports and battleships,
+//                those already at sea too; a battleship still needs its accelTime to reach full speed)
+//
+//  requires: a technology that must be researched, or ordered before it, first. Cancelling that one
+//  cancels this one too (its gold comes back).
 const levels = (n, cost, time) => Array.from({ length: n }, (_, i) => ({ cost: Array.isArray(cost) ? cost[i] : cost, time }));
 export const TECHS = {
   supporters: {
     tab: 'rebellion', name: 'Supporters', goldPerTurnPerLevel: 20,
-    levels: levels(3, [100, 180, 260], 120),
+    levels: levels(3, 120, 120),
   },
   influencer: {
     tab: 'rebellion', name: 'Influencer', citiesPerLevel: 1,
     levels: levels(3, 100, 120),
   },
   smuggling: {
-    tab: 'rebellion', name: 'Smuggling', citiesPerLevel: 1, share: 0.5,
+    tab: 'rebellion', name: 'Smuggling', citiesPerLevel: 1, share: 1,
     levels: levels(3, 30, 60),
   },
   seafaring: {
     tab: 'sea', name: 'Seafaring',
     levels: levels(1, 100, 30),
   },
+  gunnery: {
+    tab: 'sea', name: 'Gunnery', requires: 'seafaring',
+    levels: levels(1, 150, 60),
+  },
+  navigation: {
+    tab: 'sea', name: 'Navigation', requires: 'seafaring', speedPercent: 20,
+    levels: levels(1, 120, 45),
+  },
 };
 // Order matters: it is the technology id used on the network.
-export const TECH_TYPES = ['supporters', 'influencer', 'smuggling', 'seafaring'];
+export const TECH_TYPES = ['supporters', 'influencer', 'smuggling', 'seafaring', 'gunnery', 'navigation'];
 // Tabs of the Tech window, in order (the window opens on the first). `death`: the tab exists only
 // with this game option.
 export const TECH_TABS = [
@@ -332,7 +378,15 @@ export const GAME = {
   // startWait seconds, for a player who never connects), then counts down; only then does anything move.
   startWait: 30,              // a player's page gives up reaching the host after about 22 s (public/js/p2p.js)
   startCountdown: DEBUG ? 0 : 10,   // seconds; none in debug builds: the game starts once everyone has loaded it
+  // Seconds between two checkpoints of the game, sent by the host's browser to the lobby server: when the
+  // host leaves, another player's browser takes the game over from the last one, so at most this much is lost.
+  checkpointEvery: 5,
 };
+
+// ------------------------------------------------------------------ map editing
+//  Edit map (admins): a region's name can be dragged to a new place and resized with the mouse wheel.
+//  Its size stays between these multiples of the size it gets by itself (from the region's area).
+export const LABEL_EDIT = { minScale: 0.3, maxScale: 4 };
 
 // ------------------------------------------------------------------ colours
 export const PLAYER_COLORS = [

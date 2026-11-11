@@ -3,7 +3,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import WebSocket from 'ws';
 import { DEFAULT_OPTIONS, sanitizeOptions, citiesToWin } from '../shared/options.js';
-import { GAME } from '../shared/config.js';
+import { GAME, ECONOMY } from '../shared/config.js';
 import { Game } from '../server/game.js';
 import { HostEngine } from '../server/host-engine.js';
 import { startServer } from '../server/index.js';
@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 test('defaults: 120 cities, countdown from the start, turn 10 for "from turn", fallen players become liberators', () => {
-  const defaults = { countdown: 'start', countdownTurn: 10, winCities: 120, death: 'liberator' };
+  const defaults = { countdown: 'start', countdownTurn: 10, winCities: 120, death: 'liberator', startGold: ECONOMY.startGold };
   assert.deepEqual({ ...DEFAULT_OPTIONS }, defaults);
   assert.deepEqual(sanitizeOptions(undefined, 208), defaults);
   assert.deepEqual(new Game({ id: '1', title: 't', map, nav }).options, { ...DEFAULT_OPTIONS });
@@ -36,8 +36,11 @@ test('countdown: none keeps the target, "from start" drops it every turn, "from 
 test('options are checked and clamped: unknown modes, junk and out-of-range numbers', () => {
   assert.deepEqual(sanitizeOptions({ countdown: 'sometimes', countdownTurn: 'x', winCities: null }, 208),
     { ...DEFAULT_OPTIONS });
-  assert.deepEqual(sanitizeOptions({ countdown: 'turn', countdownTurn: '25', winCities: '150', death: 'liberator' }, 208),
-    { countdown: 'turn', countdownTurn: 25, winCities: 150, death: 'liberator' }, 'numbers from form fields');
+  assert.deepEqual(sanitizeOptions({ countdown: 'turn', countdownTurn: '25', winCities: '150', death: 'liberator', startGold: '400' }, 208),
+    { countdown: 'turn', countdownTurn: 25, winCities: 150, death: 'liberator', startGold: 400 }, 'numbers from form fields');
+  assert.equal(sanitizeOptions({ startGold: -5 }, 208).startGold, 0, 'start gold: none at all is allowed');
+  assert.equal(sanitizeOptions({ startGold: 1e9 }, 208).startGold, 100000);
+  assert.equal(sanitizeOptions({ startGold: 'lots' }, 208).startGold, ECONOMY.startGold);
   assert.equal(sanitizeOptions({ death: 'zombie' }, 208).death, 'liberator', 'unknown death mode: the default');
   assert.equal(sanitizeOptions({ winCities: 5000 }, 208).winCities, 208, 'not more than the map has');
   assert.equal(sanitizeOptions({ winCities: 3 }, 208).winCities, GAME.startCities + 1, 'more than you start with');
@@ -51,10 +54,10 @@ const held = (game, p) => game.cities.filter((c) => c.owner === p.id).length;
 
 test('the game ends when someone holds the target at the end of a turn, and the countdown lowers it', () => {
   const { game, a, b } = setup();
-  const n = held(game, a);                            // A and B hold n cities each
+  const n = held(game, a);                            // A holds n cities, B n or n - 1
   game.options = { countdown: 'turn', countdownTurn: 5, winCities: n + 5 };
   const from = game.cities.find((c) => c.owner === b.id);
-  from.owner = a.id;                                  // A n + 1, B n - 1
+  from.owner = a.id;                                  // A n + 1, B at most n - 1
   game.turn = 5;
   game.endTurn();                                     // turn 6 ends: still n + 5
   assert.equal(game.status, 'running', 'turn 6: still n + 5');
@@ -100,6 +103,10 @@ test('reaching the target during a turn is not enough: it must still be held whe
 
 test('when several players hold the target at the end of a turn, the most cities win; an exact tie plays on', () => {
   const { game, a, b } = setup();
+  if (held(game, a) > held(game, b)) {                // an odd number of cities on the map: one of A's goes neutral
+    game.cities.find((c) => c.owner === a.id).owner = -1;
+    game.recount();
+  }
   const n = held(game, a);                            // n each
   game.options = { countdown: 'start', countdownTurn: 10, winCities: 120 };
   game.turn = 120 - n;                                // target n: both hold it with the same count
@@ -131,13 +138,14 @@ test('without a countdown the target stays where the host set it', () => {
 test('the host\'s browser runs the game with the options from the lobby, and tells every player', () => {
   const readJson = (...p) => JSON.parse(fs.readFileSync(path.join(ROOT, ...p), 'utf8'));
   const sent = [];
-  const options = { countdown: 'turn', countdownTurn: 3, winCities: 60, death: 'liberator' };
+  const options = { countdown: 'turn', countdownTurn: 3, winCities: 60, death: 'liberator', startGold: 250 };
   const engine = new HostEngine({
     gameId: '9', title: 'opts', map: readJson('public', 'map.json'), navData: readJson('server', 'data', 'navgrid.json'),
     roster: [{ id: 0, color: '#e6194b' }, { id: 1, color: '#4363d8' }], hostId: 0, options,
     send: (to, msg) => sent.push(msg), onEnded() {},
   });
   assert.deepEqual(engine.game.options, options);
+  assert.ok([...engine.game.players.values()].every((p) => p.gold === 250), 'everyone starts with the start gold option');
   engine.connect(0);
   assert.deepEqual(sent.find((m) => m.t === 'start').options, options);
 });
@@ -189,9 +197,9 @@ test('only the host sets the options in the waiting room; everyone sees them and
   const room = await guest.waitFor('room', (m) => m.players.length === 2);
   assert.deepEqual(room.options, { ...DEFAULT_OPTIONS }, 'a new game has the defaults');
 
-  host.send({ t: 'setOptions', options: { countdown: 'turn', countdownTurn: 15, winCities: 999, death: 'liberator' } });
+  host.send({ t: 'setOptions', options: { countdown: 'turn', countdownTurn: 15, winCities: 999, death: 'liberator', startGold: 500 } });
   const changed = await guest.waitFor('room', (m) => m.options.countdown === 'turn');
-  const expected = { countdown: 'turn', countdownTurn: 15, winCities: map.cities.length, death: 'liberator' };
+  const expected = { countdown: 'turn', countdownTurn: 15, winCities: map.cities.length, death: 'liberator', startGold: 500 };
   assert.deepEqual(changed.options, expected, 'clamped');
 
   guest.inbox.length = 0;

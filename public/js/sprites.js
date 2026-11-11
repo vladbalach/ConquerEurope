@@ -2,7 +2,7 @@
 // badge of coastal cities. Sprites are 64x64 logical px, rendered at 2x for crisp scaling.
 import { UNIT_CLASSES } from './units/index.js';
 import { UPGRADE_TYPES, UNIT_TYPES, TRADITIONS } from '/shared/config.js';
-import { drawTradition, drawTraditionSmall } from './tradition-icons.js';
+import { drawTradition, drawTraditionSmall, drawTechEmblem } from './tradition-icons.js';
 
 const RES = 2;
 const SIZE = 64;
@@ -14,7 +14,6 @@ export const CONE = { cx: 32, by: 46, rx: 22, ry: 10, apex: 25 };
 export const CASTLE_ANCHOR = { x: 32, y: 47 };
 
 const unitCache = new Map();
-const glowCache = new Map();
 const castleCache = new Map();
 const urlCache = new Map();
 
@@ -53,24 +52,6 @@ export function drawIcon(ctx, type, cx, cy, size, variant = null) {
 }
 
 // ------------------------------------------------------------------ unit cone
-// A unit standing firm (tradition Last Stand: outnumbered, taking less damage): its own sprite with a soft
-// red glow around it, cone, emblem or ship alike. The unit itself keeps its colours.
-export function standFirmSprite(color, type, variant = null) {
-  const key = `${color}${type}${variant || ''}`;
-  let c = glowCache.get(key);
-  if (c) return c;
-  const base = unitSprite(color, type, variant);
-  c = document.createElement('canvas');
-  c.width = base.width; c.height = base.height;
-  const ctx = c.getContext('2d');
-  ctx.shadowColor = 'rgba(240,30,30,0.95)';
-  ctx.shadowBlur = 4 * RES;
-  ctx.drawImage(base, 0, 0);
-  ctx.drawImage(base, 0, 0);            // twice: a stronger glow
-  glowCache.set(key, c);
-  return c;
-}
-
 // A unit's sprite: a cone, or a boat for ships. Both map the unit's position to CONE's base
 // centre (the waterline of a boat) and are about as wide as CONE.rx * 2 at the same size.
 // `variant`: a Hero's kind (its emblem, see drawIcon).
@@ -79,7 +60,7 @@ export function unitSprite(color, type, variant = null) {
   let c = unitCache.get(key);
   if (c) return c;
   if (UNIT_CLASSES[type].naval) {
-    c = shipSprite(color, type);
+    c = UNIT_CLASSES[type].type === 'battleship' ? warshipSprite(color, type) : shipSprite(color, type);
     unitCache.set(key, c);
     return c;
   }
@@ -196,6 +177,101 @@ function shipSprite(color, type) {
   ctx.stroke(hull);
 
   drawIcon(ctx, type, 32, 21, 24);
+  return c;
+}
+
+// A warship (battleship), bow to the right, drawn like shipSprite: a longer hull in the owner's colour
+// with a raised stern castle, a light band along its side pierced by a row of gun ports, and two masts.
+// The main sail carries the ship type's emblem; the pennant on the main mast is in the owner's colour.
+function warshipSprite(color, type) {
+  const [c, ctx] = makeCanvas();
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  // Shadow on the water and the wake behind the stern.
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath(); ctx.ellipse(34, 48.5, 29, 5.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(225,242,255,0.6)';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(0, 45); ctx.quadraticCurveTo(3, 47.5, 7, 46.5);
+  ctx.moveTo(1, 50.5); ctx.quadraticCurveTo(5, 52, 10, 50.5);
+  ctx.stroke();
+
+  // A sail on its yard, from x0 to x1 and y0 to y1, bellied towards the bow.
+  const cloth = (x0, x1) => {
+    const g = ctx.createLinearGradient(x0, 0, x1 + 3, 0);
+    g.addColorStop(0, '#fbf4e2'); g.addColorStop(1, '#d9cdb0');
+    return g;
+  };
+  const sail = (x0, x1, y0, y1) => {
+    const p = new Path2D();
+    p.moveTo(x0, y0); p.lineTo(x1, y0);
+    p.quadraticCurveTo(x1 + 3.5, (y0 + y1) / 2, x1, y1);
+    p.lineTo(x0, y1);
+    p.quadraticCurveTo(x0 + 3.5, (y0 + y1) / 2, x0, y0);
+    p.closePath();
+    ctx.fillStyle = cloth(x0, x1);
+    ctx.fill(p);
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.3;
+    ctx.stroke(p);
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x0 - 2, y0); ctx.lineTo(x1 + 2, y0); ctx.stroke();      // yard
+  };
+
+  // Masts (main, then fore), with the bowsprit, then their sails.
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(29, 34); ctx.lineTo(29, 3);
+  ctx.moveTo(49, 33); ctx.lineTo(49, 10);
+  ctx.moveTo(56, 30); ctx.lineTo(63, 24);
+  ctx.stroke();
+  sail(17, 41, 7.5, 30);
+  sail(44, 54, 13, 29);
+  const pennant = new Path2D();
+  pennant.moveTo(29.5, 2); pennant.lineTo(40, 4.5); pennant.lineTo(29.5, 7); pennant.closePath();
+  ctx.fillStyle = color;
+  ctx.fill(pennant);
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1;
+  ctx.stroke(pennant);
+
+  // Hull: the stern castle at the left, the bow rising to the right.
+  const hull = new Path2D();
+  hull.moveTo(4, 29); hull.lineTo(17, 29); hull.lineTo(18, 33);
+  hull.lineTo(52, 33); hull.lineTo(61, 28.5);
+  hull.quadraticCurveTo(58, 45, 47, 49.5);
+  hull.lineTo(15, 49.5);
+  hull.quadraticCurveTo(6, 47, 4, 29);
+  hull.closePath();
+  const wood = ctx.createLinearGradient(0, 29, 0, 50);
+  wood.addColorStop(0, lighten(color, 0.4)); wood.addColorStop(0.45, color); wood.addColorStop(1, darken(color, 0.5));
+  ctx.fillStyle = wood;
+  ctx.fill(hull);
+  ctx.save();
+  ctx.clip(hull);
+  // The gun deck: a light band with a row of square ports, dark inside.
+  ctx.fillStyle = lighten(color, 0.62);
+  ctx.beginPath(); ctx.moveTo(5, 37); ctx.lineTo(58, 36); ctx.lineTo(57.5, 40.5); ctx.lineTo(6, 41.5); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+  ctx.fillStyle = INK;
+  for (let x = 12; x <= 50; x += 6.3) ctx.fillRect(x, 37.4, 3, 3);
+  ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(8, 45.5); ctx.lineTo(54, 44.5); ctx.stroke();    // a plank line
+  ctx.restore();
+  ctx.strokeStyle = lighten(color, 0.6);
+  ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.moveTo(5.5, 31); ctx.lineTo(16.5, 31); ctx.moveTo(19, 35); ctx.lineTo(52, 35); ctx.lineTo(58.5, 31.5); ctx.stroke();   // rails
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 1.6;
+  ctx.stroke(hull);
+
+  drawIcon(ctx, type, 29, 18.2, 20);
   return c;
 }
 
@@ -626,18 +702,23 @@ export function traditionSmallIconURL(key, color) {
 
 // The picture of a technology in the Tech window (data URL), in the player's colour:
 //   seafaring   the transport it unlocks
+//   gunnery     the battleship it unlocks
+//   navigation  a compass rose in silver and gold, north in the player's colour (tradition-icons.js)
 //   supporters  a crowd behind a gold coin (liberator gold every turn)
 //   influencer  a castle in the dashed ring that marks a city about to be liberated
 //   smuggling   gold flowing from a castle to a coin rimmed in your colour (the smuggling mark)
 export function techIconURL(key, color) {
   if (key === 'seafaring') return unitIconURL(color, UNIT_TYPES.indexOf('transport'));
+  if (key === 'gunnery') return unitIconURL(color, UNIT_TYPES.indexOf('battleship'));
   const cacheKey = `tech|${key}|${color}`;
   let u = urlCache.get(cacheKey);
   if (u) return u;
   const [c, ctx] = makeCanvas();
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  if (key === 'supporters') {
+  if (key === 'navigation') {
+    drawTechEmblem(ctx, key, color);
+  } else if (key === 'supporters') {
     drawPerson(ctx, 14, 20, 0.95, color);
     drawPerson(ctx, 50, 20, 0.95, color);
     drawPerson(ctx, 32, 14, 1.2, color);

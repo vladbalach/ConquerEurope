@@ -4,18 +4,21 @@
 // This file and everything it imports also run in the host player's browser (served as /sim/),
 // where the game is simulated for browser-to-browser play: no Node-only modules here.
 import {
-  UNITS, CITY, CITY_UPGRADES, PRODUCTION_ITEMS, GAME, ECONOMY, DISBAND, LIBERATOR, TECH_TYPES, PLAYER_COLORS, DEBUG, NAVAL, HONOR,
+  UNITS, CITY, CITY_UPGRADES, PRODUCTION_ITEMS, GAME, ECONOMY, DISBAND, LIBERATOR, TECHS, TECH_TYPES, PLAYER_COLORS, DEBUG, NAVAL, HONOR,
   TRADITIONS, TRADITION_TYPES, HERO, HERO_KINDS, HEALER,
 } from '../shared/config.js';
 import {
-  noTech, nextLevel, techAvailable, liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring,
+  noTech, nextLevel, techAvailable, liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring, canTrain,
 } from '../shared/tech.js';
-import { sanitizeOptions, citiesToWin } from '../shared/options.js';
+import {
+  sanitizeOptions, citiesToWin, GOLD_PERCENT, sanitizeGoldPercent, scaleGold, scaleGoldWhole,
+} from '../shared/options.js';
 import { higherGrades } from '../shared/upgrades.js';
+import { formationSlots, formationRole, SHIP_SPACING } from '../shared/formation.js';
 import { City, markCityObstacles } from './City.js';
 import { regionCities, regionHolder } from '../shared/regions.js';
 import { createUnit } from './units/index.js';
-import { STAND_FIRM_FLAG, HERO_KIND_SHIFT, CARGO_SHIFT } from '../shared/protocol.js';
+import { HERO_KIND_SHIFT, CARGO_SHIFT } from '../shared/protocol.js';
 import { History } from './history.js';
 
 // Secret token a player rejoins with.
@@ -30,19 +33,19 @@ const itemDef = (item) => (PRODUCTION_ITEMS.includes(item) ? UNITS[item] || CITY
 const GRID_CELL = 40;              // spatial hash cell (km) for neighbour queries
 const COLLISION_MARGIN = 12;       // km a unit may be pushed in one resolveCollisions and still be found by its neighbours
 const VIEW_MARGIN = 150;           // km around a player's viewport that is included in snapshots
-const CLUSTER_RADIUS = 150;        // units this close share one path in a group move
-const JOIN_POINTS = 3;             // ...and join it at one of its first points that they can see
-// A* work that group moves may spend on short ways to it for units that can't, beyond the search work of a
-// tick (NavGrid.expansionBudget): shared by all the orders of a tick, so several at once don't add up.
+const SHARE_RADIUS = 50;           // a unit that can't walk straight to its place follows a path found for one this close
+const JOIN_POINTS = 3;             // ...joining it at one of its first points that it can see
+const SLOT_SEARCH = 400;           // km round a group's destination searched for ground for places that fall in the sea
+// A* work that group moves may spend on paths for units that can't walk straight to their place, beyond the
+// search work of a tick (NavGrid.expansionBudget): shared by all the orders of a tick, so several at once
+// don't add up.
 const JOIN_EXPANSIONS = 40000;
 const COMMANDS_PER_SECOND = 20;    // per player; protects the server from command spam
 const MAX_DEBUG_GOLD = 1e9;        // developer console "gold N": the most it may set
 const MIN_SPEED = 0.1, MAX_SPEED = 10;   // developer console "slomo N": game speed limits
-const SHIP_SPACING = 26;           // distance between ships in a group move
 const LANDING_STEP = 8;             // km between the places tried when units step ashore
 const LANDING_RETRY = 0.5;          // seconds between two tries to land the units still on board
 const DOCK_MARGIN = 2;              // km of water left between two docked ships
-const STAND_CHECK = 0.5;            // seconds between two Last Stand checks of a unit (Game.checkStandFirm)
 const r1 = (v) => Math.round(v * 10) / 10;
 
 // A player's state at the start: gold, counters, connection.
@@ -50,6 +53,9 @@ function newPlayer(id, client) {
   return {
     id, name: undefined, color: null, token: null, client, connected: true, disconnectedAt: 0,
     gold: ECONOMY.startGold, eliminated: false, cityCount: 0, unitCount: 0, view: null,
+    // Gold percentage the host set in the waiting room (shared/options.js): all gold received is scaled by it.
+    goldPercent: GOLD_PERCENT.default,
+    surrendered: false,          // gave up (Leave → Surrender) and watches the game: eliminated too
     // Game option "Death: Liberator": fallen and taking cities back. influence: cities marked for
     // liberation; the next mark is allowed once the turn counter reaches both liberateAt (after a
     // liberation) and influenceAt (one mark per turn). smuggle: cities smuggled from (separate marks).
@@ -175,12 +181,13 @@ export class Game {
   static hosted({ id, title, map, nav, roster, hostId, options }) {
     const game = new Game({ id, title, map, nav, options });
     for (const r of roster) {
-      const p = { ...newPlayer(r.id, null), color: r.color, connected: false };
+      const p = { ...newPlayer(r.id, null), color: r.color, goldPercent: sanitizeGoldPercent(r.goldPercent), connected: false };
       game.players.set(r.id, p);
     }
     game.hostId = hostId;
     game.status = 'running';
     for (const p of game.players.values()) game.giveStartingCities(p);
+    for (const p of game.players.values()) game.giveStartingGold(p);
     game.startedWith = game.players.size;
     // The host's own screen has the game at once, the others only once their link opens: wait for
     // them, so the host gets no head start.
@@ -282,11 +289,7 @@ export class Game {
     this.players.delete(id);
     if (this.status !== 'lobby') {
       this.history.event(this, id, 'left');
-      for (const c of this.cities) {
-        if (c.owner !== id) continue;
-        c.owner = -1; c.queue = []; c.queueHonor = []; c.progress = 0; c.rally = null; c.seaRally = null;
-      }
-      for (const [uid, u] of this.units) if (u.owner === id) this.units.delete(uid);
+      this.releaseEmpire(id);
       this.broadcast({ t: 'event', kind: 'left', player: id });
     }
     if (this.hostId === id) {
@@ -296,10 +299,61 @@ export class Game {
     this.broadcastRoom();
   }
 
+  // A player gives up (Leave → Surrender): their empire falls apart as if they had left, but they stay
+  // in the game and watch it as a spectator. They are out for good: eliminated, never a liberator, and
+  // they give no more orders. When everyone else has surrendered or left, the last player wins (recount;
+  // only in a game started by 2 or more, so one player can still play alone).
+  surrender(id) {
+    const p = this.players.get(id);
+    if (!p || p.surrendered || this.status !== 'running') return;
+    p.surrendered = true;
+    p.eliminated = true;
+    p.liberator = false;
+    p.influence = [];
+    p.smuggle = [];
+    p.research = null;
+    p.researchQueue = [];
+    p.learning = null;
+    p.learnQueue = [];
+    this.history.event(this, id, 'surrendered');
+    this.releaseEmpire(id);
+    this.broadcast({ t: 'event', kind: 'surrendered', player: id });
+    this.recount();                      // may end the game: the last player standing wins
+    if (this.status === 'running') this.sendScores();
+  }
+
+  // A player's empire falls apart: their cities become neutral (queues and rallies gone), their units vanish.
+  releaseEmpire(id) {
+    for (const c of this.cities) {
+      if (c.owner !== id) continue;
+      c.owner = -1; c.queue = []; c.queueHonor = []; c.progress = 0; c.rally = null; c.seaRally = null;
+    }
+    for (const [uid, u] of this.units) if (u.owner === id) this.units.delete(uid);
+  }
+
+  // A finished game starts again with the same players (a duel's Restart, server/index.js): started as
+  // from the waiting room, with new random ids and colours.
+  restart() {
+    if (this.status !== 'ended') return false;
+    this.status = 'lobby';
+    this.winner = -1;
+    this.endedAt = 0;
+    return this.beginStart();
+  }
+
   // The host changed the game options in the waiting room. Everyone there sees them at once.
   setOptions(raw) {
     if (this.status !== 'lobby' || !raw || typeof raw !== 'object') return false;
     this.options = sanitizeOptions({ ...this.options, ...raw }, this.cities.length);
+    this.broadcastRoom();
+    return true;
+  }
+
+  // The host set a player's gold percentage in the waiting room. Everyone there sees it at once.
+  setGoldPercent(id, raw) {
+    const p = this.players.get(id);
+    if (this.status !== 'lobby' || !p) return false;
+    p.goldPercent = sanitizeGoldPercent(raw);
     this.broadcastRoom();
     return true;
   }
@@ -371,6 +425,12 @@ export class Game {
     player.cityCount = free.length;
   }
 
+  // The start gold the host picked in the waiting room: the same for everyone (gold percentages scale what
+  // is earned in the game, not this).
+  giveStartingGold(player) {
+    player.gold = this.options.startGold;
+  }
+
   // Colours are dealt at random when the game starts, so they never depend on join order
   // and nobody can know them in the lobby (see GAME_DESIGN.md, "Anonymous players").
   dealColors() {
@@ -404,6 +464,7 @@ export class Game {
   start() {
     if (!this.beginStart()) return;
     for (const p of this.players.values()) this.giveStartingCities(p);
+    for (const p of this.players.values()) this.giveStartingGold(p);
     for (const p of this.players.values()) this.sendStart(p);
   }
 
@@ -411,19 +472,21 @@ export class Game {
     if (!p.client) return;
     p.client.send({
       t: 'start', you: p.id, title: this.title, options: this.options, players: this.playerList(), ports: this.portList(),
+      goldPercent: p.goldPercent,               // yours only: the others' would tell who is who
       beaches: this.nav.beachData(true),        // where ships can take units on board and land them
       prestart: this.prestartInfo(),            // not started yet: waiting for players, or counting down
     });
   }
 
   // Players as game clients see them. While the game runs nobody may learn who is who
-  // (GAME_DESIGN.md, "Anonymous players"): ids and colours only, never a nickname. In the
-  // waiting room there are no colours yet, and once the game has ended everyone is revealed.
+  // (GAME_DESIGN.md, "Anonymous players"): ids and colours only, never a nickname, and no gold
+  // percentage (the waiting room showed them by nickname). In the waiting room there are no colours
+  // yet, and once the game has ended everyone is revealed.
   playerList() {
     const secret = this.status === 'running';
     return [...this.players.values()].map((p) => ({
-      id: p.id, ...(secret ? {} : { name: p.name }), color: p.color, connected: p.connected,
-      eliminated: p.eliminated, cities: p.cityCount, units: p.unitCount, kills: p.kills, losses: p.losses,
+      id: p.id, ...(secret ? {} : { name: p.name, goldPercent: p.goldPercent }), color: p.color, connected: p.connected,
+      eliminated: p.eliminated, surrendered: p.surrendered, cities: p.cityCount, units: p.unitCount, kills: p.kills, losses: p.losses,
       liberator: p.liberator, liberateAt: p.liberateAt, influence: p.influence, influenceAt: p.influenceAt,
       smuggle: p.smuggle, tech: p.tech,
       // Traditions are public; so is an ultimate one being learned: which (null: none) and the seconds left.
@@ -453,9 +516,10 @@ export class Game {
     for (const p of this.players.values()) if (p.client) p.client.send(msg);
   }
 
+  // While a game runs, nobody is told which player hosts it: the lobby names the host.
   broadcastRoom() {
     this.broadcast({
-      t: 'room', id: this.id, title: this.title, status: this.status, hostId: this.hostId,
+      t: 'room', id: this.id, title: this.title, status: this.status, ...(this.status === 'running' ? {} : { hostId: this.hostId }),
       options: this.options, players: this.playerList(),
     });
   }
@@ -488,6 +552,7 @@ export class Game {
   handleCommand(player, msg) {
     if (this.status !== 'running') return;
     if (this.prestart && msg.t !== 'view') return;     // nobody gives orders before the start
+    if (player.surrendered && msg.t !== 'view') return;   // a spectator only watches
     const num = (v) => typeof v === 'number' && Number.isFinite(v);
     if (msg.t !== 'view') {
       if (player.commandTokens < 1) return;
@@ -503,16 +568,23 @@ export class Game {
         if (!num(msg.x) || !num(msg.y)) return;
         const units = this.ownedUnits(player, msg.ids);
         const x = this.clampX(msg.x), y = this.clampY(msg.y);
+        const facing = num(msg.f) ? msg.f : null;      // the way the formation faces (the right button dragged)
         const land = units.filter((u) => !u.naval), ships = units.filter((u) => u.naval);
-        // A right-click on land with transports carrying units: they land them there, as Unload does.
-        // The others (and with Shift) sail to the nearest water.
-        const landing = !msg.queue && !this.nav.seaAt(x, y) && hasSeafaring(player.tech)
-          ? ships.filter((s) => s.cargo.length) : [];
-        const sailing = landing.length ? ships.filter((s) => !landing.includes(s)) : ships;
+        // Transports carrying units, a click on land: the first one, with or without Shift, is where they
+        // land them (park there; with Shift after the sails queued before, Game.orderUnload `queue`). Once
+        // they have a landing ahead (Ship.landing), every Shift + click on land is for the units on board:
+        // where they go once ashore, one after another (Ship.queueLanding). The others, and Shift on the
+        // water, sail to the nearest water (after the landing, with Shift); battleships attack-move there
+        // with `amove`.
+        const onLand = !this.nav.seaAt(x, y), sea = hasSeafaring(player.tech);
+        const ahead = msg.queue && onLand ? ships.filter((s) => s.landing) : [];
+        const landing = onLand && sea ? ships.filter((s) => s.cargo.length && !ahead.includes(s)) : [];
+        const sailing = ships.filter((s) => !landing.includes(s) && !ahead.includes(s));
         // `queue` (Shift): after the orders the units already have, not instead of them.
-        if (land.length) this.orderGroupMove(land, x, y, !!msg.amove, !!msg.queue);
-        if (landing.length) this.orderUnload(player, landing, x, y, null, true);   // they attack-move there
-        if (sailing.length) this.orderSail(sailing, x, y, !!msg.queue);
+        if (land.length) this.orderGroupMove(land, x, y, !!msg.amove, !!msg.queue, facing);
+        if (landing.length) this.orderUnload(player, landing, x, y, null, true, !!msg.queue, facing);   // they attack-move there
+        if (ahead.length) this.queueLandingMove(ahead, x, y, !!msg.amove, facing);
+        if (sailing.length) this.orderSail(sailing, x, y, !!msg.queue, !!msg.amove, facing);
         return;
       }
       case 'board': {
@@ -520,6 +592,13 @@ export class Game {
         // selection already sent units to transports, and those stay with theirs. Needs Seafaring.
         if (!hasSeafaring(player.tech)) return;
         if (Number.isInteger(msg.ship)) this.orderBoard(player, msg.ship, msg.ids, !!msg.keep);
+        return;
+      }
+      case 'autoload': {
+        // Autoload (L): selected transports take the idle land units around them on board; selected land
+        // units go on board your transports around them (or the selected ones). Needs Seafaring.
+        if (!hasSeafaring(player.tech)) return;
+        this.autoload(player, msg.ids);
         return;
       }
       case 'unload': {
@@ -537,13 +616,19 @@ export class Game {
         const units = this.ownedUnits(player, msg.ids);
         const target = this.resolve(k, msg.id, player.id);
         if (!units.length || !target) return;
+        // Transports have no guns: they ignore it (unless they land units, below). With Shift, transports
+        // with a landing ahead pass an attack on a target on land to the units on board, for once they are
+        // ashore (Ship.queueLanding).
+        const ahead = msg.queue && !target.naval ? units.filter((u) => u.landing) : [];
         for (const u of units) {
-          if (msg.queue && !u.naval) u.queueOrder({ kind: 'attack', tk: k, tid: msg.id });
+          if (ahead.includes(u)) u.queueLanding({ kind: 'attack', tk: k, tid: msg.id });
+          else if (msg.queue && u.armed) u.queueOrder({ kind: 'attack', tk: k, tid: msg.id });
           else u.orderAttack(k, msg.id);
         }
-        // Transports carrying units, right-click on an enemy city: they land them to attack it.
-        const landing = k === 'c' && !msg.queue && hasSeafaring(player.tech) ? units.filter((u) => u.naval && u.cargo.length) : [];
-        if (landing.length) this.orderUnload(player, landing, target.x, target.y, target);
+        // Transports carrying units, right-click on an enemy city: they land them to storm it (with Shift,
+        // and no landing ahead yet: after the sails queued before).
+        const landing = k === 'c' && hasSeafaring(player.tech) ? units.filter((u) => u.naval && u.cargo.length && !ahead.includes(u)) : [];
+        if (landing.length) this.orderUnload(player, landing, target.x, target.y, target, false, !!msg.queue);
         return;
       }
       case 'stop': {
@@ -563,10 +648,11 @@ export class Game {
         // One unit or upgrade in each listed city, in order, as far as the gold reaches. An upgrade
         // queues its next grade in each city (Wall I, or Wall II where Wall I is built or queued),
         // and is skipped where every grade is; a ship is skipped in cities that are not coastal.
-        // Ships need the Seafaring technology. `honor`: paid with honor instead of gold, as far as the
-        // honor reaches (honorPrice: Barracks with Brotherhood of Arms, units with Eternal Glory).
+        // Ships need their technology (canTrain: Seafaring for transports, Gunnery for battleships).
+        // `honor`: paid with honor instead of gold, as far as the honor reaches (honorPrice: Barracks
+        // with Brotherhood of Arms, units with Eternal Glory).
         const item = msg.item;
-        if (!itemDef(item) || (UNITS[item]?.naval && !hasSeafaring(player.tech))) return;
+        if (!itemDef(item) || !canTrain(item, player.tech)) return;
         const honor = msg.honor === true;
         if (honor && this.honorPrice(player, item) === null) return;
         for (const c of this.ownedCities(player, msg)) {
@@ -589,19 +675,17 @@ export class Game {
         return;
       }
       case 'cancel': {
-        // Cancelling an upgrade also cancels its higher grades in the queue: they need it.
+        // `last` (the C key): the last entry of each listed city's queue. Otherwise entry `index` of `city`.
+        if (msg.last === true) {
+          for (const c of this.ownedCities(player, msg)) {
+            if (c.queue.length) this.cancelQueued(player, c, c.queue.length - 1);
+          }
+          return;
+        }
         const c = this.cities[msg.city];
         if (!c || c.owner !== player.id || !Number.isInteger(msg.index)) return;
         if (msg.index < 0 || msg.index >= c.queue.length) return;
-        const [item] = c.queue.splice(msg.index, 1);
-        this.giveBack(player, item, c.queueHonor.splice(msg.index, 1)[0]);
-        for (const key of higherGrades(item)) {
-          const i = c.queue.indexOf(key);   // always after `item`: it was queued later
-          if (i < 0) continue;
-          c.queue.splice(i, 1);
-          this.giveBack(player, key, c.queueHonor.splice(i, 1)[0]);
-        }
-        if (msg.index === 0) c.progress = 0;
+        this.cancelQueued(player, c, msg.index);
         return;
       }
       case 'influence': {
@@ -761,10 +845,13 @@ export class Game {
   // ------------------------------------------------------------ technologies
   // Research is paid up front and runs on game time, one level at a time. Ordering more while one runs
   // queues them (paid at once too); each starts when the one before it is done. Rebellion technologies
-  // exist only with Death: Liberator (techAvailable).
+  // exist only with Death: Liberator (techAvailable). One that `requires` another (Gunnery: Seafaring)
+  // can be ordered once that one is researched or ordered.
   startResearch(p, key) {
     if (!TECH_TYPES.includes(key) || p.eliminated || !techAvailable(key, this.options)) return;
-    const next = nextLevel(key, this.plannedLevel(p, key));
+    const need = TECHS[key].requires;
+    if (need && this.plannedLevel(p, need) < 1) return;
+    const next = nextLevel(key, this.plannedLevel(p, key), p.liberator);    // a liberator pays less for Rebellion
     if (!next || p.gold < next.cost) return;
     p.gold -= next.cost;
     if (p.research) p.researchQueue.push({ tech: key, level: next.level, cost: next.cost });
@@ -777,10 +864,20 @@ export class Game {
   }
 
   // Cancels a level (running or queued) and the higher levels of that technology queued after it, as
-  // they need it: their gold comes back. The one running cancelled, the next in the queue starts.
+  // they need it: their gold comes back. Cancelling the first level of a technology not researched yet
+  // cancels the ones that require it too (Seafaring: Gunnery). The one running cancelled, the next in
+  // the queue starts.
   cancelResearch(p, key = p.research?.tech, level = p.research?.level) {
     if (!TECH_TYPES.includes(key) || !Number.isInteger(level)) return;
-    const gone = (e) => e.tech === key && e.level >= level;
+    const from = new Map([[key, level]]);       // technology -> the lowest of its levels cancelled
+    for (let more = true; more;) {
+      more = false;
+      for (const k of TECH_TYPES) {
+        const need = TECHS[k].requires;
+        if (need && !from.has(k) && from.get(need) <= 1 && !p.tech[need]) { from.set(k, 1); more = true; }
+      }
+    }
+    const gone = (e) => from.has(e.tech) && e.level >= from.get(e.tech);
     for (const e of p.researchQueue.filter(gone)) p.gold += e.cost;
     p.researchQueue = p.researchQueue.filter((e) => !gone(e));
     if (p.research && gone(p.research)) {
@@ -925,27 +1022,6 @@ export class Game {
     return !!p && p.traditions.includes(key);
   }
 
-  // Last Stand (tradition): a unit stands firm while the enemy units within TRADITIONS.lastStand.radius of it
-  // are at least `odds` times as many as its owner's units there, itself included. Then it takes damageCut
-  // less damage (Unit.receiveDamage) and the snapshot flags it (STAND_FIRM_FLAG). Ships count and are
-  // counted; units on board don't. Each unit checks every STAND_CHECK seconds, at its own moment, so the
-  // work is spread over the ticks. Uses the unit grid of this tick.
-  checkStandFirm() {
-    const def = TRADITIONS.lastStand;
-    for (const u of this.units.values()) {
-      if (this.time < u.standCheckAt) continue;
-      u.standCheckAt = this.time + STAND_CHECK;
-      if (!this.hasTradition(u.owner, 'lastStand')) { u.standFirm = false; continue; }
-      let own = 0, enemies = 0;
-      this.unitGrid.forEachNear(u.x, u.y, def.radius + COLLISION_MARGIN, (o) => {
-        if (o.hp <= 0 || Math.hypot(o.x - u.x, o.y - u.y) > def.radius) return;
-        if (o.owner === u.owner) own++;
-        else enemies++;
-      });
-      u.standFirm = enemies >= def.odds * own;
-    }
-  }
-
   advanceLearning(dt) {
     for (const p of this.players.values()) {
       const l = p.learning;
@@ -1009,80 +1085,210 @@ export class Game {
     }
   }
 
-  // Send a group to (tx, ty) in formation. Nearby units share one path; units on
-  // another landmass than the destination cannot get there and ignore the order.
+  // Send a group to (tx, ty) in formation. The units of one landmass form one formation round the open
+  // land nearest to (tx, ty) on their landmass, however spread out they are (two formations round the same
+  // place would stand on each other); with none within 200 km, or no way there, they ignore the order.
+  // Each unit goes its own way to its place (groupRoute): no unit walks to a common gathering point first,
+  // so a big army doesn't jam on one spot. Once there it keeps its place (Unit.settle).
   // With `queue` (Shift), units busy with an order go there once it is done (queueGroupMove).
-  orderGroupMove(units, tx, ty, amove, queue = false) {
+  // `facing`: the way the formations face, in radians (formationSlots); null: the way each group goes.
+  orderGroupMove(units, tx, ty, amove, queue = false, facing = null) {
     if (queue) {
       const later = units.filter((u) => u.busy);
-      if (later.length) this.queueGroupMove(later, tx, ty, amove);
+      if (later.length) this.queueGroupMove(later, tx, ty, amove, facing);
       units = units.filter((u) => !u.busy);
     }
     const nav = this.nav;
-    const left = new Set(units);
-    for (const seed of units) {
-      if (!left.has(seed)) continue;
-      const cluster = [...left].filter((u) => Math.hypot(u.x - seed.x, u.y - seed.y) < CLUSTER_RADIUS);
-      for (const u of cluster) left.delete(u);
-
-      const land = nav.landmass(seed.x, seed.y);
+    const byLand = new Map();
+    for (const u of units) {
+      const land = nav.landOf(u.x, u.y);                 // in the mountains: the landmass round them
+      if (!byLand.has(land)) byLand.set(land, []);
+      byLand.get(land).push(u);
+    }
+    for (const [land, group] of byLand) {
       const dest = nav.nearestWalkable(tx, ty, 200, land);
       if (!dest) continue;
-      let cx = 0, cy = 0;
-      for (const u of cluster) { cx += u.x; cy += u.y; }
-      cx /= cluster.length; cy /= cluster.length;
-      let leader = cluster[0];
-      for (const u of cluster) if (Math.hypot(u.x - cx, u.y - cy) < Math.hypot(leader.x - cx, leader.y - cy)) leader = u;
-
-      const path = nav.findPathCached(leader.x, leader.y, dest[0], dest[1], true);
-      if (path === null) continue;
-      const slots = this.formation(cluster, dest[0], dest[1]);
-      // Each unit joins the shared route at the farthest of its first waypoints that it can see. One
-      // that sees none of them (a city or the coast in between) gets a way of its own now: to the
-      // route's start (the units near it share that search: findPathCached), or to its place when
-      // the leader walks straight there. Only while JOIN_EXPANSIONS last: after that, units plan
-      // their own route over the next ticks.
-      for (const u of cluster) {
-        let [sx, sy] = slots.get(u);
-        if (nav.landmass(sx, sy) !== land) [sx, sy] = nav.nearestWalkable(sx, sy, 60, land) || dest;
-        let pts = null;                          // without: plans its own route on the next tick
-        for (let k = Math.min(path.length, JOIN_POINTS) - 1; k >= 0 && !pts; k--) {
-          if (nav.clear(u.x, u.y, path[k][0], path[k][1])) pts = k ? path.slice(k) : path;
-        }
-        if (!pts && nav.expansionBudget > -JOIN_EXPANSIONS && (path.length || !nav.clear(u.x, u.y, sx, sy))) {
-          const [jx, jy] = path.length ? path[0] : [sx, sy];
-          const join = nav.findPathCached(u.x, u.y, jx, jy, true);
-          if (join) pts = path.length ? join.concat(path) : join;
-        }
-        u.orderMove(sx, sy, amove, pts && pts.length ? { pts, idx: 0, gx: sx, gy: sy, time: this.time } : null);
+      const found = [];               // paths searched for this formation (groupRoute)
+      const slots = this.landSlots(group, dest[0], dest[1], land, undefined, facing);
+      for (const u of group) {
+        const [sx, sy] = slots.get(u);
+        const route = this.groupRoute(u, sx, sy, dest, found);
+        if (route !== undefined) u.orderMove(sx, sy, amove, route, group.length > 1);
       }
     }
   }
 
+  // A group-moved unit's way to its place (sx, sy) in the formation round `dest`: straight when nothing is
+  // in the way. Otherwise round what is: along the path found for a unit within SHARE_RADIUS of it (`found`,
+  // the paths searched for this order), joined at the farthest of its first JOIN_POINTS points this one
+  // can see; or a path of its own to `dest`, then on to its place (searched now while the order's share
+  // of search work lasts, JOIN_EXPANSIONS). Null: the unit plans its own over the next ticks (Unit.travel).
+  // Undefined: no way there from where it stands.
+  groupRoute(u, sx, sy, dest, found) {
+    const nav = this.nav;
+    const route = (pts) => ({ pts, idx: 0, gx: sx, gy: sy, time: this.time });
+    if (nav.clear(u.x, u.y, sx, sy)) return route(null);
+    for (const f of found) {
+      if (Math.hypot(f.x - u.x, f.y - u.y) > SHARE_RADIUS) continue;
+      for (let k = Math.min(f.path.length, JOIN_POINTS) - 1; k >= 0; k--) {
+        if (nav.clear(u.x, u.y, f.path[k][0], f.path[k][1])) return route(k ? f.path.slice(k) : f.path);
+      }
+    }
+    if (nav.expansionBudget <= -JOIN_EXPANSIONS) return null;
+    const path = nav.findPathCached(u.x, u.y, dest[0], dest[1], true);
+    if (path === null) return undefined;
+    if (path.length) {
+      found.push({ x: u.x, y: u.y, path });
+      return route(path);
+    }
+    // `dest` is in sight but its place is not: a path to the place itself.
+    const own = nav.findPathCached(u.x, u.y, sx, sy, true);
+    return own && own.length ? route(own) : null;
+  }
+
+  // (x, y) moved out of the walls of any city it is in, for a unit of radius r: to just outside them,
+  // straight away from the city's centre, when that is on `land`. Formation places in a city would
+  // leave their units pressed against its walls for good.
+  outsideWalls(x, y, r, land) {
+    this.cityGrid.forEachNear(x, y, CITY.size + r + 1, (c) => {
+      const d = Math.hypot(x - c.x, y - c.y), min = c.r + r + 1;
+      if (d >= min) return;
+      const ax = d > 0.01 ? (x - c.x) / d : 0, ay = d > 0.01 ? (y - c.y) / d : -1;
+      const px = c.x + ax * min, py = c.y + ay * min;
+      if (this.nav.landmass(px, py) === land) { x = px; y = py; }
+    });
+    return [x, y];
+  }
+
+  // Inside the walls of a city, for a unit of radius r?
+  inWalls(x, y, r) {
+    let inside = false;
+    this.cityGrid.forEachNear(x, y, CITY.size + r + 1, (c) => {
+      if (Math.hypot(x - c.x, y - c.y) < c.r + r + 1) inside = true;
+    });
+    return inside;
+  }
+
+  // A place for each of `units` in a formation round (tx, ty) (formation; `at`: where each sets off from),
+  // every one on open ground of `land` and outside city walls. A place that falls in the sea or in the
+  // mountains goes to the free open ground nearest to it, round (tx, ty): a formation by the coast spreads
+  // along the land instead of sending those units all to one spot. Map unit -> [x, y].
+  landSlots(units, tx, ty, land, at = (u) => [u.x, u.y], facing = null) {
+    const nav = this.nav, S = GAME.formationSpacing;
+    const slots = this.formation(units, tx, ty, S, at, facing);
+    const open = (x, y) => nav.landmass(x, y) === land && nav.walkable(x, y);
+    const taken = new Map();          // grid cell of S km -> places taken in it
+    const cell = (i, j) => `${i},${j}`;
+    const take = (x, y) => {
+      const k = cell(Math.floor(x / S), Math.floor(y / S));
+      if (!taken.has(k)) taken.set(k, []);
+      taken.get(k).push([x, y]);
+    };
+    const free = (x, y) => {
+      const i = Math.floor(x / S), j = Math.floor(y / S);
+      for (let di = -1; di <= 1; di++) {
+        for (let dj = -1; dj <= 1; dj++) {
+          for (const [px, py] of taken.get(cell(i + di, j + dj)) || []) if (Math.hypot(px - x, py - y) < S * 0.7) return false;
+        }
+      }
+      return true;
+    };
+    const homeless = [];
+    for (const u of units) {
+      const [x, y] = this.outsideWalls(...slots.get(u), u.r, land);
+      if (open(x, y)) { slots.set(u, [x, y]); take(x, y); } else homeless.push(u);
+    }
+    if (!homeless.length) return slots;
+    // Free open ground round (tx, ty), ring by ring, until there is plenty of it to choose from.
+    const spots = [];
+    const r = Math.max(...homeless.map((u) => u.r));
+    for (let ring = 0; spots.length < homeless.length * 2 && ring * S <= SLOT_SEARCH; ring++) {
+      for (let i = -ring; i <= ring; i++) {
+        for (let j = -ring; j <= ring; j++) {
+          if (Math.max(Math.abs(i), Math.abs(j)) !== ring) continue;
+          const x = tx + i * S, y = ty + j * S;
+          if (open(x, y) && free(x, y) && !this.inWalls(x, y, r)) spots.push([x, y]);
+        }
+      }
+    }
+    // The places nearest to (tx, ty) first, each to the free spot nearest to it.
+    const d2 = (p) => (p[0] - tx) ** 2 + (p[1] - ty) ** 2;
+    homeless.sort((p, q) => d2(slots.get(p)) - d2(slots.get(q)));
+    for (const u of homeless) {
+      const [px, py] = slots.get(u);
+      let best = -1, bd = Infinity;
+      for (let k = 0; k < spots.length; k++) {
+        if (!spots[k]) continue;
+        const d = (spots[k][0] - px) ** 2 + (spots[k][1] - py) ** 2;
+        if (d < bd) { bd = d; best = k; }
+      }
+      if (best >= 0) {
+        slots.set(u, spots[best]);
+        spots[best] = null;
+      } else {
+        slots.set(u, nav.nearestWalkable(px, py, 60, land) || [tx, ty]);   // no free ground left near
+      }
+    }
+    return slots;
+  }
+
   // Shift + move for units busy with other orders. Each gets its slot of the formation around
-  // (tx, ty) as seen from where its orders end (Unit.planEnd), on the landmass it will be on then,
-  // and goes there when those orders are done. Each plans its own route when it sets off.
-  queueGroupMove(units, tx, ty, amove) {
+  // (tx, ty) as seen from where its orders end (Unit.planEnd), on the landmass it will be on then
+  // (one formation per landmass, landSlots), and goes there when those orders are done. Each plans
+  // its own route when it sets off.
+  queueGroupMove(units, tx, ty, amove, facing = null) {
     const nav = this.nav;
     const ends = new Map(units.map((u) => [u, u.planEnd()]));
-    const slots = this.formation(units, tx, ty, GAME.formationSpacing, (u) => ends.get(u));
-    const dests = new Map();          // landmass -> nearest walkable spot to (tx, ty) on it
+    const byLand = new Map();
     for (const u of units) {
       const [ex, ey] = ends.get(u);
-      const land = nav.landmass(ex, ey) || nav.landmass(u.x, u.y);
-      if (!dests.has(land)) dests.set(land, nav.nearestWalkable(tx, ty, 200, land));
-      const dest = dests.get(land);
-      if (!dest) continue;            // no way there from where it will be
-      let [sx, sy] = slots.get(u);
-      if (nav.landmass(sx, sy) !== land) [sx, sy] = nav.nearestWalkable(sx, sy, 60, land) || dest;
-      u.queueOrder({ kind: amove ? 'amove' : 'move', x: sx, y: sy });
+      const land = nav.landOf(ex, ey) || nav.landOf(u.x, u.y);
+      if (!byLand.has(land)) byLand.set(land, []);
+      byLand.get(land).push(u);
+    }
+    for (const [land, group] of byLand) {
+      const dest = nav.nearestWalkable(tx, ty, 200, land);
+      if (!dest) continue;            // no way there from where they will be
+      const slots = this.landSlots(group, dest[0], dest[1], land, (u) => ends.get(u), facing);
+      for (const u of group) {
+        const [sx, sy] = slots.get(u);
+        u.queueOrder({ kind: amove ? 'amove' : 'move', x: sx, y: sy, ...(group.length > 1 ? { place: true } : {}) });
+      }
+    }
+  }
+
+  // Shift + move on land for transports landing units (Ship.queueLanding): one formation round (tx, ty) for
+  // everyone on board them, each from where it will stand by then (Ship.cargoEnd), as queueGroupMove does
+  // for units ashore: no two of them, from any of the transports, get the same place.
+  queueLandingMove(ships, tx, ty, amove, facing = null) {
+    const nav = this.nav, ends = new Map(), byLand = new Map();
+    for (const s of ships) {
+      for (const u of s.cargo) {
+        const end = s.cargoEnd(u);
+        ends.set(u, end);
+        const land = s.landingOrder.land || nav.landOf(end[0], end[1]);
+        if (!byLand.has(land)) byLand.set(land, []);
+        byLand.get(land).push(u);
+      }
+    }
+    const slots = new Map();
+    for (const [land, group] of byLand) {
+      const dest = nav.nearestWalkable(tx, ty, 200, land);
+      if (!dest) continue;
+      for (const [u, p] of this.landSlots(group, dest[0], dest[1], land, (u) => ends.get(u), facing)) slots.set(u, p);
+    }
+    for (const s of ships) {
+      const own = {};
+      for (const u of s.cargo) if (slots.has(u)) own[u.id] = slots.get(u);
+      s.queueLanding({ kind: amove ? 'amove' : 'move', x: tx, y: ty, slots: own });
     }
   }
 
   // Ships sail to (tx, ty) in formation, each on the sea it is on: to the nearest water of that
   // sea when (tx, ty) is on land. Each ship plans its own route. With `queue` (Shift), ships busy
-  // sailing or landing units go there afterwards, from where that leaves them.
-  orderSail(ships, tx, ty, queue = false) {
+  // sailing or landing units go there afterwards, from where that leaves them. With `amove`, armed
+  // ships (battleships) attack-move: they fight what they meet on the way.
+  orderSail(ships, tx, ty, queue = false, amove = false, facing = null) {
     const nav = this.nav, bySea = new Map();
     const from = (s) => (queue && s.busy ? s.planEnd() : [s.x, s.y]);
     for (const s of ships) {
@@ -1094,12 +1300,12 @@ export class Game {
     for (const [sea, group] of bySea) {
       const dest = sea ? nav.nearestSea(tx, ty, 300, sea) : null;
       if (!dest) continue;
-      const slots = this.formation(group, dest[0], dest[1], SHIP_SPACING, from);
+      const slots = this.formation(group, dest[0], dest[1], SHIP_SPACING, from, facing);
       for (const s of group) {
         let [sx, sy] = slots.get(s);
         if (nav.seaAt(sx, sy) !== sea) [sx, sy] = nav.nearestSea(sx, sy, 60, sea) || dest;
-        if (queue) s.queueOrder({ kind: 'move', x: sx, y: sy });
-        else s.orderMove(sx, sy, false);
+        if (queue) s.queueOrder({ kind: amove && s.armed ? 'amove' : 'move', x: sx, y: sy });
+        else s.orderMove(sx, sy, amove);
       }
     }
   }
@@ -1129,13 +1335,102 @@ export class Game {
   orderBoard(player, shipId, ids, keep = false) {
     const ship = this.units.get(shipId);
     if (!ship || ship.owner !== player.id || !ship.naval || !ship.capacity) return;
-    const nav = this.nav;
     const selected = this.ownedUnits(player, ids).filter((u) => !u.naval && !u.disbanding);
     const units = keep ? selected.filter((u) => u.order.kind !== 'board') : selected;
     if (!units.length) {
       if (selected.length) this.tell(player, { kind: 'board', ship: shipId, count: 0, reason: 'assigned' });
       return;
     }
+    const sent = this.sendToBoard(ship, units, this.dockClaims(new Set([ship])));
+    this.tell(player, sent.reason ? { kind: 'board', ship: shipId, count: 0, reason: sent.reason }
+      : { kind: 'board', ship: shipId, count: sent.count, skipped: sent.skipped });
+  }
+
+  // Autoload (L, or the Autoload / Board buttons): land units go on board transports, each unit the nearest
+  // transport that still has room, as if right-clicked onto it (sendToBoard). Which ones, by the selection:
+  //  - any land units in it: they find your transports with room (lying idle, or already waiting at a beach)
+  //    within NAVAL.autoboardRange of them, whatever transports are selected with them (full ones, often);
+  //  - transports only: they take your idle land units within NAVAL.autoloadRange of them.
+  // Units already on their way to a transport keep it. A fleet shares out the troops: a transport takes
+  // units of one landmass only (the one it already waits at, otherwise that of the nearest unit it gets) and
+  // sails to the free beach nearest to its share. The player is told how many go, once for all.
+  autoload(player, ids) {
+    const nav = this.nav;
+    const picked = this.ownedUnits(player, ids);
+    const pickedLand = picked.filter((u) => !u.naval && !u.disbanding);
+    const pickedUnits = pickedLand.filter((u) => u.order.kind !== 'board');
+    const findShips = pickedLand.length > 0, findUnits = !findShips;
+    const units = findShips ? pickedUnits : [];
+    const ships = findShips ? [] : picked.filter((s) => s.naval && s.capacity && !s.disbanding);
+    if (findShips && !units.length) { this.tell(player, { kind: 'autoload', count: 0, reason: 'assigned' }); return; }
+    if (findUnits && !ships.length) return;
+    const range = findShips ? NAVAL.autoboardRange : NAVAL.autoloadRange;
+    const waiting = new Map();                     // ship id -> units on their way to it
+    for (const u of this.units.values()) {
+      if (u.owner !== player.id) continue;
+      if (u.naval) {
+        const k = u.order.kind;
+        if (findShips && u.capacity && !u.disbanding && (k === 'idle' || k === 'dock')) ships.push(u);
+      } else if (u.order.kind === 'board') {
+        waiting.set(u.order.ship, (waiting.get(u.order.ship) || 0) + 1);
+      } else if (findUnits && u.order.kind === 'idle' && !u.disbanding) {
+        units.push(u);
+      }
+    }
+    const room = new Map(), land = new Map();      // ship -> free places; ship -> the landmass it loads from
+    for (const s of ships) {
+      room.set(s, s.capacity - s.cargo.length - (waiting.get(s.id) || 0));
+      if (s.order.kind === 'dock' && s.gather) land.set(s, s.gather.land);
+    }
+    const open = ships.filter((s) => room.get(s) > 0);
+    if (!open.length) {
+      this.tell(player, { kind: 'autoload', count: 0, reason: findShips ? 'noship' : 'full' });
+      return;
+    }
+
+    // Every pair of a transport and a unit within reach whose land has a beach on the transport's sea,
+    // nearest first: each unit goes to the first transport that still has room for it.
+    const seas = open.map((s) => nav.seaAt(s.x, s.y));
+    const pairs = [];
+    for (const u of units) {
+      const l = nav.landmass(u.x, u.y);
+      if (!l) continue;
+      open.forEach((s, k) => {
+        const d = Math.hypot(u.x - s.x, u.y - s.y);
+        if (d <= range && seas[k] && nav.hasBeach(l, seas[k])) pairs.push([d, s, u, l]);
+      });
+    }
+    pairs.sort((p, q) => p[0] - q[0]);
+    const share = new Map(), taken = new Set();     // ship -> the units it gets, in the order they were picked
+    for (const [, s, u, l] of pairs) {
+      if (taken.has(u)) continue;
+      const list = share.get(s) || [];
+      if (list.length >= room.get(s) || (land.has(s) && land.get(s) !== l)) continue;
+      land.set(s, l);
+      list.push(u);
+      share.set(s, list);
+      taken.add(u);
+    }
+    // Each transport picks its dock in turn, clear of the docks the ones before it got. The ones still to
+    // pick don't claim the water where they lie: they are about to sail off.
+    const pending = new Set(share.keys());
+    let count = 0, loaded = 0;
+    for (const [s, list] of share) {
+      const sent = this.sendToBoard(s, list, this.dockClaims(pending));
+      pending.delete(s);
+      if (sent.count) { count += sent.count; loaded++; }
+    }
+    // Selected units that found no place: no transport in reach on their sea, or all of them full.
+    const left = findShips ? units.length - count : 0;
+    this.tell(player, count ? { kind: 'autoload', count, ships: loaded, ...(left ? { left } : {}) }
+      : { kind: 'autoload', count: 0, reason: findShips ? 'noship' : 'none' });
+  }
+
+  // Send `units` (land units of the transport's owner) on board `ship`; `claims`: the water other ships
+  // use (dockClaims). { count, skipped }: how many go and how many don't fit, or { reason } when none go:
+  // 'far' (no beach of their land on the transport's sea) or 'full'.
+  sendToBoard(ship, units, claims) {
+    const nav = this.nav;
     // Units may stand on several landmasses: use the one most of them are on (that the transport's sea
     // has a beach of), then the beach nearest to them.
     const sea = nav.seaAt(ship.x, ship.y);
@@ -1149,7 +1444,6 @@ export class Game {
     // A dock no other ship uses, as close to the units as possible; or the one this transport is
     // already waiting at for units of that land.
     let best = null;
-    const claims = this.dockClaims(new Set([ship]));
     const docked = ship.order.kind === 'dock' && ship.gather;
     for (const [land, list] of byLand) {
       if (best && list.length < best.list.length) continue;
@@ -1162,13 +1456,13 @@ export class Game {
       }
       if (coast && (!best || list.length > best.list.length || coast.d < best.coast.d)) best = { land, list, coast };
     }
-    if (!best) { this.tell(player, { kind: 'board', ship: shipId, count: 0, reason: 'far' }); return; }
+    if (!best) return { count: 0, reason: 'far' };
 
     // Free slots: what is on board and the units still on their way from that shore count.
     const sending = new Set(best.list);
     const waiting = this.boardersOf(ship).filter((u) => !sending.has(u) && u.order.land === best.land);
     const free = ship.capacity - ship.cargo.length - waiting.length;
-    if (free <= 0) { this.tell(player, { kind: 'board', ship: shipId, count: 0, reason: 'full' }); return; }
+    if (free <= 0) return { count: 0, reason: 'full' };
 
     const [gx, gy] = best.coast.land;
     const go = best.list
@@ -1178,7 +1472,7 @@ export class Game {
       ship.orderDock(best.coast.water[0], best.coast.water[1], { x: gx, y: gy, land: best.land });
     }
     for (const u of go) u.orderBoard(ship.id, best.land);
-    this.tell(player, { kind: 'board', ship: shipId, count: go.length, skipped: units.length - go.length });
+    return { count: go.length, skipped: units.length - go.length };
   }
 
   // Unload: every transport sails to a free dock on the coast nearest to (x, y) that it can reach on
@@ -1186,22 +1480,40 @@ export class Game {
   // otherwise to (x, y). The transports nearest to the place get the docks nearest to it; each keeps
   // clear of the docks of the others, so they don't jam. `amove` (right-click on land): the units
   // attack-move to (x, y), fighting anything they meet on the way.
-  orderUnload(player, ships, x, y, city, amove = false) {
+  // Everyone on board all of them gets a place of their own in one formation round the place (landSlots),
+  // each as seen from where its transport lands it: the units of a fleet landing along a long coast spread
+  // round the place instead of every transport's units heading for the same few spots.
+  // `queue` (Shift): each transport lands them after the sails queued before (from where those end), and
+  // keeps them: a landing queued like any other order (Ship.startQueued).
+  orderUnload(player, ships, x, y, city, amove = false, queue = false, facing = null) {
     const nav = this.nav;
     const spot = nav.nearestWalkable(x, y, 200);
     const land = spot ? nav.landmass(spot[0], spot[1]) : 0;
     const claims = this.dockClaims(new Set(ships));
-    const byDistance = [...ships].sort((p, q) => (land ? Math.hypot(p.x - spot[0], p.y - spot[1]) - Math.hypot(q.x - spot[0], q.y - spot[1]) : 0));
+    const at = new Map(ships.map((s) => [s, queue && s.busy ? s.planEnd() : [s.x, s.y]]));   // where each sets off from
+    const dist = (s) => Math.hypot(at.get(s)[0] - spot[0], at.get(s)[1] - spot[1]);
+    const byDistance = [...ships].sort((p, q) => (land ? dist(p) - dist(q) : 0));
     let failed = 0;
+    const landing = [];               // [ship, coast] for every transport that has somewhere to land
     for (const s of byDistance) {
-      const sea = nav.seaAt(s.x, s.y);
+      const sea = nav.seaAt(...at.get(s)) || nav.seaAt(s.x, s.y);
       const coast = land && sea ? this.freeCoast(spot[0], spot[1], land, sea, s.r, claims) : null;
       if (!coast) { failed++; continue; }
       claims.push([coast.water[0], coast.water[1], s.r]);
-      s.orderUnload({
+      landing.push([s, coast]);
+    }
+    const from = new Map();           // unit on board -> where its transport lands it
+    for (const [s, coast] of landing) for (const u of s.cargo) from.set(u, coast.land);
+    const slots = from.size ? this.landSlots([...from.keys()], spot[0], spot[1], land, (u) => from.get(u), facing) : new Map();
+    for (const [s, coast] of landing) {
+      const own = {};
+      for (const u of s.cargo) own[u.id] = slots.get(u);
+      const o = {
         x: coast.water[0], y: coast.water[1], lx: coast.land[0], ly: coast.land[1], land,
-        tx: spot[0], ty: spot[1], city: city && city.owner !== player.id ? city.id : -1, amove,
-      });
+        tx: spot[0], ty: spot[1], city: city && city.owner !== player.id ? city.id : -1, amove, slots: own,
+      };
+      if (queue) s.queueOrder({ kind: 'unload', ...o, then: [] });
+      else s.orderUnload(o);
     }
     if (failed) this.tell(player, { kind: 'unload', failed, reason: land ? 'sea' : 'land' });
   }
@@ -1252,9 +1564,17 @@ export class Game {
   landUnits(ship, taken) {
     const o = ship.order;
     if (this.time < (o.retryAt || 0)) return;
+    // Storming a city: nobody stays on board, where the city's guns would sink them with the transport (nor
+    // waits there for good once the city has fallen and the victors crowd the beach). Those that find no room
+    // by the beach squeeze in among the others there (the crowd pushes itself apart), or step ashore farther
+    // along it, or at last anywhere on that ground outside the walls.
+    const storm = o.city >= 0;
     const landed = [];
     for (const u of ship.cargo) {
-      const spot = this.landingSpot(o, u.r, taken);
+      let spot = this.landingSpot(o, u.r, taken);
+      if (!spot && storm) {
+        spot = this.landingSpot(o, u.r, taken, 1, 0.5) || this.landingSpot(o, u.r, taken, 2) || this.landingSpot(o, u.r, taken, 2, 0);
+      }
       if (!spot) continue;
       taken.push({ x: spot[0], y: spot[1], r: u.r });
       landed.push([u, spot]);
@@ -1278,69 +1598,97 @@ export class Game {
       this.units.set(u.id, u);
     }
     if (!ship.cargo.length) ship.done();     // sails on if Shift queued more for it
+    // What Shift gave them to do while they were on board (Ship.queueLanding). After a landing on land those
+    // orders replace the march to the place clicked: that click only picked where the transports land (park
+    // there; Shift + click: go there), so the units set off from the beach for the first of them. Storming a
+    // city, they take it first.
+    const then = o.then || [];
+    const fromBeach = o.city < 0 && then.length > 0;      // `o`: the ship may have sailed on already (done)
     if (o.city >= 0 && this.resolve('c', o.city, ship.owner)) {
       for (const u of units) u.orderAttack('c', o.city);
-    } else {
-      this.orderGroupMove(units, o.tx, o.ty, !!o.amove);
+    } else if (!fromBeach) {
+      // Each to its own place in the formation of the whole landing (orderUnload), its way found from where
+      // it stepped ashore; the units of one transport share the searches.
+      this.sendToPlaces(units, o.slots, o.tx, o.ty, !!o.amove);
     }
+    // Then those orders, one after another: moves to their own places in the formation each was given
+    // (Game.queueLandingMove). Straight from the beach, the first starts now.
+    then.forEach((q, i) => {
+      const now = fromBeach && i === 0;
+      if (q.kind === 'attack') {
+        for (const u of units) {
+          if (now) u.orderAttack(q.tk, q.tid);
+          else u.queueOrder({ ...q });
+        }
+        return;
+      }
+      if (now) {
+        this.sendToPlaces(units, q.slots, q.x, q.y, q.kind === 'amove');
+        return;
+      }
+      const rest = [];
+      for (const u of units) {
+        const p = q.slots?.[u.id];
+        if (p) u.queueOrder({ kind: q.kind, x: p[0], y: p[1], place: true });
+        else rest.push(u);
+      }
+      if (rest.length) this.queueGroupMove(rest, q.x, q.y, q.kind === 'amove');
+    });
+  }
+
+  // Landed units off to their places (`slots`: { unit id: [x, y] }, round (tx, ty)), each with its way found
+  // from where it stands (groupRoute; the units of one landing share the searches). Units without a place
+  // make a formation of their own there (orderGroupMove).
+  sendToPlaces(units, slots, tx, ty, amove) {
+    const found = [], rest = [];
+    for (const u of units) {
+      const p = slots?.[u.id];
+      if (!p) { rest.push(u); continue; }
+      const route = this.groupRoute(u, p[0], p[1], p, found);
+      if (route !== undefined) u.orderMove(p[0], p[1], amove, route, true);
+    }
+    if (rest.length) this.orderGroupMove(rest, tx, ty, amove);
   }
 
   // Free ground for a unit of radius r near the coast cell of an unload order, nearest first, or null.
-  landingSpot(o, r, taken) {
-    for (let ring = 0; ring * LANDING_STEP <= NAVAL.boardRadius; ring++) {
+  // `reach`: how many times NAVAL.boardRadius from the coast cell to look; `squeeze`: see roomAt.
+  landingSpot(o, r, taken, reach = 1, squeeze = 1) {
+    for (let ring = 0; ring * LANDING_STEP <= NAVAL.boardRadius * reach; ring++) {
       const n = ring ? ring * 6 : 1;
       for (let k = 0; k < n; k++) {
         const a = (k / n) * Math.PI * 2 + ring * 0.5;
         const x = o.lx + Math.cos(a) * ring * LANDING_STEP, y = o.ly + Math.sin(a) * ring * LANDING_STEP;
-        if (this.nav.landmass(x, y) === o.land && this.roomAt(x, y, r, taken)) return [x, y];
+        if (this.nav.landmass(x, y) === o.land && this.roomAt(x, y, r, taken, squeeze)) return [x, y];
       }
     }
     return null;
   }
 
   // Room for a unit of radius r at (x, y): no unit on land, city wall or spot in `taken` overlaps it.
-  roomAt(x, y, r, taken) {
+  // `squeeze` < 1: it may overlap other units (and spots in `taken`) that much, as if it were that much
+  // smaller (the crowd then pushes itself apart); 0: they don't count at all. City walls always do.
+  roomAt(x, y, r, taken, squeeze = 1) {
     let free = true;
-    this.unitGrid.forEachNear(x, y, r + 12, (u) => {
-      if (free && !u.naval && this.units.has(u.id) && Math.hypot(u.x - x, u.y - y) < u.r + r) free = false;
-    });
+    const ru = r * squeeze;
+    if (squeeze > 0) {
+      this.unitGrid.forEachNear(x, y, ru + 12, (u) => {
+        if (free && !u.naval && this.units.has(u.id) && Math.hypot(u.x - x, u.y - y) < u.r * squeeze + ru) free = false;
+      });
+    }
     if (free) {
       this.cityGrid.forEachNear(x, y, CITY.size + r, (c) => {
         if (Math.hypot(c.x - x, c.y - y) < c.r + r) free = false;
       });
     }
-    return free && taken.every((t) => Math.hypot(t.x - x, t.y - y) >= t.r + r);
+    return free && (squeeze <= 0 || taken.every((t) => Math.hypot(t.x - x, t.y - y) >= (t.r + r) * squeeze));
   }
 
-  // Rows perpendicular to the travel direction; melee in front, archers behind. `at(u)` is where
-  // a unit sets off from: where it stands, or for a queued order where its earlier orders end.
-  formation(units, tx, ty, spacing = GAME.formationSpacing, at = (u) => [u.x, u.y]) {
-    const slots = new Map();
-    if (units.length === 1) { slots.set(units[0], [tx, ty]); return slots; }
-    const pos = new Map(units.map((u) => [u, at(u)]));
-    let cx = 0, cy = 0;
-    for (const [x, y] of pos.values()) { cx += x; cy += y; }
-    cx /= units.length; cy /= units.length;
-    let dx = tx - cx, dy = ty - cy;
-    const len = Math.hypot(dx, dy);
-    if (len < 1) { dx = 0; dy = -1; } else { dx /= len; dy /= len; }
-    const px = -dy, py = dx;
-    const cols = Math.max(1, Math.round(Math.sqrt(units.length * 2)));
-    const fwd = (u) => (pos.get(u)[0] - cx) * dx + (pos.get(u)[1] - cy) * dy;
-    const side = (u) => (pos.get(u)[0] - cx) * px + (pos.get(u)[1] - cy) * py;
-    const melee = units.filter((u) => !u.isRanged).sort((a, b) => fwd(b) - fwd(a));
-    const ranged = units.filter((u) => u.isRanged).sort((a, b) => fwd(b) - fwd(a));
-    const ordered = melee.concat(ranged);
-    const rows = Math.ceil(ordered.length / cols);
-    for (let r = 0; r < rows; r++) {
-      const row = ordered.slice(r * cols, (r + 1) * cols).sort((a, b) => side(a) - side(b));
-      const back = ((rows - 1) / 2 - r) * spacing;
-      row.forEach((u, i) => {
-        const off = (i - (row.length - 1) / 2) * spacing;
-        slots.set(u, [tx + px * off + dx * back, ty + py * off + dy * back]);
-      });
-    }
-    return slots;
+  // A place for each of `units` in a formation round (tx, ty) (shared/formation.js): infantry in front,
+  // archers behind, cavalry on the wings. `at(u)` is where a unit sets off from: where it stands, or for a
+  // queued order where its earlier orders end. `facing`: the way the formation faces, in radians; null: the
+  // way the group goes.
+  formation(units, tx, ty, spacing = GAME.formationSpacing, at = (u) => [u.x, u.y], facing = null) {
+    return formationSlots(units, tx, ty, { spacing, facing, pos: at, role: (u) => formationRole(u.type, u.kind) });
   }
 
   resolve(k, id, owner) {
@@ -1403,7 +1751,6 @@ export class Game {
 
     this.unitGrid.clear();
     for (const u of this.units.values()) this.unitGrid.insert(u);
-    this.checkStandFirm();
     this.inspire();
 
     for (const u of this.units.values()) {
@@ -1457,8 +1804,9 @@ export class Game {
   // neutral city is only a loss for the victim).
   // A disbanded unit (Delete key) is always a loss. It is a kill only for the last player who
   // hit it, and only if that hit was within DISBAND.killCreditSeconds before it died.
-  // Every kill pays the killer a share of the unit's cost in gold (ECONOMY.killGoldShare) and
-  // gives them honor for it too (HONOR.killShare of its cost: as much as it adds to their Kills).
+  // Every kill pays the killer a share of the unit's cost in gold (ECONOMY.killGoldShare, times the
+  // killer's gold percentage) and gives them honor for it too (HONOR.killShare of its cost: as much as
+  // it adds to their Kills).
   // A Hero is worth the gold of the unit it was made from (Unit.takeOver).
   // Honored Dead (tradition): a unit that fell gives its owner TRADITIONS.honoredDead.lossShare of its
   // value in honor. It fell unless it was disbanded; a disbanded one still fell when it counts as an
@@ -1478,16 +1826,17 @@ export class Game {
       loser.honor += value * TRADITIONS.honoredDead.lossShare;
       this.history.honoredDead(loser.id, value * TRADITIONS.honoredDead.lossShare);
     }
-    this.history.died(u.owner, u.type, killer ? killer.id : -1, value * ECONOMY.killGoldShare, value * HONOR.killShare);
+    const gold = killer ? scaleGold(value * ECONOMY.killGoldShare, killer.goldPercent) : 0;
+    this.history.died(u.owner, u.type, killer ? killer.id : -1, gold, value * HONOR.killShare);
     if (!killer) return;
     killer.kills += value;
-    killer.gold += value * ECONOMY.killGoldShare;
+    killer.gold += gold;
     killer.honor += value * HONOR.killShare;
   }
 
   // The end of a turn first decides whether someone has won (checkCityVictory). If not, each city
   // pays its owner (more with a Farm, and more when the owner holds its whole region); the gold
-  // arrives all at once.
+  // arrives all at once, scaled by each player's gold percentage (whole gold).
   endTurn() {
     this.checkCityVictory();
     if (this.status !== 'running') return;
@@ -1508,14 +1857,17 @@ export class Game {
     for (const p of this.players.values()) {
       if (p.eliminated) continue;
       // A liberator has no cities: they get a fixed amount instead (more with Supporters).
+      // Smuggling moves the cities' own gold; what each side ends up with is then scaled by their percentage.
       const gain = smuggled.gain.get(p.id) || 0, loss = smuggled.loss.get(p.id) || 0;
-      const gold = p.liberator ? liberatorIncome(p.tech) + gain : (income.get(p.id) || 0) - loss;
+      const pct = p.goldPercent, scaled = (v) => scaleGoldWhole(v, pct);
+      const gold = scaled(p.liberator ? liberatorIncome(p.tech) + gain : (income.get(p.id) || 0) - loss);
       p.gold += gold;
       paid.set(p.id, gold);
       if (p.client) {
         p.client.send({
-          t: 'event', kind: 'turn', turn: this.turn, income: gold, regionBonus: fromRegions.get(p.id) || 0,
-          ...(p.liberator ? { liberator: true } : {}), ...(gain ? { smuggled: gain } : {}), ...(loss ? { smuggledAway: loss } : {}),
+          t: 'event', kind: 'turn', turn: this.turn, income: gold, regionBonus: scaled(fromRegions.get(p.id) || 0),
+          ...(p.liberator ? { liberator: true } : {}), ...(gain ? { smuggled: scaled(gain) } : {}),
+          ...(loss ? { smuggledAway: scaled(loss) } : {}),
         });
       }
     }
@@ -1528,10 +1880,10 @@ export class Game {
     const u = createUnit(type, this, this.nextUnitId++, city.owner, x, y);
     this.units.set(u.id, u);
     // New units attack-move to the rally point, fighting anything they meet on the way. New ships
-    // sail to the city's rally point at sea, or stay in the port.
+    // sail to the city's rally point at sea (battleships attack-move there too), or stay in the port.
     if (naval) {
       if (city.seaRally) {
-        this.orderSail([u], city.seaRally.x + (Math.random() - 0.5) * 30, city.seaRally.y + (Math.random() - 0.5) * 30);
+        this.orderSail([u], city.seaRally.x + (Math.random() - 0.5) * 30, city.seaRally.y + (Math.random() - 0.5) * 30, false, true);
       }
     } else if (city.rally) {
       const jx = city.rally.x + (Math.random() - 0.5) * 24, jy = city.rally.y + (Math.random() - 0.5) * 24;
@@ -1671,6 +2023,20 @@ export class Game {
     return B;
   }
 
+  // Cancel entry `index` of the city's production queue and refund it. Cancelling an upgrade also
+  // cancels its higher grades in the queue (they need it), refunded too.
+  cancelQueued(player, c, index) {
+    const [item] = c.queue.splice(index, 1);
+    this.giveBack(player, item, c.queueHonor.splice(index, 1)[0]);
+    for (const key of higherGrades(item)) {
+      const i = c.queue.indexOf(key);   // always after `item`: it was queued later
+      if (i < 0) continue;
+      c.queue.splice(i, 1);
+      this.giveBack(player, key, c.queueHonor.splice(i, 1)[0]);
+    }
+    if (index === 0) c.progress = 0;
+  }
+
   // A cancelled (or lost) queue item goes back to the player as it was paid: the honor paid for it
   // (`paidHonor`, from City.queueHonor), or else its gold. Returns { gold, honor }.
   giveBack(player, item, paidHonor) {
@@ -1728,6 +2094,7 @@ export class Game {
     const liberators = this.options.death === 'liberator';
     let fell = false;
     for (const p of this.players.values()) {
+      if (p.surrendered) continue;       // out for good, already eliminated
       const dead = p.cityCount === 0 && p.unitCount === 0;
       if (liberators) {
         if (dead && !p.liberator) {
@@ -1748,6 +2115,8 @@ export class Game {
     if (fell) this.sendScores();
     // The last player standing wins at once (holding the target is only checked at the end of a
     // turn: checkCityVictory). Liberators are never eliminated: while one of them is left, the game goes on.
+    // Players who surrendered are eliminated, and those who left are gone: when everyone else has done
+    // either, the last one wins. Not in a game started alone (to practise): it goes on until its player is out too.
     const alive = [...this.players.values()].filter((p) => !p.eliminated);
     if (this.startedWith >= 2 && alive.length === 1) this.end(alive[0].id);
     else if (alive.length === 0) this.end(-1);
@@ -1790,6 +2159,9 @@ export class Game {
 
   // ------------------------------------------------------------ networking
   sendSnapshots() {
+    // Shots fired since the last snapshot (battleships) are flagged in this one.
+    const shotsSince = this.lastSnapshotAt ?? -1;
+    this.lastSnapshotAt = this.time;
     // Per city: owner, HP, upgrade flags (bit per UPGRADE_TYPES entry; max HP and damage follow from them).
     const cityArr = new Array(this.cities.length * 3);
     this.cities.forEach((c, i) => {
@@ -1810,18 +2182,19 @@ export class Game {
       if (!p.client) continue;
       const v = p.view;
       const inView = (x, y) => v && x > v.x0 - VIEW_MARGIN && x < v.x1 + VIEW_MARGIN && y > v.y0 - VIEW_MARGIN && y < v.y1 + VIEW_MARGIN;
-      const us = [], cargo = [], plans = [], docks = [];
+      const us = [], cargo = [], plans = [], docks = [], landPlans = [];
       for (const u of this.units.values()) {
         if (u.owner !== p.id && !inView(u.x, u.y)) continue;
         // Your own units with orders queued (Shift): where they go, one point per order, for the map.
         if (u.owner === p.id && u.queue.length) plans.push([u.id, ...u.planPoints()]);
-        // Flags: 1 attacking, 2 moving, 4 disbanding, 8 on hold, 32 standing firm (Last Stand). From bit
-        // HERO_KIND_SHIFT: a Hero's kind; from bit CARGO_SHIFT up: a ship's cargo count (shared/protocol.js).
+        // Flags: 1 attacking, 2 moving, 4 disbanding, 8 on hold, 16 fired a shot. From bit HERO_KIND_SHIFT:
+        // a Hero's kind; from bit CARGO_SHIFT up: a ship's cargo count (shared/protocol.js), only for your own
+        // ships: nobody else sees how many are on board.
         let flags = (u.attacking ? 1 : 0) | (u.wantMove > 0 ? 2 : 0) | (u.disbanding ? 4 : 0) | (u.holding ? 8 : 0) |
-          (u.standFirm ? STAND_FIRM_FLAG : 0);
+          (u.shotAt > shotsSince ? 16 : 0);
         if (u.type === 'hero') flags |= Math.max(0, HERO_KINDS.indexOf(u.kind)) << HERO_KIND_SHIFT;
         if (u.naval) {
-          flags |= u.cargo.length << CARGO_SHIFT;
+          if (u.owner === p.id) flags |= u.cargo.length << CARGO_SHIFT;
           // Your own transports: who is on board (type and HP), for the panel.
           if (u.owner === p.id && u.cargo.length) cargo.push([u.id, u.cargo.flatMap((c) => [c.t, Math.ceil(c.hp)])]);
           // Your own ships taking units on board (0) or landing them (1): their dock and the shore
@@ -1831,6 +2204,8 @@ export class Game {
             const shore = k === 'dock' ? u.gather : { x: u.order.lx, y: u.order.ly };
             if (shore) docks.push(u.id, r1(u.order.x), r1(u.order.y), r1(shore.x), r1(shore.y), k === 'dock' ? 0 : 1);
           }
+          // Your transports landing units that Shift gave orders for once ashore: where those units go.
+          if (u.owner === p.id && u.landingOrder?.then?.length) landPlans.push([u.id, ...u.landingPlan()]);
         }
         us.push(u.id, u.t, u.owner, r1(u.x), r1(u.y), Math.ceil(u.hp), flags, u.engaged);
       }
@@ -1849,10 +2224,12 @@ export class Game {
       }
       p.client.send({
         t: 'snap', time, u: us, c: cityArr, s: shots, d: deaths, g: Math.floor(p.gold), h: Math.floor(p.honor), q, b: cargo, w: plans, k: docks,
+        ...(landPlans.length ? { wl: landPlans } : {}),
         turn: this.turn, next: this.nextTurnAt, ...debug, ...(this.timeScale !== 1 ? { ts: this.timeScale } : {}),
-        // Your research (private): technology id and seconds done; the levels queued after it (ids, in order).
-        r: p.research ? [TECH_TYPES.indexOf(p.research.tech), r1(p.research.progress)] : null,
-        ...(p.researchQueue.length ? { rq: p.researchQueue.map((e) => TECH_TYPES.indexOf(e.tech)) } : {}),
+        // Your research (private): technology id, seconds done and the gold paid; the levels queued after it,
+        // in order: [id, gold paid] (a liberator pays less for Rebellion technologies, so the refund differs).
+        r: p.research ? [TECH_TYPES.indexOf(p.research.tech), r1(p.research.progress), p.research.cost] : null,
+        ...(p.researchQueue.length ? { rq: p.researchQueue.map((e) => [TECH_TYPES.indexOf(e.tech), e.cost]) } : {}),
         // Honor (private): traditions learned (ids), the one being learned [id, seconds done], the queued ones.
         tr: p.traditions.map((k) => TRADITION_TYPES.indexOf(k)),
         tl: p.learning ? [TRADITION_TYPES.indexOf(p.learning.tradition), r1(p.learning.progress)] : null,

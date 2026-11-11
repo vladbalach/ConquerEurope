@@ -17,7 +17,7 @@ test('regionHolder: the one player who holds every city, or -1', () => {
   const ids = regionCities(map);
   assert.equal(ids.flat().length, map.cities.length, 'every city is in exactly one region');
   assert.deepEqual(ids[regionOf('Hungary')].map((i) => map.cities[i].n).sort(),
-    ['Budapest', 'Cluj', 'Debrecen', 'Košice', 'Nitra', 'Pécs', 'Szeged']);
+    ['Budapest', 'Cluj', 'Debrecen', 'Košice', 'Pécs', 'Szeged']);
 });
 
 test('holding every city of a region makes each of them pay +2 gold per turn, until one is lost', () => {

@@ -1,7 +1,7 @@
 // Technologies (TECHS in shared/config.js): what they do for a liberator, and what they open up
-// (ships). Used by the game (server/game.js, in the host's browser) and by every player's page (HUD,
+// (ships: transports, battleships). Used by the game (server/game.js, in the host's browser) and by every player's page (HUD,
 // Tech window), so both always agree on incomes, limits and what may be ordered.
-import { TECHS, TECH_TYPES, TECH_TABS, LIBERATOR } from './config.js';
+import { TECHS, TECH_TYPES, TECH_TABS, LIBERATOR, UNITS } from './config.js';
 
 // Levels a new player has: none of anything.
 export function noTech() {
@@ -9,10 +9,18 @@ export function noTech() {
 }
 
 // The next level of `key` for a player at `level`: { level, cost, time }, or null when maxed.
-export function nextLevel(key, level) {
+// `liberator`: the player is one now, so Rebellion technologies cost less (techCost).
+export function nextLevel(key, level, liberator = false) {
   const def = TECHS[key];
   const next = def && def.levels[level];
-  return next ? { level: level + 1, cost: next.cost, time: next.time } : null;
+  return next ? { level: level + 1, cost: techCost(key, level, liberator), time: next.time } : null;
+}
+
+// Gold level `i` (0: the first) of `key` costs: its price, or for a liberator a Rebellion technology
+// LIBERATOR.rebellionCost of it, rounded up.
+export function techCost(key, i, liberator = false) {
+  const def = TECHS[key], cost = def.levels[i].cost;
+  return liberator && def.tab === 'rebellion' ? Math.ceil(cost * LIBERATOR.rebellionCost) : cost;
 }
 
 // Is this technology's tab available with these game options?
@@ -24,9 +32,21 @@ export function techAvailable(key, options) {
 
 const lvl = (tech, key) => (tech && tech[key]) || 0;
 
-// Seafaring: coastal cities build ships, and units go on board transports and land from them.
+// Seafaring: coastal cities build transports, and units go on board them and land from them.
 export function hasSeafaring(tech) {
   return lvl(tech, 'seafaring') > 0;
+}
+
+// Navigation: how many times faster than its moveSpeed every ship of a player with these technologies sails.
+export function shipSpeedFactor(tech) {
+  return 1 + (lvl(tech, 'navigation') * TECHS.navigation.speedPercent) / 100;
+}
+
+// May cities train this unit type with these technologies? A unit with a `tech` (UNITS) needs it: transports
+// Seafaring, battleships Gunnery. Anything else (land units, upgrades) needs none.
+export function canTrain(type, tech) {
+  const need = UNITS[type]?.tech;
+  return !need || lvl(tech, need) > 0;
 }
 
 // Gold a liberator gets at the end of every turn (before smuggling).

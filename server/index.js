@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { Game } from './game.js';
 import { NavGrid } from './nav.js';
-import { DEBUG } from '../shared/config.js';
+import { DEBUG, GAME } from '../shared/config.js';
 import { iceConfig } from './ice.js';
 import { PROTOCOL_VERSION } from '../shared/protocol.js';
 import { applyBalance, resetBalance, snapshot } from '../shared/balance.js';
@@ -23,6 +23,13 @@ const PORT = Number(process.env.PORT) || 3000;
 
 const EMPTY_GAME_MS = 15 * 60 * 1000;   // a running game with nobody connected is deleted after this
 const ENDED_GAME_MS = 2 * 60 * 1000;
+// Every connection is pinged this often (browsers answer by themselves); one silent for SILENT_MS is
+// dropped. A host whose browser crashed or lost its network is noticed this way, not minutes later.
+const HEARTBEAT_MS = 5000;
+const SILENT_MS = 15000;
+// Changeable by tests. hostGrace: ms a host's dropped lobby connection gets to come back before another
+// player's browser takes the game over (a closed or reloaded page says so, and is replaced at once).
+export const timing = { hostGrace: 5000 };
 
 const MAP_FILE = process.env.MAP_FILE || path.join(PUBLIC, 'map.json');
 const NAV_FILE = process.env.NAV_FILE || path.join(ROOT, 'server', 'data', 'navgrid.json');
@@ -32,7 +39,8 @@ const nav = NavGrid.load(NAV_FILE);
 // Admin map editing (Edit map in a game): moved cities are saved in server/data/city-positions.json
 // and apply to every game; "Rebuild navigation" rebuilds territories and pathfinding from them.
 // Cities made coastal or inland are saved in server/data/city-coastal.json, painted beaches in
-// server/data/beach-edits.json.
+// server/data/beach-edits.json, painted mountains in server/data/mountain-edits.json, region names moved
+// or resized in server/data/label-edits.json.
 const editor = new MapEditor({
   map, nav, games: () => games.values(),
   files: {
@@ -40,6 +48,8 @@ const editor = new MapEditor({
     positions: process.env.CITY_POSITIONS || path.join(ROOT, 'server', 'data', 'city-positions.json'),
     coastal: process.env.CITY_COASTAL || path.join(ROOT, 'server', 'data', 'city-coastal.json'),
     beaches: process.env.BEACH_EDITS || path.join(ROOT, 'server', 'data', 'beach-edits.json'),
+    mountains: process.env.MOUNTAIN_EDITS || path.join(ROOT, 'server', 'data', 'mountain-edits.json'),
+    labels: process.env.LABEL_EDITS || path.join(ROOT, 'server', 'data', 'label-edits.json'),
   },
 });
 
@@ -258,15 +268,50 @@ function leaveCurrent(client) {
     g.removePlayer(p.id);
   } else {
     // Giving up a running game: the player's page has told the host already. When the host
-    // leaves, the game is over for everyone.
-    if (g.status === 'running' && p.id === g.hostId) endHosted(g, -1, 'The host left the game.');
+    // leaves, another player's browser takes the game over.
+    const wasHost = g.status === 'running' && p.id === g.hostId;
     // Kept for the end of the game, when everyone is revealed, those who gave up too.
     if (g.status === 'running') (g.departed || (g.departed = [])).push({ id: p.id, name: p.name, color: p.color });
     g.players.delete(p.id);
+    if (wasHost) moveHost(g);
+    sendRestartState(g);               // a finished duel: the other player can no longer restart it
   }
   client.game = null;
   client.player = null;
-  if (g.players.size === 0) games.delete(g.id);
+  if (g.players.size === 0) deleteGame(g);
+  lobbyDirty = true;
+}
+
+function deleteGame(g) {
+  clearTimeout(g.hostTimer);
+  games.delete(g.id);
+}
+
+// ------------------------------------------------------------------ duels: Restart
+// A game started by two players is a duel. Once it is over, both players see Restart on the results
+// screen; when both have pressed it, the same game starts again at once, without the waiting room:
+// new ids and colours, handed to the same host. Only while both are still on the results screen.
+function restartState(g) {
+  if (g.status !== 'ended' || g.startedWith !== 2) return null;
+  const open = g.players.size === 2 && [...g.players.values()].every((p) => p.client);
+  const votes = [...(g.restartVotes || [])].filter((id) => g.players.has(id));
+  return { votes, open };
+}
+
+function sendRestartState(g) {
+  const state = restartState(g);
+  if (!state) return;
+  for (const p of g.players.values()) if (p.client) p.client.send({ t: 'restartVotes', ...state });
+}
+
+function restartGame(g) {
+  g.restartVotes = null;
+  g.departed = null;
+  if (!g.players.has(g.hostId)) g.hostId = g.players.keys().next().value ?? null;   // its host left the game
+  if (!g.restart()) return;
+  // Pages drop the finished game first; the host's start follows, as for a game started in the room.
+  for (const p of g.players.values()) p.client.send({ t: 'restarted', gameId: g.id });
+  handOver(g);
   lobbyDirty = true;
 }
 
@@ -274,38 +319,119 @@ function leaveCurrent(client) {
 // A started game runs in its host player's browser (server/host-engine.js in a Web Worker). Every
 // other player connects to the host directly (WebRTC). This server only hands the game over,
 // passes the connection messages between players and host, and reveals everyone at the end.
+//
+// The host's browser sends a checkpoint of the game every GAME.checkpointEvery seconds (packed, never
+// read here). When the host leaves, or its page is closed or reloaded, or its connection is gone for
+// longer than timing.hostGrace, another player's browser takes the game over from the last checkpoint
+// (moveHost), and the old host can come back as any other player. Each hosting of a game has its own
+// number (g.hostEpoch): pages tell an old host from the current one by it.
+
+// Does this page run the current hosting of game g?
+function runsGame(client, g) {
+  const h = client.hosting;
+  return !!h && h.gameId === g.id && h.epoch === g.hostEpoch;
+}
 
 // Start: the host gets the roster (ids and colours, never nicknames), everyone else is told to
 // connect to the host.
 async function handOver(g) {
+  clearTimeout(g.hostTimer);
+  g.checkpoint = null;
+  const epoch = (g.hostEpoch = (g.hostEpoch || 0) + 1);
   const ice = await iceConfig();
-  const roster = [...g.players.values()].map((p) => ({ id: p.id, color: p.color }));
+  if (g.hostEpoch !== epoch || g.status !== 'running') return;
+  // With each player's gold percentage (set in the waiting room): the host's browser pays them by it.
+  const roster = [...g.players.values()].map((p) => ({ id: p.id, color: p.color, goldPercent: p.goldPercent }));
   for (const p of g.players.values()) {
     if (!p.client) continue;
     if (p.id === g.hostId) {
-      p.client.hosting = g.id;
-      p.client.send({ t: 'host', gameId: g.id, you: p.id, title: g.title, options: g.options, roster, ice });
+      p.client.hosting = { gameId: g.id, epoch };
+      p.client.send({ t: 'host', gameId: g.id, you: p.id, epoch, title: g.title, options: g.options, roster, ice });
     } else {
-      p.client.send({ t: 'connectHost', gameId: g.id, you: p.id, ice });
+      p.client.send({ t: 'connectHost', gameId: g.id, you: p.id, epoch, ice });
     }
   }
 }
 
+// Another player's browser takes the game over from the host's last checkpoint, and everyone else
+// connects to it. Players still in the game come first. With nobody online the game has no host until
+// the first player comes back (resumeHosted). Without a checkpoint (the host went within a second of
+// the start) the game is over.
+async function moveHost(g) {
+  clearTimeout(g.hostTimer);
+  g.hostTimer = 0;
+  if (g.status !== 'running') return;
+  if (!g.checkpoint) {
+    endHosted(g, -1, 'The host left the game.');
+    return;
+  }
+  const online = [...g.players.values()].filter((p) => p.client);
+  const next = online.find((p) => g.checkpoint.active.includes(p.id)) || online[0] || null;
+  g.hostId = next ? next.id : null;
+  lobbyDirty = true;
+  if (!next) return;
+  const epoch = ++g.hostEpoch;
+  next.client.hosting = { gameId: g.id, epoch };
+  const ice = await iceConfig();
+  if (g.hostEpoch !== epoch || g.status !== 'running') return;    // moved on meanwhile
+  // Players who left through the lobby: their empire falls apart in the new host's game too.
+  const departed = (g.departed || []).map((d) => d.id);
+  for (const p of g.players.values()) {
+    if (!p.client) continue;
+    if (p === next) {
+      p.client.send({
+        t: 'host', gameId: g.id, you: p.id, epoch, title: g.title, options: g.options, save: g.checkpoint.data, departed, ice,
+      });
+    } else {
+      p.client.send({ t: 'connectHost', gameId: g.id, you: p.id, epoch, ice, moved: true });
+    }
+  }
+}
+
+// The host's lobby connection closed. A page that runs the game may only have lost its network for a
+// moment: it gets timing.hostGrace to come back. A page that said it is going (closed, reloaded) is
+// replaced at once.
+function hostAway(g, client) {
+  clearTimeout(g.hostTimer);
+  if (!runsGame(client, g)) {
+    moveHost(g);
+    return;
+  }
+  g.hostTimer = setTimeout(() => moveHost(g), timing.hostGrace);
+  g.hostTimer.unref?.();
+}
+
 // A player came back to a running game (refresh, new tab, dropped connection).
 async function resumeHosted(client, g, p) {
-  if (p.id === g.hostId) {
-    // After a dropped connection the host's page still runs the game. A reloaded page lost it.
-    if (client.hosting !== g.id) endHosted(g, -1, 'The host left the game.');
+  if (runsGame(client, g) && (g.hostId === p.id || g.hostId === null)) {
+    // The host's connection dropped and came back: its page still runs the game, and stays the host.
+    // Players relayed through this server lost it meanwhile: told again, they pick their relay up again.
+    clearTimeout(g.hostTimer);
+    g.hostTimer = 0;
+    g.hostId = p.id;
+    lobbyDirty = true;
+    const ice = await iceConfig();
+    for (const q of g.players.values()) {
+      if (q !== p && q.client) q.client.send({ t: 'connectHost', gameId: g.id, you: q.id, epoch: g.hostEpoch, ice });
+    }
+    return;
+  }
+  if (g.hostId === p.id || g.hostId === null) {
+    // The host's page was reloaded (it lost the game it ran), or nobody runs the game: it moves, maybe
+    // to this very page.
+    moveHost(g);
     return;
   }
   const ice = await iceConfig();
-  client.send({ t: 'connectHost', gameId: g.id, you: p.id, ice });
+  client.send({ t: 'connectHost', gameId: g.id, you: p.id, epoch: g.hostEpoch, ice });
 }
 
 // The game is over (the host says who won, or the host left): everyone is revealed with their
 // nickname and colour (GAME_DESIGN.md, "Anonymous players").
 function endHosted(g, winner, reason = null) {
   if (g.status !== 'running') return;
+  clearTimeout(g.hostTimer);
+  g.checkpoint = null;
   g.status = 'ended';
   g.winner = winner;
   g.endedAt = Date.now();
@@ -313,6 +439,7 @@ function endHosted(g, winner, reason = null) {
   for (const p of g.players.values()) {
     if (p.client) p.client.send({ t: 'reveal', winner, players, reason });
   }
+  sendRestartState(g);                 // a duel: Restart on the results screen
   lobbyDirty = true;
 }
 
@@ -325,8 +452,10 @@ function handle(client, msg) {
         return;
       }
       client.tokens = readTokens(msg.tokens);
-      // The game this page is running as host, if any (it survives a dropped connection).
-      client.hosting = typeof msg.hosting === 'string' ? msg.hosting : null;
+      // The game this page is running as host, if any (it survives a dropped connection): { gameId, epoch }.
+      const h = msg.hosting;
+      client.hosting = h && typeof h === 'object' && typeof h.gameId === 'string' && Number.isInteger(h.epoch)
+        ? { gameId: h.gameId, epoch: h.epoch } : null;
       client.admin = isAdmin(client);
       sendBalance(client);           // current balance (and admin rights) before anything else
       if (client.admin) client.send({ t: 'mapState', ...editor.state() });
@@ -382,6 +511,9 @@ function handle(client, msg) {
       return;
     }
     case 'leave':
+      // `gameId`: only that game. A host's page sends its leave once its last checkpoint is out, by
+      // when the player may be in another game already.
+      if (msg.gameId !== undefined && client.game && client.game.id !== String(msg.gameId)) return;
       leaveCurrent(client);
       sendGameList(client);
       return;
@@ -399,6 +531,12 @@ function handle(client, msg) {
       if (g && client.player && g.hostId === client.player.id && g.setOptions(msg.options)) lobbyDirty = true;
       return;
     }
+    case 'setGoldPercent': {
+      // A player's gold percentage (`player`: their id in the waiting room): only the host, only there.
+      const g = client.game;
+      if (g && client.player && g.hostId === client.player.id) g.setGoldPercent(msg.player, msg.percent);
+      return;
+    }
     case 'signal': {
       // WebRTC connection messages (offer, answer, ICE candidates) between a player and the host.
       // Players reach only the host; the host reaches any player of its game.
@@ -413,6 +551,32 @@ function handle(client, msg) {
       // Only the host knows the outcome of a game it runs.
       const g = client.game, p = client.player;
       if (g && p && g.status === 'running' && p.id === g.hostId) endHosted(g, Number.isInteger(msg.winner) ? msg.winner : -1);
+      return;
+    }
+    case 'checkpoint': {
+      // The game as the current host runs it now (packed by its browser, never read here), for the next
+      // host if this one goes. `active`: players still in the game, preferred as the next host.
+      const g = client.game, p = client.player;
+      if (!g || !p || g.status !== 'running' || p.id !== g.hostId || msg.epoch !== g.hostEpoch) return;
+      if (typeof msg.data !== 'string' || !msg.data) return;
+      const active = Array.isArray(msg.active) ? msg.active.filter(Number.isInteger).slice(0, GAME.maxPlayers) : [];
+      g.checkpoint = { data: msg.data, active };
+      return;
+    }
+    case 'hostGone': {
+      // The host's page is being closed or reloaded: once its connection closes, the game moves at once.
+      const g = client.game, p = client.player;
+      if (g && p && p.id === g.hostId) client.hosting = null;
+      return;
+    }
+    case 'restart': {
+      // A player of a finished duel wants to play it again. Once both do, it starts again.
+      const g = client.game, p = client.player;
+      const state = g && p ? restartState(g) : null;
+      if (!state || !state.open) return;
+      (g.restartVotes || (g.restartVotes = new Set())).add(p.id);
+      if ([...g.players.keys()].every((id) => g.restartVotes.has(id))) restartGame(g);
+      else sendRestartState(g);
       return;
     }
     case 'ping':
@@ -451,6 +615,8 @@ function handle(client, msg) {
     case 'mapMove':
     case 'mapCoast':
     case 'mapBeach':
+    case 'mapMountain':
+    case 'mapLabel':
     case 'mapRebuild':
       // Edit map: admins only. MapEditor.handle refuses it from anyone else, whatever the page shows.
       editor.handle(client, msg, clients);
@@ -460,22 +626,24 @@ function handle(client, msg) {
   }
 }
 
-// Relayed game snapshots can be large: allow 1 MB messages, and compress (snapshots shrink
-// several times), which keeps a free host's monthly bandwidth for longer.
+// Relayed game snapshots and the host's checkpoints can be large: allow 4 MB messages, and compress
+// (snapshots shrink several times), which keeps a free host's monthly bandwidth for longer.
 const wss = new WebSocketServer({
-  server, path: '/ws', maxPayload: 1024 * 1024,
+  server, path: '/ws', maxPayload: 4 * 1024 * 1024,
   perMessageDeflate: { threshold: 1024 },
 });
 
 wss.on('connection', (ws) => {
   const client = {
-    ws, name: '', game: null, player: null, tokens: {},
+    ws, name: '', game: null, player: null, tokens: {}, seenAt: Date.now(),
     send(msg) {
       if (ws.readyState === 1) ws.send(JSON.stringify(msg));
     },
   };
   clients.add(client);
+  ws.on('pong', () => { client.seenAt = Date.now(); });
   ws.on('message', (data) => {
+    client.seenAt = Date.now();
     let msg;
     try {
       msg = JSON.parse(data);
@@ -500,21 +668,36 @@ wss.on('connection', (ws) => {
         p.client = null;
         p.connected = false;
         p.disconnectedAt = Date.now();
-        // A player relayed through this server is now cut off from the host: tell the host.
-        const host = g.status === 'running' && p.id !== g.hostId ? g.players.get(g.hostId) : null;
-        if (host && host.client) host.client.send({ t: 'relay', from: p.id, msg: { t: 'relayClose' } });
+        if (g.status === 'running' && p.id === g.hostId) {
+          hostAway(g, client);         // the game moves to another browser unless this one comes back
+        } else {
+          // A player relayed through this server is now cut off from the host: tell the host.
+          const host = g.status === 'running' ? g.players.get(g.hostId) : null;
+          if (host && host.client) host.client.send({ t: 'relay', from: p.id, msg: { t: 'relayClose' } });
+        }
+        sendRestartState(g);           // a finished duel: gone from its results screen, no restart
       }
-      if (g.players.size === 0) games.delete(g.id);
+      if (g.players.size === 0) deleteGame(g);
       lobbyDirty = true;
     }
   });
 });
 
+// Heartbeat: dead connections are dropped (and their close handled) within SILENT_MS.
+setInterval(() => {
+  const now = Date.now();
+  for (const c of clients) {
+    if (now - c.seenAt > SILENT_MS) c.ws.terminate();
+    else if (c.ws.readyState === 1) c.ws.ping();
+  }
+}, HEARTBEAT_MS).unref();
+
 // ------------------------------------------------------------------ loops
 // No simulation here: games run in their host player's browser (server/host-engine.js).
 
 // Housekeeping: delete abandoned or finished games, refresh lobby lists.
-// Disconnected players are never removed: they can rejoin until the game ends.
+// Disconnected players are never removed: they can rejoin until the game ends. A finished duel stays
+// while both its players are still on its results screen, so they can restart it.
 setInterval(() => {
   const now = Date.now();
   for (const g of games.values()) {
@@ -524,12 +707,12 @@ setInterval(() => {
     const expired =
       g.players.size === 0 ||
       (g.emptySince && now - g.emptySince > EMPTY_GAME_MS) ||
-      (g.status === 'ended' && now - g.endedAt > ENDED_GAME_MS);
+      (g.status === 'ended' && now - g.endedAt > ENDED_GAME_MS && !restartState(g)?.open);
     if (expired) {
       for (const p of g.players.values()) {
         if (p.client) { p.client.game = null; p.client.player = null; }
       }
-      games.delete(g.id);
+      deleteGame(g);
       lobbyDirty = true;
     }
   }

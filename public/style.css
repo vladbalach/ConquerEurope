@@ -95,6 +95,12 @@ button.link { background: none; border: none; padding: 0; color: var(--gold); te
 .room-players li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; background: rgba(255, 255, 255, 0.04); }
 .swatch { display: inline-block; vertical-align: middle; width: 14px; height: 14px; border-radius: 50%; border: 1px solid rgba(0, 0, 0, 0.6); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25); flex: none; }
 .tag { margin-left: auto; font-size: 11px; color: var(--muted); }
+/* A player's gold percentage: an input for the host, a note for the others (only when it isn't 100%). */
+.room-gold { display: flex; align-items: center; gap: 6px; margin: 0 0 0 auto; font-size: 12px; color: var(--muted); }
+.tag:not([hidden]) + .room-gold { margin-left: 0; }
+.room-gold input { width: 64px; padding: 4px 6px; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+.room-gold.changed { color: var(--gold); }
+.room-gold.changed input { border-color: rgba(201, 162, 74, 0.7); }
 
 /* Game options in the waiting room: the host edits them, everyone else sees them. */
 .room-options { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; align-items: center; }
@@ -241,6 +247,8 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 .stats { display: flex; gap: 14px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
 .city-list { display: block; max-width: 560px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--paper-2); }
 .stats b { color: var(--paper-2); font-weight: 600; }
+.stats .region-stat { cursor: help; }
+.stats .region-stat:hover, .stats .region-stat:hover b { color: #ffe282; }   /* lights the region up on the map */
 .unit-groups { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 5px; }
 .unit-group { display: flex; align-items: center; gap: 5px; padding: 2px 8px 2px 3px; font-size: 12px; }
 .unit-group img { width: 22px; height: 22px; }
@@ -289,6 +297,12 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 }
 .help-tabs button:hover:not(:disabled) { color: var(--paper); }
 .help-tabs button.active, .help-tabs button.active:hover:not(:disabled) { color: var(--gold); border-bottom-color: var(--gold); }
+/* Leave during a game: surrender and watch, or leave for the lobby. One row per choice: its button, what it does. */
+#leave { width: min(520px, calc(100vw - 32px)); }
+.leave-option { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 14px; align-items: center; padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
+.leave-option p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+.leave-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+@media (max-width: 480px) { .leave-option { grid-template-columns: 1fr; gap: 6px; } }
 /* Technologies window (T): tabs like the help, one card per technology. */
 #tech { width: min(660px, calc(100vw - 32px)); }
 .tech-page > p { line-height: 1.5; margin: 0 0 12px; }
@@ -309,12 +323,15 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 .tech-text { color: var(--muted); font-size: 12.5px; line-height: 1.45; margin: 5px 0 10px; }
 .tech-actions { display: flex; align-items: center; gap: 10px; }
 .tech-price { color: var(--paper-2); font-size: 13px; }
+.tech-price s { opacity: 0.6; }
 .tech-done { color: #8fdc8f; font-weight: 600; }
 .tech-progress { flex: 1; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
 .tech-progress i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #a9822f, #e6c26a); }
 .tech-close { margin-top: 6px; }
 .tech-actions + .tech-actions { margin-top: 8px; }
 .tech-queued { color: var(--gold); font-size: 13px; white-space: nowrap; }
+/* A technology that needs another one researched (or ordered) first: in the locked build buttons' amber. */
+.tech-locked { color: #ffc46b; font-size: 13px; font-weight: 600; white-space: nowrap; }
 /* Tech window: the levels queued after the research running (all tabs), each with ✕. */
 .plan-queue { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 12px; }
 .plan-item { display: inline-flex; align-items: center; gap: 6px; padding: 2px 3px 2px 8px; border-radius: 4px; font-size: 13px;
@@ -421,7 +438,11 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 .results-heading .results-line { margin: 4px 0 12px; }
 .results-tabs { margin: 0; border-bottom: none; }
 .results-tabs button, .results-tabs button:hover:not(:disabled) { padding: 8px 20px 10px; font-size: 15px; }
-.results-actions { justify-self: end; display: flex; gap: 8px; padding-bottom: 12px; }
+.results-actions { justify-self: end; display: flex; align-items: center; gap: 8px; padding-bottom: 12px; }
+/* A duel's Restart, with a word on the other player: ready, waiting for them, or gone. */
+.restart-slot { display: inline-flex; align-items: center; gap: 10px; flex: none; }
+.restart-note { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.restart-note.ready { color: var(--gold); font-weight: 600; }
 .results-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 24px 28px; }
 .results-page { max-width: 1320px; margin: 0 auto; }
 .results-section { margin-top: 26px; }

@@ -29,13 +29,14 @@ everyone is revealed.
 
 ### Status: implemented
 
-- Colours are dealt at random when the game starts. The lobby and the waiting room show no colours.
+- Colours are dealt at random when the game starts, and again when a duel restarts (Restart on the results
+  screen). The lobby and the waiting room show no colours.
 - Each colour has a name (`PLAYER_COLOR_NAMES` in [shared/config.js](shared/config.js)). The Players overlay, the
   event feed and the city and unit panels call players "Red", "Navy", "Lime", ... and your own empire "You".
 - While the game runs, the server sends no nickname to game clients: not in `start`, `room` or `score`, and not in
   events. Players are told apart by id and colour only.
-- Player ids are shuffled when the game starts. In the waiting room ids follow join order and are listed with
-  nicknames, so keeping them would let a client match nicknames to colours.
+- Player ids are shuffled when the game starts (and when a duel restarts). In the waiting room ids follow join order
+  and are listed with nicknames, so keeping them would let a client match nicknames to colours.
 - For a game in progress the lobby lists nicknames only, alphabetically: no city counts, and no connection or
   elimination status that could be matched with the in-game event feed.
 - When the game ends, the `gameover` message carries every player's nickname and colour. The results screen
@@ -44,6 +45,11 @@ everyone is revealed.
 - **Browser-to-browser play** (the game runs in the host player's browser, see README): the lobby server gives the
   host only ids and colours, so the host's browser never has a nickname either. The nicknames come from the lobby
   server (`reveal`) once the game is over or the host has left.
+- **Gold percentages** (set by the host for each player in the waiting room, where everyone sees them by nickname)
+  never reach other players in the game: each page gets only its own (`start`), and the `room` and `score` lists of
+  a running game have none. The browser that runs the game must know every player's percentage to pay them, so it
+  gets them with the roster, by id. Someone reading that browser's memory could match a percentage they saw in the
+  waiting room to a colour; with everyone at 100% there is nothing to match.
 - **One gap: IP addresses.** A direct WebRTC link shows the host each player's IP address, which could tell friends
   who is who. Running the server with `RELAY_ONLY=1` and a TURN relay sends all traffic through the relay, so nobody
   learns another player's address.

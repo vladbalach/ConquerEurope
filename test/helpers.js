@@ -14,9 +14,10 @@ export const DT = 0.05;
 // Players A (id 0) and B (id 1): A owns the western half of the cities, B the eastern
 // half, so no neutral city shoots at test units unless a test changes an owner. Neither
 // player holds enough cities to win, and neither is eliminated: the game keeps running
-// (a finished game ignores all orders).
-export function setup() {
-  const game = new Game({ id: '1', title: 'test', map, nav });
+// (a finished game ignores all orders). `grid`: a land grid of the test's own (one it changes, e.g. with
+// mountains painted on it) instead of the shared one.
+export function setup(grid = nav) {
+  const game = new Game({ id: '1', title: 'test', map, nav: grid });
   const a = game.addPlayer({ name: 'A', send() {} }).player;
   const b = game.addPlayer({ name: 'B', send() {} }).player;
   game.start();

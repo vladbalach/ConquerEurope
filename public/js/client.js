@@ -1,10 +1,11 @@
 // In-game client state: snapshot interpolation, selection, commands, effects.
 import {
   UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES, PRODUCTION_ITEMS, ECONOMY, LIBERATOR, TECHS, TECH_TYPES,
-  NEUTRAL_COLOR, PLAYER_COLOR_NAMES, TRADITIONS, TRADITION_TYPES, HERO, HERO_KINDS, HEALER,
+  NEUTRAL_COLOR, PLAYER_COLOR_NAMES, TRADITIONS, TRADITION_TYPES, HERO, HERO_KINDS, HEALER, NAVAL, GAME,
 } from '/shared/config.js';
-import { liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring } from '/shared/tech.js';
-import { sanitizeOptions, citiesToWin, describeOptions } from '/shared/options.js';
+import { formationSlots, formationRole, SHIP_SPACING } from '/shared/formation.js';
+import { liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring, canTrain, shipSpeedFactor } from '/shared/tech.js';
+import { sanitizeOptions, citiesToWin, describeOptions, sanitizeGoldPercent, scaleGoldWhole } from '/shared/options.js';
 import { regionCities, regionHolder } from '/shared/regions.js';
 import { nearestCell } from '/shared/coastline.js';
 import { CARGO_SHIFT, heroKindOf } from '/shared/protocol.js';
@@ -21,10 +22,10 @@ const TICK_SECONDS = 3;      // a clock tick sounds in each of the last seconds 
 export class GameClient {
   constructor({
     map, net, link, gameId, you, title, options, players, ports, beaches, onLeave, debug = null, admin = false, mapState = null,
-    prestart = null,
+    prestart = null, goldPercent = undefined,
   }) {
     this.map = map;
-    this.net = net;              // the lobby server: balance and map edits
+    this.net = net;              // the lobby server: balance, map edits, a duel's Restart
     this.hostLink = link || net; // the game, run by the host's browser (p2p.js)
     this.link = { send: (msg) => this.order(msg) };   // orders go here, on to the host once the game has started
     // Before the start (hosted games): { loaded, total, left } from the host, null once it has started.
@@ -40,6 +41,9 @@ export class GameClient {
     this.you = you;
     this.title = title;
     this.options = sanitizeOptions(options, map.cities.length);   // victory rules the host picked
+    // Your gold percentage (set by the host in the waiting room): all the gold you receive is scaled by it.
+    // Only yours: the others' would give away who is who.
+    this.goldPercent = sanitizeGoldPercent(goldPercent);
     this.turn = 0;
     this.onLeave = onLeave;
     this.players = new Map();
@@ -68,12 +72,17 @@ export class GameClient {
     this.cityShots = [];
     this.cargo = new Map();          // your transports: ship id -> [{ t, hp }] of the units on board
     this.plans = new Map();          // your units with Shift-queued orders: id -> [kind, x, y, ...], current order first
+    // Your transports with a landing ahead that Shift gave orders for: ship id -> { from: [x, y] the beach where
+    // they land, points: [kind, x, y, ...] where they go from there }.
+    this.landPlans = new Map();
     this.setPorts(ports || []);
     this.setBeaches(beaches);        // before the renderer: it draws them on the map
 
     this.selection = new Set();
     this.selectedCities = new Set();   // own cities; several can be selected at once
     this.inspect = null;
+    this.hoverRegion = -1;             // the region whose stat the mouse is on, in the city panel: lit on the map
+    this.hoverCity = -1;               // the city of that panel: the light spreads from it
     // Goes up whenever the player changes the selection (not when units leave it by dying or going
     // on board). boardRound: the selection version that sent the last board order, or -1 after any
     // other order. Transports clicked in a row by the same selection share its units out.
@@ -83,13 +92,19 @@ export class GameClient {
 
     // regions: regions you just took whole, lit up for a moment ({ region, city taken last, t0 }).
     // lost: your cities just captured, pinging on the minimap ({ city, t0 }, render.js LOST_PING).
-    this.effects = { shots: [], sparks: [], deaths: [], markers: [], flashes: [], regions: [], lost: [] };
+    // blasts: a battleship's gun smoke, and where its shot lands ({ x, y, t0, dur, kind }, render.js drawBlasts).
+    this.effects = { shots: [], sparks: [], deaths: [], markers: [], flashes: [], regions: [], lost: [], blasts: [] };
     this.lostCity = -1;              // your city captured last: Shift + Space shows it
     this.toldLostKey = false;        // the feed said so (with the first city you lose)
     this.unitTimers = new Map();
     this.cityTimers = new Map();
+    this.volleys = new Map();        // battleship id -> time of the snapshot whose shot was drawn
 
     this.ended = false;
+    // A finished duel (two players): { votes: [ids of players who pressed Restart], open: both still
+    // there } from the lobby server, else null. restarting: both pressed it, the new game is on its way.
+    this.restart = null;
+    this.restarting = false;
     this.firstSnap = true;
     this.turnSecond = null;      // whole seconds left in the turn at the last frame (countdown ticks)
     this.viewSentAt = 0;
@@ -296,8 +311,9 @@ export class GameClient {
     if (msg.st !== undefined) this.serverTickMs = msg.st;
     this.turn = msg.turn;
     this.nextTurnAt = msg.next;
-    this.research = msg.r ? { tech: TECH_TYPES[msg.r[0]], progress: msg.r[1] } : null;   // yours, if any
-    this.researchQueue = (msg.rq || []).map((i) => TECH_TYPES[i]);
+    this.research = msg.r ? { tech: TECH_TYPES[msg.r[0]], progress: msg.r[1], cost: msg.r[2] } : null;   // yours, if any
+    this.researchQueue = (msg.rq || []).map(([i]) => TECH_TYPES[i]);
+    this.researchQueueCosts = (msg.rq || []).map(([, cost]) => cost);     // the gold paid for each
     this.myQueues.clear();
     for (const [city, progress, queue, rx, ry, sx, sy, honorPaid] of msg.q) {
       // honorPaid: the honor paid for each queue entry (0: gold), or 0 when all of it was paid in gold.
@@ -318,6 +334,8 @@ export class GameClient {
     for (let i = 0; i < k.length; i += 6) this.docks.set(k[i], { x: k[i + 1], y: k[i + 2], lx: k[i + 3], ly: k[i + 4], load: k[i + 5] === 0 });
     this.plans.clear();
     for (const [id, ...points] of msg.w || []) this.plans.set(id, points);
+    this.landPlans.clear();
+    for (const [id, x, y, ...points] of msg.wl || []) this.landPlans.set(id, { from: [x, y], points });
     for (let i = 0; i < msg.d.length; i += 4) {
       this.effects.deaths.push({ x: msg.d[i], y: msg.d[i + 1], color: this.colorOf(msg.d[i + 2]), t0: now });
     }
@@ -400,6 +418,22 @@ export class GameClient {
         const skipped = msg.skipped ? ` · ${msg.skipped} more don't fit and stay` : '';
         this.hud.feed(`${msg.count} unit${msg.count === 1 ? ' heads' : 's head'} to the transport${skipped}`);
       }
+    } else if (msg.kind === 'autoload') {
+      // Autoload (L): how many of your units head to transports (only you get this).
+      if (msg.reason === 'full') {
+        this.hud.feed('The selected transports are full', 'bad');
+      } else if (msg.reason === 'none') {
+        this.hud.feed(`No idle units within ${NAVAL.autoloadRange} km of the selected transports that they can take on board`, 'bad');
+      } else if (msg.reason === 'noship') {
+        this.hud.feed(`No transport with room within ${NAVAL.autoboardRange} km of the selected units ` +
+          '(only transports lying idle or waiting at a beach come)', 'bad');
+      } else if (msg.reason === 'assigned') {
+        this.hud.feed('Every selected unit is already on its way to a transport');
+      } else {
+        const left = msg.left ? ` · ${msg.left} more find no place and stay` : '';
+        this.hud.feed(`Autoload: ${msg.count} unit${msg.count === 1 ? ' heads' : 's head'} to ` +
+          `${msg.ships === 1 ? 'a transport' : `${msg.ships} transports`}${left}`);
+      }
     } else if (msg.kind === 'rally') {
       // A right-click on the water with cities selected that can't send ships there.
       this.hud.feed(msg.reason === 'inland' ? 'A rally point on the water is for ships: only coastal cities have one'
@@ -413,7 +447,9 @@ export class GameClient {
       }
     } else if (msg.kind === 'researched') {
       const def = TECHS[msg.tech];
-      const what = msg.tech === 'seafaring' ? ': coastal cities build transports (B), and your units can go on board' : '';
+      const what = msg.tech === 'seafaring' ? ': coastal cities build transports (B), and your units can go on board'
+        : msg.tech === 'gunnery' ? `: coastal cities build battleships (${UNITS.battleship.hotkey})`
+          : msg.tech === 'navigation' ? `: your ships sail ${TECHS.navigation.speedPercent}% faster` : '';
       this.hud.feed(`Research complete: ${def.name}${def.levels.length > 1 ? ` ${msg.level}` : ''}${what}`, 'good');
       playSound('tech-learned');
     } else if (msg.kind === 'liberator') {
@@ -445,11 +481,7 @@ export class GameClient {
       // Someone (maybe you) has learned an ultimate tradition: everyone is told. (Learning it only shows
       // as its countdown in the Players list.)
       const def = TRADITIONS[msg.tradition], me = msg.player === this.you, their = me ? 'your' : 'their';
-      const effect = msg.tradition === 'lastStand'
-        ? `${their} units deal +${Math.round(def.damageBonus * 100)}% damage, and take ${Math.round(def.damageCut * 100)}% ` +
-          `less while outnumbered ${def.odds} to 1`
-        : `${their} cities train any unit with honor`;
-      const what = ` ${me ? 'have' : 'has'} learned ${def.name}: ${effect}`;
+      const what = ` ${me ? 'have' : 'has'} learned ${def.name}: ${their} cities train any unit with honor`;
       this.hud.banner(`${me ? 'You' : this.nameOf(msg.player)}${what}`, 10000);
       this.hud.feed([this.who(msg.player), what], 'ultimate');
     } else if (msg.kind === 'promoted') {
@@ -460,6 +492,9 @@ export class GameClient {
     } else if (msg.kind === 'left') {
       // Sent before the updated player list, so the leaver's colour is still known here.
       this.hud.feed([this.who(msg.player), ' left — their cities are now neutral']);
+    } else if (msg.kind === 'surrendered') {
+      if (msg.player === this.you) this.hud.feed('You surrendered — your cities are now neutral', 'bad');
+      else this.hud.feed([this.who(msg.player), ' surrendered — their cities are now neutral']);
     }
   }
 
@@ -509,15 +544,55 @@ export class GameClient {
     }
   }
 
-  // The link to the host broke (the host closed the game, or the network failed).
+  // The link to the host broke, and no other browser took the game over (main.js waits for one first).
   onHostLost(text) {
     if (this.ended) return;
     this.ended = true;
     this.hud.showGameOver(-1, text);
   }
 
+  // Connected to the game again: to its host after a dropped link, or to the player's browser that took
+  // the game over when the host left. That one runs from the host's last checkpoint, a few seconds behind
+  // what we saw: the timeline starts afresh from its snapshots.
+  reconnected(link) {
+    this.hostLink = link;
+    this.snaps = [];
+    this.offset = null;
+  }
+
   leave() {
     this.onLeave();
+  }
+
+  // Give up but stay to watch (Leave → Surrender): the host makes our cities neutral and us a spectator.
+  // Straight to the host, also during the countdown (order() would hold it back then).
+  surrender() {
+    if (!this.ended && !this.isOut()) this.hostLink.send({ t: 'surrender' });
+  }
+
+  // Out of the game: eliminated, or surrendered. Such a player only watches.
+  isOut() {
+    return !!this.players.get(this.you)?.eliminated;
+  }
+
+  // A finished duel: who has pressed Restart, from the lobby server (results.js shows it).
+  onRestartVotes(msg) {
+    this.restart = { votes: Array.isArray(msg.votes) ? msg.votes : [], open: !!msg.open };
+    this.hud.results.renderRestart();
+  }
+
+  // Restart pressed: the lobby server starts the duel again once the other player presses it too.
+  requestRestart() {
+    if (!this.restart || !this.restart.open || this.restarting || this.restart.votes.includes(this.you)) return;
+    this.restart.votes.push(this.you);   // shown at once; the server confirms it with restartVotes
+    this.net.send({ t: 'restart' });
+    this.hud.results.renderRestart();
+  }
+
+  // Both pressed Restart: the new game is on its way (main.js replaces this one when it arrives).
+  onRestarting() {
+    this.restarting = true;
+    this.hud.results.renderRestart();
   }
 
   // Cities needed to win once `turn` turns are over (now, by default): the countdown lowers it.
@@ -570,7 +645,9 @@ export class GameClient {
       let x = u.x, y = u.y;
       if (p && p !== u) { x = p.x + (u.x - p.x) * a; y = p.y + (u.y - p.y) * a; }
       const vx = p && p !== u ? u.x - p.x : 0;     // ships face the way they sail
-      const ru = { id: u.id, t: u.t, owner: u.owner, x, y, dx: x, dy: y, vx, hp: u.hp, flags: u.flags, tgt: u.tgt };
+      // shot: a battleship fired (flag 16) in the snapshot of that time, drawn once (spawnEffects).
+      const shot = u.flags & 16 ? s1.time : 0;
+      const ru = { id: u.id, t: u.t, owner: u.owner, x, y, dx: x, dy: y, vx, hp: u.hp, flags: u.flags, tgt: u.tgt, shot };
       list.push(ru);
       this.unitById.set(u.id, ru);
     }
@@ -590,9 +667,13 @@ export class GameClient {
   }
 
   // A unit's numbers (UNITS). A Hero has its own HP and damage but the speed and range of its kind, which
-  // its snapshot flags carry (shared/protocol.js).
+  // its snapshot flags carry (shared/protocol.js). A ship is faster while its owner has Navigation.
   unitStats(u) {
     const def = UNITS[UNIT_TYPES[u.t]];
+    if (def.naval) {
+      const f = shipSpeedFactor(this.players.get(u.owner)?.tech);
+      return f === 1 ? def : { ...def, moveSpeed: Math.round(def.moveSpeed * f * 10) / 10 };
+    }
     if (!def.hero) return def;
     const kind = UNITS[this.heroKind(u)];
     return { ...def, moveSpeed: kind.moveSpeed, attackRange: kind.attackRange };
@@ -616,7 +697,12 @@ export class GameClient {
   spawnEffects(now) {
     const fx = this.effects;
     for (const u of this.renderUnits) {
-      if (!(u.flags & 1) || !u.tgt) continue;
+      // Battleships fire single shots: one cannonball for each shot the host reports, none in between.
+      if (u.shot && this.volleys.get(u.id) !== u.shot) {
+        this.volleys.set(u.id, u.shot);
+        this.cannonShot(u, now);
+      }
+      if (!(u.flags & 1) || !u.tgt || this.unitStats(u).reload) continue;
       const next = this.unitTimers.get(u.id) || 0;
       if (now < next) continue;
       const tp = this.targetPos(u.tgt);
@@ -652,14 +738,34 @@ export class GameClient {
     if (this.unitTimers.size > 4000) {
       for (const id of this.unitTimers.keys()) if (!this.unitById.has(id)) this.unitTimers.delete(id);
     }
+    if (this.volleys.size > 500) {
+      for (const id of this.volleys.keys()) if (!this.unitById.has(id)) this.volleys.delete(id);
+    }
     const alive = (arr, life) => arr.filter((e) => now - e.t0 < (e.dur || life));
     fx.shots = alive(fx.shots, 1000);
+    fx.blasts = alive(fx.blasts, 700);
     fx.sparks = alive(fx.sparks, 260);
     fx.deaths = alive(fx.deaths, 900);
     fx.markers = alive(fx.markers, 550);
     fx.flashes = alive(fx.flashes, 1600);
     fx.regions = alive(fx.regions, REGION_GLOW.ms);
     fx.lost = alive(fx.lost, LOST_PING.ms);
+  }
+
+  // A battleship's shot at its target: smoke at its guns, a cannonball flying in an arc, and where it
+  // lands a splash (on a ship) or a burst of fire and dust (on land).
+  cannonShot(u, now) {
+    const tp = this.targetPos(u.tgt);
+    if (!tp) return;
+    const fx = this.effects;
+    const dx = tp[0] - u.x, dy = tp[1] - u.y, d = Math.hypot(dx, dy) || 1;
+    const x0 = u.x + (dx / d) * 4, y0 = u.y - 3;                     // its side facing the target
+    const x1 = tp[0] + (Math.random() - 0.5) * 5, y1 = tp[1] - 2 + (Math.random() - 0.5) * 4;
+    const dur = Math.max(220, d * 7);
+    const target = u.tgt > 0 ? this.unitById.get(u.tgt) : null;
+    fx.shots.push({ x0, y0, x1, y1, t0: now, dur, arc: d * 0.22, cannon: true });
+    fx.blasts.push({ x: x0, y: y0, t0: now, dur: 650, kind: 'muzzle' });
+    fx.blasts.push({ x: x1, y: y1, t0: now + dur, dur: 600, kind: target && this.isNaval(target.t) ? 'splash' : 'hit' });
   }
 
   // One of your cities was captured, wherever it is: it pings on the minimap (render.js drawLostPing),
@@ -736,6 +842,8 @@ export class GameClient {
 
   // Gold every player's cities pay at the end of the turn (Farms included), by player id.
   // City owners and upgrades of the whole map are in every snapshot, so this is known for everyone.
+  // Yours is scaled by your gold percentage, as the host pays it; the others' gold percentages are
+  // secret, so theirs are shown as their cities pay it.
   incomes() {
     const out = new Map();
     for (let i = 0; i < this.cityOwner.length; i++) {
@@ -747,6 +855,7 @@ export class GameClient {
     for (const p of this.players.values()) {
       if (p.liberator) out.set(p.id, liberatorIncome(p.tech) + (flows.gain.get(p.id) || 0));
     }
+    if (out.has(this.you)) out.set(this.you, scaleGoldWhole(out.get(this.you), this.goldPercent));
     return out;
   }
 
@@ -760,10 +869,22 @@ export class GameClient {
     return this.players.get(this.you)?.tech || {};
   }
 
-  // Seafaring (Tech, Sea tab): ships, boarding and landing. The feed says so when it is missing.
+  // Seafaring (Tech, Sea tab): transports, boarding and landing. The feed says so when it is missing.
   hasSeafaring(tell = false) {
     const ok = hasSeafaring(this.myTech());
     if (!ok && tell) this.hud.feed(`Ships need ${TECHS.seafaring.name}: research it in the Tech window (T), Sea tab`, 'bad');
+    return ok;
+  }
+
+  // May your cities train this unit type: its technology (UNITS `tech`: transports Seafaring, battleships
+  // Gunnery) is researched? The feed says which one is missing.
+  canTrain(type, tell = false) {
+    const ok = canTrain(type, this.myTech());
+    const need = UNITS[type]?.tech;
+    if (!ok && tell) {
+      const tab = TECHS[need].tab === 'sea' ? 'Sea' : 'Rebellion';
+      this.hud.feed(`${UNITS[type].name} needs ${TECHS[need].name}: research it in the Tech window (T), ${tab} tab`, 'bad');
+    }
     return ok;
   }
 
@@ -833,11 +954,13 @@ export class GameClient {
   startResearch(key) { this.link.send({ t: 'research', tech: key }); }
   // Cancels that level of `key`, running or queued, and the higher levels of it queued after it.
   cancelResearch(key, level) { this.link.send({ t: 'cancelResearch', tech: key, level }); }
-  // The research running and the queue after it, in order: [{ tech, level }].
+  // The research running and the queue after it, in order: [{ tech, level, cost }] (cost: the gold paid,
+  // what cancelling gives back).
   researchPlan() {
     const levels = { ...this.myTech() };
     const keys = this.research ? [this.research.tech, ...this.researchQueue] : [];
-    return keys.map((tech) => ({ tech, level: levels[tech] = (levels[tech] || 0) + 1 }));
+    const costs = this.research ? [this.research.cost, ...(this.researchQueueCosts || [])] : [];
+    return keys.map((tech, i) => ({ tech, level: levels[tech] = (levels[tech] || 0) + 1, cost: costs[i] ?? 0 }));
   }
   // The level of `key` once the research running and the queue are done.
   plannedTechLevel(key) {
@@ -895,27 +1018,58 @@ export class GameClient {
   }
 
   // ---------------------------------------------------------------- map editing (admins)
-  // Edit map mode: cities can be dragged to new places. The server checks admin rights again.
+  // Edit map mode: cities and region names can be dragged to new places. The server checks admin rights again.
   setMapEdit(on) {
+    if (!on && this.mapEdit && this.input) this.input.flushLabelWheel();   // a name being resized is kept
     this.mapEdit = !!on && this.admin;
-    if (!this.mapEdit && this.input) this.input.cityDrag = null;
-    if (!this.mapEdit) this.beachBrush = null;
-    this.hud?.mapEditChanged();
-  }
-
-  // Edit map: the beach brush. 'add' paints beaches, 'del' erases them (cliffs), null drags cities.
-  // Pressing the active one again turns it off.
-  setBeachBrush(mode) {
-    this.beachBrush = this.mapEdit && mode !== this.beachBrush ? mode : null;
-    this.hud?.mapEditChanged();
-  }
-
-  // One brush stroke (points in map km, radius r km). The server works out the coast cells, saves
-  // them, and every game's host applies them and sends its players the new beaches.
-  paintBeaches(pts, r) {
-    if (this.admin && this.mapEdit && this.beachBrush && pts.length) {
-      this.net.send({ t: 'mapBeach', pts, r: Math.round(r * 10) / 10, on: this.beachBrush === 'add' });
+    if (!this.mapEdit && this.input) {
+      this.input.cityDrag = null;
+      if (this.input.labelDrag) { this.input.labelDrag = null; this.onLabelEdit(); }   // back where it was
+      this.input.hoverLabel = -1;
     }
+    if (!this.mapEdit) this.brush = null;
+    this.hud?.mapEditChanged();
+  }
+
+  // Edit map: the brush. 'beach-add' paints beaches, 'beach-del' erases them (cliffs), 'mountain-add'
+  // paints mountains, 'mountain-del' clears them; null drags cities. Pressing the active one again turns
+  // it off.
+  setBrush(mode) {
+    this.brush = this.mapEdit && mode !== this.brush ? mode : null;
+    this.hud?.mapEditChanged();
+  }
+
+  // One brush stroke (points in map km, radius r km). The server works out the cells, saves them, and
+  // tells every browser: game hosts apply them (beaches go to their players with the ports), and every
+  // page draws the new mountains.
+  paintStroke(pts, r) {
+    if (!this.admin || !this.mapEdit || !this.brush || !pts.length) return;
+    const [kind, op] = this.brush.split('-');
+    this.net.send({ t: kind === 'mountain' ? 'mapMountain' : 'mapBeach', pts, r: Math.round(r * 10) / 10, on: op === 'add' });
+  }
+
+  // Mountains were painted on or off (main.js has put them into the map): draw them anew.
+  onMountainEdit() {
+    this.renderer.mountainsChanged();
+  }
+
+  // Edit map: region `region`'s name put at (edit.x, edit.y), its centre in map units, edit.scale times its own
+  // size; or given back to automatic placing (edit null). Shown at once; unless `send` is false (a resize
+  // still going on) the server saves it and tells everyone.
+  editLabel(region, edit, send = true) {
+    if (!this.admin || !this.mapEdit || !this.map.countries[region]) return;
+    const name = this.map.countries[region].n;
+    this.map.labelEdits = this.map.labelEdits || {};
+    if (edit) this.map.labelEdits[name] = edit;
+    else delete this.map.labelEdits[name];
+    this.onLabelEdit();
+    if (send) this.net.send(edit ? { t: 'mapLabel', region, ...edit } : { t: 'mapLabel', region, reset: true });
+  }
+
+  // A region's name was moved or resized (main.js has put it into the map): place the names anew.
+  onLabelEdit() {
+    this.renderer.placeCountryLabels(this.map);
+    this.renderer.mapKey = '';
   }
 
   // Drop of a dragged city. Shown at once; the server answers with the final place (snapped onto
@@ -1091,14 +1245,44 @@ export class GameClient {
   }
 
   // `queue` (Shift held): the units do it after the orders they already have, one after another.
-  commandMove(x, y, amove, queue = false) {
+  // `facing`: the way their formation faces there, in radians (the right button dragged); null: the way they go.
+  commandMove(x, y, amove, queue = false, facing = null) {
     const ids = [...this.selection];
     if (!ids.length) return;
     this.boardRound = -1;
     this.link.send({
       t: 'move', ids, x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, amove: !!amove, ...(queue ? { queue: true } : {}),
+      ...(Number.isFinite(facing) ? { f: Math.round(facing * 1000) / 1000 } : {}),
     });
     this.marker(x, y, amove ? '#ff9a3c' : '#9dff6a');
+  }
+
+  // Where your selected units would go for a move to (x, y) (commandMove): [{ u, x, y }], for the grey
+  // ghosts shown while the right button is held. The formations are laid out as the host lays them out
+  // (shared/formation.js), and grouped the same way: land units in one (with Shift, those busy with orders in
+  // another, from where their orders end), ships in another. The page
+  // doesn't know the land grid: a place that falls in the sea or the mountains (which the host moves to
+  // open ground near it) is shown where the formation puts it. Transports that will land their units
+  // (a move onto land) are left out.
+  formationPreview(x, y, facing = null, queue = false) {
+    const units = [...this.selection].map((id) => this.unitById.get(id)).filter((u) => u && u.owner === this.you);
+    const role = (u) => formationRole(UNIT_TYPES[u.t], this.heroKind(u));
+    const end = (u) => {
+      const p = queue ? this.plans.get(u.id) : null;
+      return p && p.length >= 3 ? [p[p.length - 2], p[p.length - 1]] : [u.x, u.y];
+    };
+    const out = [];
+    const add = (group, spacing) => {
+      for (const [u, [px, py]] of formationSlots(group, x, y, { spacing, facing, pos: end, role })) out.push({ u, x: px, y: py });
+    };
+    const land = units.filter((u) => !this.isNaval(u.t));
+    const onLand = this.renderer.isLand(x, y);
+    const ships = units.filter((u) => this.isNaval(u.t) && !(onLand && u.flags >> CARGO_SHIFT && hasSeafaring(this.myTech())));
+    const later = queue ? land.filter((u) => this.plans.has(u.id) || u.flags & 3) : [];   // queued orders, moving or attacking
+    add(later, GAME.formationSpacing);
+    add(land.filter((u) => !later.includes(u)), GAME.formationSpacing);
+    add(ships, SHIP_SPACING);
+    return out;
   }
 
   commandAttack(k, id, x, y, queue = false) {
@@ -1208,6 +1392,21 @@ export class GameClient {
     this.marker(ship.x, ship.y, '#7fd8ff');
   }
 
+  // Autoload (L, the Autoload and Board buttons), each unit to the nearest transport with room: selected land
+  // units find your transports around them (within NAVAL.autoboardRange), whatever transports are selected
+  // with them; selected transports alone take your idle land units around them (within NAVAL.autoloadRange).
+  // The host says how many go.
+  commandAutoload() {
+    const land = this.selectedLandUnits(), ships = land.length ? [] : this.selectedTransports();
+    if ((!ships.length && !land.length) || !this.hasSeafaring(true)) return;
+    this.boardRound = -1;
+    this.link.send({ t: 'autoload', ids: land.length ? land : ships });
+    for (const id of ships) {
+      const u = this.unitById.get(id);
+      if (u) this.marker(u.x, u.y, '#7fd8ff');
+    }
+  }
+
   // Unload button (U): the next click on land or a city picks where the units go ashore.
   startUnload() {
     if (!this.hasSeafaring(true)) return;
@@ -1252,8 +1451,8 @@ export class GameClient {
     let cities = [...this.selectedCities].filter((ci) => this.cityOwner[ci] === this.you);
     if (!cities.length) return;
     if (honor && this.honorPrice(item) === null) return;
+    if (!this.canTrain(item, true)) return;
     if (UNITS[item]?.naval) {
-      if (!this.hasSeafaring(true)) return;
       cities = cities.filter((ci) => this.isCoastal(ci));
       if (!cities.length) {
         this.hud.feed('Ships are built only in coastal cities (marked with an anchor)', 'bad');
@@ -1307,6 +1506,31 @@ export class GameClient {
 
   cancel(ci, index) {
     this.link.send({ t: 'cancel', city: ci, index });
+  }
+
+  // C with cities selected: cancel the last unit or upgrade in each selected city's queue, refunded.
+  cancelLast() {
+    const owned = [...this.selectedCities].filter((ci) => this.cityOwner[ci] === this.you);
+    if (!owned.length) return;
+    const cities = owned.filter((ci) => this.myQueues.get(ci)?.queue.length);
+    if (!cities.length) {
+      this.hud.feed(owned.length > 1 ? 'Nothing queued in the selected cities' : 'Nothing queued to cancel', 'bad');
+      return;
+    }
+    this.link.send({ t: 'cancel', cities, last: true });
+    // Optimistic update, as in build(), so rapid presses show at once; the next snapshot corrects it.
+    for (const ci of cities) {
+      const entry = this.myQueues.get(ci);
+      const last = entry.queue.length - 1;
+      const key = PRODUCTION_ITEMS[entry.queue[last]];
+      const paidHonor = entry.honorPaid?.[last] || 0;
+      if (paidHonor) this.honor += paidHonor;
+      else this.gold += (UNITS[key] || CITY_UPGRADES[key]).cost;
+      entry.queue = entry.queue.slice(0, last);
+      entry.honorPaid = (entry.honorPaid || []).slice(0, last);
+      if (!last) entry.progress = 0;
+    }
+    if (cities.length > 1) this.hud.feed(`Last order cancelled in ${cities.length} cities`);
   }
 
   // What honor pays for this item (a unit type or an upgrade key), or null when it can't: Barracks with

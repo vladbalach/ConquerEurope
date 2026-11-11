@@ -80,20 +80,19 @@ test('tier II traditions can be queued behind the tier I ones; cancelling a tier
   const T = TRADITIONS, tier1 = TRADITION_TYPES.filter((k) => !T[k].ultimate);
   const learn = (k) => game.handleCommand(a, { t: 'learn', tradition: k });
   a.honor = 100000;
-  learn('lastStand');
+  learn('eternalGlory');
   assert.equal(a.learning, null, 'not before every tier I one is learned or queued');
   tier1.slice(0, -1).forEach(learn);
-  learn('lastStand');
-  assert.ok(!a.learnQueue.some((e) => e.tradition === 'lastStand'), 'one tier I one still missing');
-  learn(tier1.at(-1));
-  learn('lastStand');
   learn('eternalGlory');
-  assert.deepEqual([a.learning.tradition, ...a.learnQueue.map((e) => e.tradition)], [...tier1, 'lastStand', 'eternalGlory']);
+  assert.ok(!a.learnQueue.some((e) => e.tradition === 'eternalGlory'), 'one tier I one still missing');
+  learn(tier1.at(-1));
+  learn('eternalGlory');
+  assert.deepEqual([a.learning.tradition, ...a.learnQueue.map((e) => e.tradition)], [...tier1, 'eternalGlory']);
 
   const honor = a.honor;
   game.handleCommand(a, { t: 'cancelLearn', tradition: tier1[2] });
-  assert.deepEqual(a.learnQueue.map((e) => e.tradition), [tier1[1], tier1[3]], 'the tier II ones need it: gone too');
-  assert.equal(a.honor, honor + T[tier1[2]].cost + T.lastStand.cost + T.eternalGlory.cost, 'all refunded');
+  assert.deepEqual(a.learnQueue.map((e) => e.tradition), [tier1[1], tier1[3]], 'the tier II one needs it: gone too');
+  assert.equal(a.honor, honor + T[tier1[2]].cost + T.eternalGlory.cost, 'all refunded');
   game.handleCommand(a, { t: 'cancelLearn', tradition: tier1[0] });
   assert.deepEqual([a.learning.tradition, a.learning.progress], [tier1[1], 0], 'the one being learned cancelled: the next starts');
   game.handleCommand(a, { t: 'cancelLearn', tradition: 'nonsense' });
@@ -350,10 +349,10 @@ test('Brotherhood of Arms: Barracks build barracksBuildSpeed times faster, paid 
   run(0.3);
   assert.ok(lyon.upgrades.has('barracks'), 'paid with honor: built in half the time');
 
-  const lille = city('Lille');
-  game.handleCommand(a, { t: 'build', cities: [lille.id], item: 'barracks' });
+  const reims = city('Reims');
+  game.handleCommand(a, { t: 'build', cities: [reims.id], item: 'barracks' });
   run(fast + 0.1);
-  assert.ok(lille.upgrades.has('barracks'), 'paid with gold: just as fast');
+  assert.ok(reims.upgrades.has('barracks'), 'paid with gold: just as fast');
 });
 
 test('honor only pays for Barracks, and only as far as it reaches', () => {
@@ -659,93 +658,4 @@ test('Eternal Glory: a ship paid with honor in a city that stops being coastal g
   assert.deepEqual(lisbon.queue, []);
   assert.deepEqual([a.honor, a.gold], [UNITS.transport.cost * GLORY.unitHonorFactor, 0]);
   game.setPortOverride(lisbon.id, null);
-});
-
-// ---------------------------------------------------------------- Last Stand: the second ultimate tradition
-const STAND = TRADITIONS.lastStand;
-
-test('Last Stand opens once every tier I tradition is learned; the two tier II traditions need not each other', () => {
-  const { game, a, b } = setup();
-  for (const p of [a, b]) p.honor = STAND.cost;
-  a.traditions = OTHERS.slice(1);
-  game.handleCommand(a, { t: 'learn', tradition: 'lastStand' });
-  assert.equal(a.learning, null, 'one tier I tradition missing: locked');
-  a.traditions = [...OTHERS];
-  game.handleCommand(a, { t: 'learn', tradition: 'lastStand' });
-  assert.equal(a.learning.tradition, 'lastStand', 'Eternal Glory is not needed');
-  assert.equal(a.honor, 0, `it costs ${STAND.cost} honor`);
-  assert.equal(STAND.time, 120, 'and takes 2 minutes');
-  const listed = (p) => game.playerList().find((q) => q.id === p.id);
-  assert.equal(listed(a).ultimate, 'lastStand', 'the Players list names the one being learned');
-  assert.equal(listed(a).ultimateLeft, STAND.time);
-
-  b.traditions = [...OTHERS, 'lastStand'];
-  game.handleCommand(b, { t: 'learn', tradition: 'eternalGlory' });
-  assert.equal(b.learning.tradition, 'eternalGlory', 'nor Last Stand for Eternal Glory');
-  assert.equal(listed(b).ultimate, 'eternalGlory');
-  game.handleCommand(b, { t: 'cancelLearn' });
-  assert.equal(listed(b).ultimate, null);
-});
-
-test("Last Stand: every unit deals 30% more damage, on top of a Hero's aura", () => {
-  const ctx = setup();
-  const { a, b, city, spawn } = ctx;
-  const { x, y } = field(city);
-  const archer = spawn(a.id, 'archer', x, y);
-  const knight = spawn(b.id, 'knight', x + 300, y);
-  assert.equal(damageOf(ctx, archer), UNITS.archer.damage, 'without it: as before');
-  a.traditions = ['lastStand'];
-  assert.equal(damageOf(ctx, archer), UNITS.archer.damage * (1 + STAND.damageBonus), '+30%');
-  assert.equal(damageOf(ctx, knight), UNITS.knight.damage, "not the other player's units");
-  archer.inspired = true;                   // near a Hero of A's (Game.inspire sets it every tick)
-  assertClose(damageOf(ctx, archer), UNITS.archer.damage * (1 + STAND.damageBonus + HERO.auraBonus), "a Hero's aura adds up: +40%");
-});
-
-test('Last Stand: outnumbered 2 to 1 within 80 km, a unit takes 30% less damage and its snapshot flag shows it to all', () => {
-  const { game, a, b, city, spawn, run } = setup();
-  const { x, y } = field(city);
-  const snaps = new Map([[a.id, []], [b.id, []]]);
-  for (const p of [a, b]) p.client = { send: (m) => snaps.get(p.id).push(m) };
-  b.view = { x0: x - 200, y0: y - 200, x1: x + 200, y1: y + 200 };
-  const flagOf = (p, id) => {
-    const snap = snaps.get(p.id).filter((m) => m.t === 'snap').at(-1);
-    for (let i = 0; i < snap.u.length; i += 8) if (snap.u[i] === id) return snap.u[i + 6] & 32;
-    return null;
-  };
-  const still = (u) => { u.update = () => {}; u.regenerate = () => {}; return u; };
-  a.traditions = ['lastStand'];
-  const mine = still(spawn(a.id, 'infantry', x, y));
-  const foes = [still(spawn(b.id, 'infantry', x + 30, y + 40))];
-  const hitFor = (u, amount) => { const hp = u.hp; u.receiveDamage(amount, foes[0]); const lost = hp - u.hp; u.hp = hp; return lost; };
-  run(0.6);
-  assert.ok(!mine.standFirm, 'one enemy against one unit: not outnumbered');
-  assert.equal(hitFor(mine, 10), 10);
-
-  foes.push(still(spawn(b.id, 'archer', x - 30, y + 60)));
-  run(0.6);
-  assert.ok(mine.standFirm, 'two enemies against one: standing firm');
-  assert.ok(Math.abs(hitFor(mine, 10) - 10 * (1 - STAND.damageCut)) < 1e-9, '30% less damage');
-  assert.ok(!foes[0].standFirm, "the other player hasn't learned it");
-  game.sendSnapshots();
-  assert.ok(flagOf(a, mine.id), 'its owner sees it');
-  assert.ok(flagOf(b, mine.id), 'and so does the enemy');
-  assert.ok(!flagOf(b, foes[0].id));
-
-  const friend = still(spawn(a.id, 'infantry', x + 10, y - 20));
-  foes.push(still(spawn(b.id, 'infantry', x + 20, y + 70)));
-  run(0.6);
-  assert.ok(!mine.standFirm && !friend.standFirm, 'three enemies against two: not 2 to 1');
-  foes.push(still(spawn(b.id, 'infantry', x - 10, y + STAND.radius - 2)));
-  run(0.6);
-  assert.ok(mine.standFirm, 'four against two');
-  friend.x += 2000;
-  foes.at(-1).y += 2000;
-  run(0.6);
-  assert.ok(mine.standFirm, 'only units within 80 km count: three against one');
-  game.units.delete(friend.id);
-  game.units.delete(foes.at(-1).id);
-  a.traditions = [];
-  run(0.6);
-  assert.ok(!mine.standFirm, 'without the tradition nobody stands firm');
-  assert.equal(hitFor(mine, 10), 10);
 });

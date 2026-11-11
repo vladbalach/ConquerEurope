@@ -6,13 +6,14 @@
 //    turn their cities pay at that moment, or a liberator's pay), kills and losses so far.
 //  - every player's totals, for their page of advanced stats: units trained, lost and destroyed by type,
 //    city upgrades built, cities taken and lost, gold earned and spent, honor, when each technology and
-//    tradition was learned, Heroes and Healers made, War Cries, and when they fell or left.
+//    tradition was learned, Heroes and Healers made, War Cries, and when they fell, surrendered or left.
 // Players who leave keep their history (colour, numbers until then). It all goes out once, with the
 // game-over message (Game.end).
 //
 // Runs in the host's browser too (served as /sim/): no Node-only modules here.
 import { UNITS } from '../shared/config.js';
 import { liberatorIncome } from '../shared/tech.js';
+import { scaleGoldWhole } from '../shared/options.js';
 
 // The numbers kept for every player in every frame, in this order (results.js reads them by name).
 export const SERIES = ['cities', 'units', 'army', 'income', 'kills', 'losses'];
@@ -28,7 +29,7 @@ function newStats() {
     spentUnits: 0, spentUpgrades: 0, spentResearch: 0,  // gold spent on what was finished (cancelled items are refunded)
     honorKills: 0, honorDead: 0, honorSpent: 0,         // honor earned by kills, by Honored Dead; spent on anything
     heroes: 0, healers: 0,
-    events: [],                                          // [turn, kind, what, level]: research, tradition, fell, back, out, left, won
+    events: [],                                          // [turn, kind, what, level]: research, tradition, fell, back, out, surrendered, left, won
   };
 }
 
@@ -80,7 +81,7 @@ export class History {
     const p = [];
     for (const pl of game.players.values()) {
       this.roster.set(pl.id, pl.color);
-      const gold = pl.liberator ? liberatorIncome(pl.tech) : income.get(pl.id) || 0;
+      const gold = scaleGoldWhole(pl.liberator ? liberatorIncome(pl.tech) : income.get(pl.id) || 0, pl.goldPercent);
       p.push(pl.id, pl.cityCount, pl.unitCount, round(army.get(pl.id) || 0), round(gold), round(pl.kills), round(pl.losses));
     }
     this.frames.push({ t: turn, s: Math.round(game.time), o: own, p });

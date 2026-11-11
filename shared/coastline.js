@@ -1,5 +1,6 @@
 // The coastline as the map draws it: the edges of the land rings (map.polys) that no other ring
-// shares; a shared edge is a land border between two landmasses. The browsers draw it from this, and
+// shares; a shared edge is a land border between two landmasses. Nor is an edge along the map's bounds
+// coast: the land was cut off there (tools/build-map.js). The browsers draw it from this, and
 // the game (server/nav.js, markShore) uses it to know which cells of its land grid lie on it: only
 // those can be beaches, so what the map shows as beach is exactly where ships can dock.
 
@@ -19,10 +20,17 @@ export function forEachCoastPiece(map, piece) {
       }
     }
   }
+  // Map units, rounded as the rings are, so the points where the land was cut off lie exactly on them.
+  const b = map.bounds;
+  const cut = (ax, ay, bx, by) => !!b && ((ax === bx && (ax === b.x0 || ax === b.x1)) || (ay === by && (ay === b.y0 || ay === b.y1)));
   for (const p of map.polys) {
     for (const r of p.r) {
       const n = r.length / 2;
-      const land = (e) => uses.get(key(r, 2 * e, 2 * ((e + 1) % n))) > 1;
+      // Not coast: a land border, or the edge of the map.
+      const land = (e) => {
+        const i = 2 * e, j = 2 * ((e + 1) % n);
+        return uses.get(key(r, i, j)) > 1 || cut(r[i], r[i + 1], r[j], r[j + 1]);
+      };
       // Walk the ring from just after a land border, so no stretch of coast is cut in two.
       let start = 0;
       for (let e = 0; e < n; e++) if (land(e)) { start = (e + 1) % n; break; }
