@@ -1,5 +1,23 @@
 # Patch notes
 
+## 12 November 2026: Chat
+
+- **The waiting room has a chat**, beside the game's card: everyone in the room, players and spectators, by
+  nickname. Whoever comes in reads the last messages.
+- **Chat in the game:** press **Enter**, type, Enter again to send (Esc closes it). New messages show above the
+  minimap for a few seconds, each player in their colour ("Red", "Teal", ...; yours as "You"), never by nickname:
+  nobody learns who is who. Enter also opens every message so far, to scroll back.
+- **Spectators** talk among themselves while the game runs: players don't see what they write. Once the game is
+  over everyone is named, in the chat too.
+
+## 12 November 2026: Roads
+
+- **A new technology, Roads** (150 gold, 60 s), on a new **Land** tab of the Tech window: your land units march
+  **20% faster** in every region you hold whole, that is, every city of it. Units already on the march speed up
+  at once. Lose one city of a region and its roads no longer work for you. Ships are not affected.
+- The Region line of a city's panel and F1 → Economy mention it. Click another player's unit and its panel shows
+  its speed where it stands, with "on roads" while it has the bonus: their Roads work like yours.
+
 ## 12 November 2026: Balance, cliffs and sharing your game
 
 ### Balance
@@ -17,6 +35,7 @@
 | Tower range | +60% | +70% |
 | Wall II | +300 HP | +400 HP |
 | Archer HP | 36 | 35 |
+| Cavalry regeneration | 1 HP/s | 1.5 HP/s |
 
 Cities still outrange battleships (72 km against 65).
 

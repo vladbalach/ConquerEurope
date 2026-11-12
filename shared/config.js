@@ -338,6 +338,10 @@ export const LIBERATOR = {
 //                km of it (where it last stood, if it died before the shell landed). A shell at a city
 //                bursts on its walls: no splash damage. Ships already at sea get them too.
 //
+//  Tab 'land' exists in every game; its technologies work as soon as they are researched.
+//    roads       every land unit of the player goes speedPercent percent faster while it stands in a region
+//                the player holds whole (every city of it: shared/regions.js), units already on the march too
+//
 //  requires: a technology that must be researched, or ordered before it, first. Cancelling that one
 //  cancels this one too (its gold comes back).
 const levels = (n, cost, time) => Array.from({ length: n }, (_, i) => ({ cost: Array.isArray(cost) ? cost[i] : cost, time }));
@@ -370,13 +374,18 @@ export const TECHS = {
     tab: 'sea', name: 'Gunnery', requires: 'warships', shellSpeed: 90, splashShare: 0.2, splashRadius: 14,
     levels: levels(1, 200, 60),
   },
+  roads: {
+    tab: 'land', name: 'Roads', speedPercent: 20,
+    levels: levels(1, 150, 60),
+  },
 };
-// Order matters: it is the technology id used on the network.
-export const TECH_TYPES = ['supporters', 'influencer', 'smuggling', 'seafaring', 'warships', 'navigation', 'gunnery'];
+// Order matters: it is the technology id used on the network (new ones go at the end).
+export const TECH_TYPES = ['supporters', 'influencer', 'smuggling', 'seafaring', 'warships', 'navigation', 'gunnery', 'roads'];
 // Tabs of the Tech window, in order (the window opens on the first). `death`: the tab exists only
 // with this game option.
 export const TECH_TABS = [
   { id: 'sea', name: 'Sea' },
+  { id: 'land', name: 'Land' },
   { id: 'rebellion', name: 'Rebellion', death: 'liberator' },
 ];
 
@@ -400,6 +409,10 @@ export const GAME = {
   // host leaves, another player's browser takes the game over from the last one, so at most this much is lost.
   checkpointEvery: 5,
 };
+
+// Chat in the waiting room and in the game (server/index.js, "chat"; public/js/chat.js): the longest message in
+// characters, and how many of the last messages are kept, for those who come in (or back) and on screen.
+export const CHAT = { maxLength: 200, keep: 50 };
 
 // ------------------------------------------------------------------ map editing
 //  Edit map (admins): a region's name can be dragged to a new place and resized with the mouse wheel.

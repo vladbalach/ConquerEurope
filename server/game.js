@@ -9,6 +9,7 @@ import {
 } from '../shared/config.js';
 import {
   noTech, nextLevel, techAvailable, liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring, canTrain,
+  roadSpeedFactor,
 } from '../shared/tech.js';
 import {
   sanitizeOptions, citiesToWin, GOLD_PERCENT, sanitizeGoldPercent, scaleGold, scaleGoldWhole,
@@ -16,7 +17,7 @@ import {
 import { higherGrades } from '../shared/upgrades.js';
 import { formationSlots, formationRole, SHIP_SPACING } from '../shared/formation.js';
 import { City, markCityObstacles } from './City.js';
-import { regionCities, regionHolder } from '../shared/regions.js';
+import { regionCities, regionHolder, regionGrid, NO_REGION } from '../shared/regions.js';
 import { createUnit } from './units/index.js';
 import { HERO_KIND_SHIFT, CARGO_SHIFT, SPECTATOR_ID_BASE } from '../shared/protocol.js';
 import { History } from './history.js';
@@ -132,8 +133,12 @@ export class Game {
     this.hostId = null;
     this.bounds = map.bounds;
     this.nav = nav;
+    this.map = map;                   // a rebuilt map is loaded into this same object (and nav), never replaced
     this.cities = map.cities.map((c, i) => new City(this, i, c));
     this.regionCities = regionCities(map);   // region -> its city ids
+    // Who holds each region whole (regionHolder), as of the tick `holdersTick`: see holdsRegionAt.
+    this.holders = new Int16Array(this.regionCities.length);
+    this.holdersTick = -1;
     // City walls are obstacles for pathfinding (same cities in every game, so mark once).
     if (!nav.obstacle) markCityObstacles(nav, this.cities, map);
     this.cityGrid = new Grid();
@@ -166,6 +171,34 @@ export class Game {
   // The player who holds every city of this region, or -1 (their cities there pay more gold).
   regionHolder(region) {
     return regionHolder(this.regionCities[region], (id) => this.cities[id].owner);
+  }
+
+  // The region at (x, y), or -1: at sea, or on land of no city. A lookup in the land grid's cells
+  // (shared/regions.js regionGrid), cheap enough for every unit every tick.
+  regionAt(x, y) {
+    const c = this.nav.cellOf(x, y);
+    const r = c < 0 ? NO_REGION : regionGrid(this.map, this.nav)[c];
+    return r === NO_REGION ? -1 : r;
+  }
+
+  // Does `player` hold the region at (x, y) whole (every city of it)? Made for checks every tick for many
+  // units: who holds each region is worked out once per tick, the first time it is asked (cities change
+  // hands in many places: captures, players leaving, saves), so a city taken counts from the next tick.
+  holdsRegionAt(player, x, y) {
+    const r = this.regionAt(x, y);
+    if (r < 0) return false;
+    if (this.holdersTick !== this.tickCount) {
+      this.holdersTick = this.tickCount;
+      for (let k = 0; k < this.holders.length; k++) this.holders[k] = this.regionHolder(k);
+    }
+    return this.holders[r] === player;
+  }
+
+  // How many times its moveSpeed a land unit of `owner` goes at (x, y): with Roads (TECHS.roads), faster in
+  // a region the owner holds whole; otherwise 1. Players without Roads never get to the region lookup.
+  roadFactor(owner, x, y) {
+    const f = roadSpeedFactor(this.players.get(owner)?.tech);
+    return f !== 1 && this.holdsRegionAt(owner, x, y) ? f : 1;
   }
 
   // ------------------------------------------------------------ membership

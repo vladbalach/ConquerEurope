@@ -87,54 +87,66 @@
 
   <!-- Waiting room -->
   <section id="screen-room" class="screen menu" hidden>
-    <div class="card">
-      <h2 id="room-title"></h2>
-      <p class="muted" id="room-info"></p>
-      <!-- The host alone in the room: how friends get in (main.js renderRoom). -->
-      <div id="room-share" class="room-share" hidden>
-        <p>Your game is created and listed in the lobby. Share the link with your friends to play together, or wait
-          for players to join.</p>
-        <div class="row">
-          <input id="room-share-link" readonly aria-label="Link to the game">
-          <button type="button" id="room-share-copy">Copy link</button>
+    <!-- The room's card, and the chat beside it (below it on a narrow screen). -->
+    <div class="room-layout">
+      <div class="card">
+        <h2 id="room-title"></h2>
+        <p class="muted" id="room-info"></p>
+        <!-- The host alone in the room: how friends get in (main.js renderRoom). -->
+        <div id="room-share" class="room-share" hidden>
+          <p>Your game is created and listed in the lobby. Share the link with your friends to play together, or wait
+            for players to join.</p>
+          <div class="row">
+            <input id="room-share-link" readonly aria-label="Link to the game">
+            <button type="button" id="room-share-copy">Copy link</button>
+          </div>
+        </div>
+        <ul id="room-players" class="room-players"></ul>
+        <p id="room-spectators" class="muted small room-spectators" hidden></p>
+        <h3>Game options</h3>
+        <div id="room-options" class="room-options">
+          <label for="opt-countdown">Countdown</label>
+          <div class="row">
+            <select id="opt-countdown" title="Lower the number of cities needed to win by one at the end of every turn">
+              <option value="none">No</option>
+              <option value="start">From start</option>
+              <option value="turn">From turn</option>
+            </select>
+            <input id="opt-countdown-turn" type="number" step="1" inputmode="numeric" aria-label="Countdown starts after this turn"
+              title="The countdown starts once this turn is over">
+          </div>
+          <label for="opt-win-cities">Cities to win</label>
+          <div class="row">
+            <input id="opt-win-cities" type="number" step="1" inputmode="numeric">
+          </div>
+          <label for="opt-death">Death</label>
+          <div class="row">
+            <select id="opt-death" title="What happens to a player who loses every city and every unit">
+              <option value="spectator">Spectator</option>
+              <option value="liberator">Liberator</option>
+            </select>
+          </div>
+          <label for="opt-start-gold">Start gold</label>
+          <div class="row">
+            <input id="opt-start-gold" type="number" step="10" inputmode="numeric">
+          </div>
+        </div>
+        <p id="opt-summary" class="muted small opt-summary"></p>
+        <div class="row end">
+          <button type="button" id="room-leave">Leave</button>
+          <button type="button" id="room-role"></button>
+          <button type="button" id="room-start" class="primary">Start game</button>
         </div>
       </div>
-      <ul id="room-players" class="room-players"></ul>
-      <p id="room-spectators" class="muted small room-spectators" hidden></p>
-      <h3>Game options</h3>
-      <div id="room-options" class="room-options">
-        <label for="opt-countdown">Countdown</label>
-        <div class="row">
-          <select id="opt-countdown" title="Lower the number of cities needed to win by one at the end of every turn">
-            <option value="none">No</option>
-            <option value="start">From start</option>
-            <option value="turn">From turn</option>
-          </select>
-          <input id="opt-countdown-turn" type="number" step="1" inputmode="numeric" aria-label="Countdown starts after this turn"
-            title="The countdown starts once this turn is over">
-        </div>
-        <label for="opt-win-cities">Cities to win</label>
-        <div class="row">
-          <input id="opt-win-cities" type="number" step="1" inputmode="numeric">
-        </div>
-        <label for="opt-death">Death</label>
-        <div class="row">
-          <select id="opt-death" title="What happens to a player who loses every city and every unit">
-            <option value="spectator">Spectator</option>
-            <option value="liberator">Liberator</option>
-          </select>
-        </div>
-        <label for="opt-start-gold">Start gold</label>
-        <div class="row">
-          <input id="opt-start-gold" type="number" step="10" inputmode="numeric">
-        </div>
-      </div>
-      <p id="opt-summary" class="muted small opt-summary"></p>
-      <div class="row end">
-        <button type="button" id="room-leave">Leave</button>
-        <button type="button" id="room-role"></button>
-        <button type="button" id="room-start" class="primary">Start game</button>
-      </div>
+      <!-- Everyone in the room, players and spectators, by nickname (chat.js RoomChat). -->
+      <aside class="card chat-card" aria-label="Chat">
+        <h3>Chat</h3>
+        <div id="room-chat-log" class="room-chat-log" role="log" aria-live="polite"></div>
+        <form id="room-chat-form" class="row" autocomplete="off">
+          <input id="room-chat-input" placeholder="Say something to the room" aria-label="Chat message">
+          <button type="submit">Send</button>
+        </form>
+      </aside>
     </div>
   </section>
 
@@ -146,7 +158,7 @@
       <div class="stat" id="stat-turn"><span class="hourglass"></span><small>Turns</small><b id="hud-turn">0</b><small id="hud-turn-next"></small></div>
       <div class="stat" id="stat-gold"><span class="coin"></span><b id="hud-gold">0</b><small id="hud-income"></small></div>
       <div class="stat" id="stat-honor"><span class="honor"></span><b id="hud-honor">0</b></div>
-      <div class="stat" id="stat-cities" title="Cities held, and how many win the game"><span class="tower"></span><b id="hud-cities">0</b><small id="hud-win"></small></div>
+      <div class="stat" id="stat-cities" title="Cities held, and how many win the game"><span class="castle"></span><b id="hud-cities">0</b><small id="hud-win"></small></div>
       <div class="stat" id="stat-units" title="Units you command"><span class="army"></span><b id="hud-units">0</b></div>
       <div class="title" id="hud-title"></div>
       <div class="buttons">
@@ -170,6 +182,15 @@
       <canvas id="minimap"></canvas>
       <div id="minimap-grip" class="minimap-grip" title="Drag to resize the minimap · double click: default size">
         <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M5 2 L16 13 M9 2 L16 9 M13 2 L16 5"/></svg>
+      </div>
+    </div>
+    <!-- Chat (chat.js GameChat): new messages over the minimap for a few seconds; Enter opens it to write
+         and to read back. -->
+    <div id="chat" class="game-chat">
+      <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-label="Chat"></div>
+      <div id="chat-bar" class="chat-bar" hidden>
+        <span id="chat-to" class="chat-to"></span>
+        <input id="chat-input" autocomplete="off" aria-label="Chat message">
       </div>
     </div>
     <div id="panel" class="hud panel"></div>

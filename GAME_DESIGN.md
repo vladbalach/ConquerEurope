@@ -55,6 +55,12 @@ everyone is revealed.
   [shared/protocol.js](shared/protocol.js)), are in no player list, and the host's browser never has their
   nicknames. The lobby and the waiting room list spectators by nickname only, apart from the players, never with a
   colour, and nobody in the game is told when one comes or goes. They get every nickname with the others at the end.
+- **Chat** goes through the lobby server, which says who wrote each message (the host's browser never sees it, so it
+  can't change who said what). In the waiting room by nickname, without colours. While the game runs a player's
+  message carries their id and colour only, and a spectator's reaches the other spectators only, without a nickname:
+  players are never told one is watching. Once the game is over messages carry nicknames again. A game starts with
+  an empty chat, so nothing said in the waiting room by nickname follows anyone into it. What players type themselves
+  is up to them.
 - **One gap: IP addresses.** A direct WebRTC link shows the host each player's IP address, which could tell friends
   who is who. Running the server with `RELAY_ONLY=1` and a TURN relay sends all traffic through the relay, so nobody
   learns another player's address.
@@ -70,3 +76,5 @@ everyone is revealed.
   runs, and only the lobby server reveals them at the end.
 - [test/spectator.test.js](test/spectator.test.js): no nickname reaches players or spectators while a watched game
   runs; spectators are not in the host's roster or the players list.
+- [test/chat.test.js](test/chat.test.js): chat in a running game carries colours and no nickname, spectators' messages
+  never reach players, the waiting room's chat is gone when the game starts, and nicknames come back once it is over.

@@ -42,6 +42,12 @@ export function shipSpeedFactor(tech) {
   return 1 + (lvl(tech, 'navigation') * TECHS.navigation.speedPercent) / 100;
 }
 
+// Roads: how many times faster than its moveSpeed a land unit of a player with these technologies goes
+// in a region the player holds whole (Game.roadFactor); 1 without them.
+export function roadSpeedFactor(tech) {
+  return 1 + (lvl(tech, 'roads') * TECHS.roads.speedPercent) / 100;
+}
+
 // Gunnery: the player's battleships fire cannon shells at units on land and at cities (ballista bolts
 // without it, and always at ships).
 export function hasGunnery(tech) {

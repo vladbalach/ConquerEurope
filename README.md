@@ -76,6 +76,19 @@ from a game:
 for a game in progress the lobby lists nicknames only. Everyone is revealed on the results screen. The rule is in
 [GAME_DESIGN.md](GAME_DESIGN.md).
 
+**Chat** ([public/js/chat.js](public/js/chat.js)): the waiting room has a chat beside its card, by nickname, for
+players and spectators alike. In the game, new messages show above the minimap for 12 seconds, each player by
+colour (a dot and "Red", "Teal", ...; your own as "You"); **Enter** opens the chat to write and to scroll back,
+Enter sends, Esc closes it.
+- Messages go through the lobby server, never the host's browser, so nobody can pass one off as someone else's. While
+  the game runs the server sends a player's id and colour with their message, never their nickname.
+- Spectators talk among themselves while the game runs ("To spectators"): players never read them, so they are
+  neither told who watches nor helped by someone who sees every empire. Once the game is over everyone is revealed,
+  in the chat too, and everyone reads everyone.
+- Whoever comes into the room, or back to the game after a refresh, gets the last 50 messages (`CHAT` in
+  [shared/config.js](shared/config.js), 200 characters at most each). A game starts with an empty chat: the waiting
+  room's is gone. Five messages in a row at most, then one every 1.5 seconds.
+
 **Coming back after a disconnect:** a player who drops out keeps their empire (it can still be conquered) until
 the game ends.
 - Refreshing the tab resumes the game automatically.
@@ -92,7 +105,7 @@ The server only runs the lobby. When the host presses Start, the game runs in th
 every other player's browser connects straight to it (WebRTC data channels), like a "listen server" in other games.
 So the server needs almost no CPU or bandwidth, and it can run on a free plan.
 
-- **The server:** names, lobby, waiting room, rejoin tokens, admin balance and map edits. When a game starts, it deals
+- **The server:** names, lobby, waiting room, chat, rejoin tokens, admin balance and map edits. When a game starts, it deals
   the colours, gives the host's browser the list of players (ids and colours, no nicknames), and passes the WebRTC
   connection messages between each player (or spectator) and the host. When the game ends, it reveals every nickname.
 - **The host's browser:** simulates the game in a Web Worker ([server/host-engine.js](server/host-engine.js), the same
@@ -404,6 +417,7 @@ it sooner and rank it higher.
   names are printed on the map and dark solid lines are their borders; faint lines divide the cities of one region.
   Hold every city of a region and each of them pays **+2 gold** more per turn (`regionBonusPerCity` in
   [shared/config.js](shared/config.js)). Lose one and the whole region loses the bonus. A one-city region counts.
+  With **Roads** (Tech, Land tab) your land units also march 20% faster in every region you hold whole.
   The city panel shows how many cities of its region the owner holds, and the feed says when you complete or lose one.
   Taking a region's last city also lights the region up for a few seconds: a gold wave spreads from that city, the
   region's outline glows, each of its cities shows a gold ring and "+2/turn", and its name shines (`REGION_GLOW` in
@@ -478,6 +492,14 @@ it sooner and rank it higher.
     troops ashore and at cities (see Navy). It needs Warships; taking Seafaring or Warships out of the queue takes it
     out too.
 
+  The **Land** tab:
+  - **Roads** (150 gold, 60 s): your land units march 20% faster in every region you hold whole (every city of it,
+    see Regions), the ones already on the march too; lose a city of the region and its roads stop working for you.
+    Ships are not affected. The panel of another player's unit you click shows its speed where it stands, with "on
+    roads" while it has the bonus. A unit's region is the territory under it, as the map draws it (`Game.regionAt`: one lookup in a
+    table of the land grid's cells, `regionGrid` in [shared/regions.js](shared/regions.js), cheap enough for every
+    unit every tick).
+
   The **Rebellion** tab exists only with Death: Liberator. Rebellion technologies can be researched at any time (also before you fall) but work only while you
   are a liberator. **Ordered as a liberator they cost half** (`LIBERATOR.rebellionCost`, rounded up; the card shows the
   full price struck out); levels ordered before you fell keep the full price, and cancelling gives back what was paid.
@@ -517,8 +539,8 @@ Every number lives in **[shared/config.js](shared/config.js)**, which both the s
   `boltSpeed` km a second: [server/projectiles.js](server/projectiles.js)); one with `accelTime`
   needs that many seconds to get from a standstill to `moveSpeed`. `tech` names the
   technology a unit needs before cities build it (Seafaring, Warships). In `TECHS`, `requires` names a technology that
-  must come first; Navigation's `speedPercent` is how much faster it makes ships; Gunnery's `shellSpeed`,
-  `splashRadius` and `splashShare` are its shells'.
+  must come first; Navigation's `speedPercent` is how much faster it makes ships, and Roads' how much faster land
+  units march in whole regions; Gunnery's `shellSpeed`, `splashRadius` and `splashShare` are its shells'.
 - `NAVAL`: how close the sea must be for a coastal city, and the distances for going on board.
 - `CITY_UPGRADES`: cost, build time and bonus of each city upgrade.
 - `HONOR`, `TRADITIONS`, `HERO`: the honor a kill gives (`killShare` of the unit's cost), the traditions it buys,
@@ -623,6 +645,7 @@ if they send the messages themselves.
 | Drag the minimap's top-right corner | Resize the minimap. It keeps the map's shape and grows up and to the right; the browser keeps the size for your next games. Double click the corner for the default size |
 | Arrows, screen edge, middle drag, wheel | Move and zoom the camera. Zooming keeps the point under the cursor in place. Zoomed far out, cities are small dots in their owner's colour and country names are hidden. The view can go a little past every edge of the map, so the land along it (North Africa at the bottom) can be seen clear of the minimap and panels |
 | Tab / F1 | Players / help: a wiki of the game with animated demos (see "The help (F1)") |
+| Enter | Open the chat over the minimap: type, then Enter sends it to everyone (a spectator's, to the other spectators while the game runs); Esc closes it (see "Chat") |
 | Esc (game over) | Fold the results screen into a bar at the top, to look at the map. Show results opens it again |
 
 ### Attack alerts
@@ -694,7 +717,7 @@ New commands are added in [public/js/debug/index.js](public/js/debug/index.js).
 shared/config.js        All game numbers (units, cities, combat, economy), used by server and client
 shared/balance.js       Which stats the Edit button may change, their limits, apply / reset
 shared/options.js       Game options the host sets in the waiting room: cities to win, countdown, death, start gold, gold percentages
-shared/regions.js       Regions: their cities, and who holds a whole region (gold bonus)
+shared/regions.js       Regions: their cities, who holds a whole region (gold bonus, Roads), and the region at a point
 shared/formation.js     Group-move formations (infantry front, archers back, cavalry wings), for the game and the move preview
 shared/mountains.js     The mountain cells' code, shared by the land grid (navgrid.json) and the map (map.json)
 shared/tech.js          Technologies: levels, liberator income, influence and smuggling limits, smuggled gold
@@ -719,6 +742,7 @@ server/units/Transport.js  The transport ship
 server/data/navgrid.json  Generated land grid (committed)
 public/                 Browser client (vanilla JS modules, Canvas 2D, no build step)
   js/main.js            Screens: name, lobby, waiting room; starts hosting or joining a game
+  js/chat.js            Chat: beside the waiting room's card, and over the minimap in the game (Enter)
   js/p2p.js             Browser-to-browser links: HostSession (worker + one WebRTC channel per player), PeerSession
   js/delta.js           Snapshots and scores as changes to the last one sent (lossless), rebuilt on the player's page
   js/host-worker.js     Web Worker that runs the game in the host's browser

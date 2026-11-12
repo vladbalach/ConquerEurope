@@ -65,8 +65,9 @@ export class Unit {
 
   // ---------------------------------------------------------------- attributes
   get stats() { return UNITS[this.type]; }
-  // Full speed (km/s): its moveSpeed, faster for ships with Navigation (Ship).
-  get moveSpeed() { return this.stats.moveSpeed; }
+  // Full speed (km/s) where it stands now: its moveSpeed, faster on Roads in a region its owner holds whole
+  // (Game.roadFactor). Ships have their own (Ship: Navigation, never Roads).
+  get moveSpeed() { return this.stats.moveSpeed * this.game.roadFactor(this.owner, this.x, this.y); }
   get maxHp() { return this.stats.hp; }
   get r() { return this.stats.size; }
   get isCity() { return false; }

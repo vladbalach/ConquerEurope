@@ -1,14 +1,15 @@
 // In-game client state: snapshot interpolation, selection, commands, effects.
 import {
-  UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES, PRODUCTION_ITEMS, ECONOMY, LIBERATOR, TECHS, TECH_TYPES,
+  UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES, PRODUCTION_ITEMS, ECONOMY, LIBERATOR, TECHS, TECH_TYPES, TECH_TABS,
   NEUTRAL_COLOR, PLAYER_COLOR_NAMES, TRADITIONS, TRADITION_TYPES, HERO, HERO_KINDS, HEALER, NAVAL, GAME,
 } from '/shared/config.js';
 import { formationSlots, formationRole, SHIP_SPACING } from '/shared/formation.js';
 import {
   liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring, hasGunnery, canTrain, shipSpeedFactor,
+  roadSpeedFactor,
 } from '/shared/tech.js';
 import { sanitizeOptions, citiesToWin, describeOptions, sanitizeGoldPercent, scaleGoldWhole } from '/shared/options.js';
-import { regionCities, regionHolder } from '/shared/regions.js';
+import { regionCities, regionHolder, regionAtPoint } from '/shared/regions.js';
 import { nearestCell } from '/shared/coastline.js';
 import { CARGO_SHIFT, heroKindOf } from '/shared/protocol.js';
 import { nextGrade, upgradeGrades } from '/shared/upgrades.js';
@@ -17,6 +18,7 @@ import { Renderer, REGION_GLOW, PINGS } from './render.js';
 import { AttackWatch, AlertLog, ALERT } from './alerts.js';
 import { Input } from './input.js';
 import { Hud, colorTag, el } from './hud.js';
+import { GameChat } from './chat.js';
 import { playSound } from './sound.js';
 
 const INTERP_DELAY = 0.13;   // seconds behind the newest snapshot
@@ -40,7 +42,7 @@ function rememberGuideSeen() {
 export class GameClient {
   constructor({
     map, net, link, gameId, you, title, options, players, ports, beaches, onLeave, debug = null, admin = false, mapState = null,
-    prestart = null, goldPercent = undefined, spectator = false,
+    prestart = null, goldPercent = undefined, spectator = false, chat = [],
   }) {
     this.map = map;
     // Watching the game without playing (Watch in the lobby): `you` is a spectator's id, in no player list.
@@ -144,6 +146,8 @@ export class GameClient {
     this.cam = { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2, zoom: 0.3 };
     this.renderer = new Renderer(this, this.canvas, document.getElementById('minimap'));
     this.hud = new Hud(this);
+    // Over the minimap; Enter opens it (input.js). `chat`: the game's messages so far (main.js).
+    this.chat = new GameChat(this, chat);
     this.input = new Input(this);
     this.input.clampCamera();
 
@@ -189,6 +193,7 @@ export class GameClient {
   destroy() {
     cancelAnimationFrame(this.raf);
     this.input.destroy();
+    this.chat.destroy();
     this.hud.destroy();
   }
 
@@ -488,7 +493,8 @@ export class GameClient {
       const what = msg.tech === 'seafaring' ? ': coastal cities build transports (B), and your units can go on board'
         : msg.tech === 'warships' ? `: coastal cities build battleships (${UNITS.battleship.hotkey})`
           : msg.tech === 'navigation' ? `: your ships sail ${TECHS.navigation.speedPercent}% faster`
-            : msg.tech === 'gunnery' ? ': your battleships fire cannon shells at troops ashore and at cities' : '';
+            : msg.tech === 'gunnery' ? ': your battleships fire cannon shells at troops ashore and at cities'
+              : msg.tech === 'roads' ? `: your land units march ${TECHS.roads.speedPercent}% faster in the regions you hold whole` : '';
       this.hud.feed(`Research complete: ${def.name}${def.levels.length > 1 ? ` ${msg.level}` : ''}${what}`, 'good');
       playSound('tech-learned');
     } else if (msg.kind === 'liberator') {
@@ -715,6 +721,17 @@ export class GameClient {
     if (!def.hero) return def;
     const kind = UNITS[this.heroKind(u)];
     return { ...def, moveSpeed: kind.moveSpeed, attackRange: kind.attackRange };
+  }
+
+  // How many times its unitStats speed a unit goes where it stands now: a land unit whose owner has Roads,
+  // in a region the owner holds whole, roadSpeedFactor; otherwise 1 (the host's Unit.moveSpeed). The region
+  // comes from the map's territories: fine for the selected unit, too slow for every unit every frame.
+  roadFactor(u) {
+    if (UNITS[UNIT_TYPES[u.t]].naval) return 1;
+    const f = roadSpeedFactor(this.players.get(u.owner)?.tech);
+    if (f === 1) return 1;
+    const r = regionAtPoint(this.map, u.x, u.y);
+    return r >= 0 && this.regionHolder(r) === u.owner ? f : 1;
   }
 
   // What a Hero was made from (HERO_KINDS: infantry, archer or cavalry).
@@ -1029,7 +1046,7 @@ export class GameClient {
     const ok = canTrain(type, this.myTech());
     const need = UNITS[type]?.tech;
     if (!ok && tell) {
-      const tab = TECHS[need].tab === 'sea' ? 'Sea' : 'Rebellion';
+      const tab = TECH_TABS.find((t) => t.id === TECHS[need].tab).name;
       this.hud.feed(`${UNITS[type].name} needs ${TECHS[need].name}: research it in the Tech window (T), ${tab} tab`, 'bad');
     }
     return ok;

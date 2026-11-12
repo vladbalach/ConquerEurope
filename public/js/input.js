@@ -712,6 +712,15 @@ export class Input {
       return;
     }
     if (k.startsWith('Arrow')) { this.keys.add(k); e.preventDefault(); return; }
+    // Enter: write in the chat. Also with a button focused (the last one clicked), which Enter would press again.
+    // Not when something on the page took the key already (a row of the results that opens on Enter).
+    if (k === 'Enter') {
+      if (!e.repeat && !e.defaultPrevented && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        g.chat.open();
+      }
+      return;
+    }
     if (k === 'Tab') { e.preventDefault(); g.hud.showScores(true); return; }
     if (k === 'F1' || k === '?') { e.preventDefault(); g.hud.toggleHelp(); return; }
     if (k === 'F2') { e.preventDefault(); g.select(g.renderUnits.filter((u) => u.owner === g.you).map((u) => u.id), false); return; }

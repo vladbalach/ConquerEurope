@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { Game } from './game.js';
 import { NavGrid } from './nav.js';
-import { DEBUG, GAME } from '../shared/config.js';
+import { DEBUG, GAME, CHAT } from '../shared/config.js';
 import { iceConfig } from './ice.js';
 import { PROTOCOL_VERSION } from '../shared/protocol.js';
 import { applyBalance, resetBalance, snapshot } from '../shared/balance.js';
@@ -392,6 +392,7 @@ function sendJoined(client) {
     t: 'joined', gameId: g.id, playerId: p.id, token: p.token, title: g.title, status: g.status,
     ...(p.spectator ? { spectator: true } : {}), protocol: PROTOCOL_VERSION,
   });
+  sendChatLog(client);
   if (g.status === 'lobby') g.broadcastRoom();
   else if (g.status === 'running') resumeHosted(client, g, p);
 }
@@ -465,6 +466,7 @@ function restartGame(g) {
   // Its spectators watch the new one.
   for (const p of g.players.values()) p.client.send({ t: 'restarted', gameId: g.id });
   for (const s of spectatorsOf(g)) s.client.send({ t: 'restarted', gameId: g.id });
+  clearChat(g);                        // the finished game's, with nicknames
   handOver(g);
   lobbyDirty = true;
 }
@@ -618,6 +620,82 @@ function endHosted(g, winner, reason = null) {
   lobbyDirty = true;
 }
 
+// ------------------------------------------------------------------ chat
+// The waiting room and the game have a chat. It goes through this server, never through the host's browser
+// (which could change who said what), and who reads what follows GAME_DESIGN.md, "Anonymous players":
+// - the waiting room: everyone in it, players and spectators, by nickname (no colours before the game);
+// - a game in progress: a player's message carries their id and colour, never a nickname, and reaches every
+//   player and spectator. A spectator's reaches the other spectators only, as "Spectator": players are never
+//   told who watches (nor helped by someone who sees every empire);
+// - a finished game: everyone is revealed, so messages carry nicknames again and reach everyone.
+// The last CHAT.keep messages are kept for those who come into the room, or back to the game (a refresh).
+// Each game starts with an empty chat: the waiting room's, by nickname, is gone (clearChat).
+// Messages: { t: 'chat', from, text, name?, color?, spectator? } and { t: 'chatLog', messages: [...] }.
+// Nobody floods it: at most CHAT_BURST messages in a row, then one every CHAT_REFILL_MS.
+const CHAT_BURST = 5;
+const CHAT_REFILL_MS = 1500;
+
+// What was typed, made safe to show: no control characters, and no direction marks or overrides, which
+// could make a line read as if someone else had written it. Spaces collapsed, at most CHAT.maxLength.
+export function chatText(raw) {
+  if (typeof raw !== 'string') return '';
+  const text = raw.replace(/[\u0000-\u001f\u007f‎‏‪-‮⁦-⁩]/g, ' ').replace(/\s+/g, ' ').trim();
+  return Array.from(text).slice(0, CHAT.maxLength).join('').trim();
+}
+
+function chatAllowed(client) {
+  const now = Date.now();
+  const b = client.chatBucket || (client.chatBucket = { tokens: CHAT_BURST, at: now });
+  b.tokens = Math.min(CHAT_BURST, b.tokens + (now - b.at) / CHAT_REFILL_MS);
+  b.at = now;
+  if (b.tokens < 1) return false;
+  b.tokens -= 1;
+  return true;
+}
+
+// Everyone in game g who reads a message: its players' pages (unless `spectatorsOnly`) and its spectators'.
+function chatReaders(g, spectatorsOnly) {
+  const out = spectatorsOnly ? [] : [...g.players.values()].map((p) => p.client).filter((c) => c && c.game === g);
+  for (const s of spectatorsOf(g)) out.push(s.client);
+  return out;
+}
+
+function sendChat(client, raw) {
+  const g = client.game, m = client.player;
+  if (!g || !m) return;
+  const text = chatText(raw);
+  if (!text) return;
+  if (!chatAllowed(client)) {
+    client.send({ t: 'error', msg: 'You are sending messages too fast' });
+    return;
+  }
+  const running = g.status === 'running';
+  const msg = { t: 'chat', from: m.id, text };
+  if (!running) msg.name = m.name;                                  // never while the game runs
+  if (g.status !== 'lobby' && !m.spectator) msg.color = m.color;    // dealt at the start
+  if (m.spectator) msg.spectator = true;
+  const spectatorsOnly = running && !!m.spectator;
+  const log = g.chat || (g.chat = []);
+  log.push({ msg, spectatorsOnly });
+  if (log.length > CHAT.keep) log.shift();
+  for (const c of chatReaders(g, spectatorsOnly)) c.send(msg);
+}
+
+// The messages a member of the game may read, for their page: on joining the room, coming back to the game,
+// or watching it.
+function sendChatLog(client) {
+  const g = client.game, m = client.player;
+  if (!g || !m) return;
+  const messages = (g.chat || []).filter((e) => m.spectator || !e.spectatorsOnly).map((e) => e.msg);
+  client.send({ t: 'chatLog', messages });
+}
+
+// The game starts (or a duel starts again): a new, empty chat for everyone in it.
+function clearChat(g) {
+  g.chat = [];
+  for (const c of chatReaders(g, false)) c.send({ t: 'chatLog', messages: [] });
+}
+
 function handle(client, msg) {
   switch (msg.t) {
     case 'hello': {
@@ -726,6 +804,7 @@ function handle(client, msg) {
     case 'start': {
       const g = client.game;
       if (g && g.status === 'lobby' && client.player && g.hostId === client.player.id && g.beginStart()) {
+        clearChat(g);                  // the waiting room's, by nickname
         handOver(g);                   // the host's browser runs the game from here on
         lobbyDirty = true;
       }
@@ -785,6 +864,9 @@ function handle(client, msg) {
       else sendRestartState(g);
       return;
     }
+    case 'chat':
+      sendChat(client, msg.text);
+      return;
     case 'ping':
       return;                          // keeps the connection (and a sleeping free host) awake
     case 'relay': {

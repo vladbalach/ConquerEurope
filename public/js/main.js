@@ -1,7 +1,8 @@
 // App shell: name entry, lobby, waiting room, and launching the game client.
 import { Net } from './net.js';
 import { GameClient } from './client.js';
-import { GAME, DEBUG } from '/shared/config.js';
+import { RoomChat } from './chat.js';
+import { GAME, DEBUG, CHAT } from '/shared/config.js';
 import { PROTOCOL_VERSION } from '/shared/protocol.js';
 import { applyBalance } from '/shared/balance.js';
 import {
@@ -360,6 +361,28 @@ function sendOptions() {
 }
 for (const id of OPTION_INPUTS) $(id).addEventListener('change', sendOptions);
 
+// ------------------------------------------------------------------ chat
+// The messages of the room or game we are in, as the lobby server sends them (chatLog: all of them so far, or
+// none when a game starts; chat: one more). The waiting room shows them beside its card; a game, over its
+// minimap (chat.js), starting with those that came before its page was ready.
+let chatMessages = [];
+const roomChat = new RoomChat({ send: (text) => net.send({ t: 'chat', text }), me: () => (joined ? joined.playerId : null) });
+
+function resetChat(list = []) {
+  chatMessages = list.slice(-CHAT.keep);
+  roomChat.reset(chatMessages);
+  if (game) game.chat.reset(chatMessages);
+}
+
+net.on('chatLog', (msg) => resetChat(Array.isArray(msg.messages) ? msg.messages : []));
+net.on('chat', (msg) => {
+  if (typeof msg.text !== 'string') return;
+  chatMessages.push(msg);
+  if (chatMessages.length > CHAT.keep) chatMessages.shift();
+  roomChat.add(msg);
+  if (game) game.chat.add(msg);
+});
+
 // Leaving on purpose gives up your empire, so the rejoin token is forgotten too.
 function leaveGame() {
   // Tell the host first that we give up (our cities become neutral), then close the link. While a duel
@@ -385,6 +408,7 @@ function leaveGame() {
   joined = null;
   room = null;
   if (game) { game.destroy(); game = null; }
+  resetChat();
   show('screen-lobby');
   drawBackdrop();
 }
@@ -454,6 +478,7 @@ net.on('welcome', (msg) => {
   endSession();
   if (game) { game.destroy(); game = null; }
   joined = null;
+  resetChat();
   store(sessionStorage, RESUME_KEY, null);
   show('screen-lobby');
   drawBackdrop();
@@ -510,7 +535,7 @@ const GAME_MESSAGES = {
     game = new GameClient({
       map, net, link, gameId: joined.gameId, you: msg.you, title: msg.title, options: msg.options, players: msg.players,
       ports: msg.ports, beaches: msg.beaches, onLeave: leaveGame, debug, admin: isAdmin, mapState, prestart: msg.prestart,
-      goldPercent: msg.goldPercent, spectator: !!msg.spectator,
+      goldPercent: msg.goldPercent, spectator: !!msg.spectator, chat: chatMessages,
     });
     if (msg.spectator) $('toast').hidden = true;   // "Connecting to the game…": it has come
     if (game.goldPercent !== GOLD_PERCENT.default) {
@@ -695,6 +720,7 @@ net.on('kicked', (msg) => {
   endSession();
   if (game) { game.destroy(); game = null; }
   joined = null;
+  resetChat();
   show('screen-lobby');
   drawBackdrop();
 });

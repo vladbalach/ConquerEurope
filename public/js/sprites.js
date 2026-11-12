@@ -706,6 +706,7 @@ export function traditionSmallIconURL(key, color) {
 //   warships    the battleship it unlocks
 //   navigation  a compass rose in silver and gold, north in the player's colour (tradition-icons.js)
 //   gunnery     two bronze cannons crossed over a pile of iron cannonballs (tradition-icons.js)
+//   roads       a paved Roman road coming out of a triumphal arch (tradition-icons.js)
 //   supporters  a crowd behind a gold coin (liberator gold every turn)
 //   influencer  a castle in the dashed ring that marks a city about to be liberated
 //   smuggling   gold flowing from a castle to a coin rimmed in your colour (the smuggling mark)
@@ -718,7 +719,7 @@ export function techIconURL(key, color) {
   const [c, ctx] = makeCanvas();
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  if (key === 'navigation' || key === 'gunnery') {
+  if (key === 'navigation' || key === 'gunnery' || key === 'roads') {
     drawTechEmblem(ctx, key, color);
   } else if (key === 'supporters') {
     drawPerson(ctx, 14, 20, 0.95, color);

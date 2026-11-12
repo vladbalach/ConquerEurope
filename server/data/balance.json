@@ -14,7 +14,7 @@
     },
     "cavalry": {
       "hp": 140,
-      "hpRegen": 1,
+      "hpRegen": 1.5,
       "cost": 18,
       "buildTime": 6
     },

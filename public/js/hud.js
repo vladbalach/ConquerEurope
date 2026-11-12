@@ -283,6 +283,9 @@ export class Hud {
       } else if (tab.id === 'sea') {
         body.append(el('p', { class: 'muted small' }, 'Ships and the sea. Sea technologies work as soon as they are ' +
           `researched. ${RESEARCH_QUEUE_TEXT}`));
+      } else if (tab.id === 'land') {
+        body.append(el('p', { class: 'muted small' }, 'Your lands and the armies that cross them. Land technologies work ' +
+          `as soon as they are researched. ${RESEARCH_QUEUE_TEXT}`));
       }
       for (const k of TECH_TYPES.filter((t) => TECHS[t].tab === tab.id)) body.append(this.techCard(k));
     }
@@ -339,6 +342,13 @@ export class Hud {
         `${fast('transport')}, battleships ${UNITS.battleship.moveSpeed} → ${fast('battleship')}. A battleship still ` +
         `takes ${UNITS.battleship.accelTime} s to reach full speed after a stop.`;
     }
+    if (key === 'roads') {
+      const p = T.roads.speedPercent, fast = (type) => Math.round((UNITS[type].moveSpeed * (100 + p)) / 10) / 10;
+      return `Your land units march ${p}% faster in every region you hold whole (every city of it), the ones already ` +
+        `on the march too: infantry ${UNITS.infantry.moveSpeed} → ${fast('infantry')}, cavalry ${UNITS.cavalry.moveSpeed} → ` +
+        `${fast('cavalry')}. Lose one city of a region and its roads are no longer yours. Dark lines on the map are the ` +
+        "regions' borders; a city's panel says how much of its region you hold. Ships are not affected.";
+    }
     if (key === 'supporters') {
       return `As a liberator you get ${T.supporters.goldPerTurnPerLevel} more gold per turn for each level. ` +
         then(`${liberatorIncome({ supporters: level })} gold per turn`, `${liberatorIncome({ supporters: level + 1 })}`);
@@ -360,6 +370,7 @@ export class Hud {
     if (key === 'warships') return 'Build battleships whose ballistas shoot ships and coasts';
     if (key === 'navigation') return `All your ships sail ${T.navigation.speedPercent}% faster`;
     if (key === 'gunnery') return `Battleships fire shells at land targets: ${Math.round(T.gunnery.splashShare * 100)}% splash`;
+    if (key === 'roads') return `Land units march ${T.roads.speedPercent}% faster in the regions you hold whole`;
     if (key === 'supporters') return `+${T.supporters.goldPerTurnPerLevel} gold per turn as a liberator, for each level`;
     if (key === 'influencer') return 'Liberate several cities at once';
     return `Take ${Math.round(T.smuggling.share * 100)}% of the income of the cities you mark`;
@@ -1059,7 +1070,8 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     const region = g.map.cities[ci].c;
     const ids = g.regionCities[region];
     const name = g.map.countries[region].n;
-    const bonus = `+${ECONOMY.regionBonusPerCity} gold per turn from each`;
+    const bonus = `+${ECONOMY.regionBonusPerCity} gold per turn from each, and with ${TECHS.roads.name} (Tech, Land tab) ` +
+      `its holder's land units march ${TECHS.roads.speedPercent}% faster in it`;
     // A city with whoever holds it now.
     const where = (i) => {
       const o = g.cityOwner[i];
@@ -1701,6 +1713,9 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       el('span', { class: 'sub' }, g.nameOf(u.owner))));
     const hpFill = el('i');
     const hpText = el('b');
+    // Its speed where it is now: faster on roads (kept current in refreshDynamic).
+    const speedText = el('b', {}, String(def.moveSpeed)), roads = el('span', {}, ' on roads');
+    roads.hidden = true;
     this.panel.append(el('div', { class: 'hpbar' }, hpFill));
     this.panel.append(el('div', { class: 'stats' },
       el('span', {}, 'HP ', hpText),
@@ -1709,11 +1724,14 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
         el('b', {}, u.owner === g.you ? `${u.flags >> CARGO_SHIFT} / ${def.capacity}` : `? / ${def.capacity}`))
         : el('span', {}, 'Damage ', el('b', {}, def.reload ? `${def.damage} / ${def.reload}s` : `${def.damage}/s`)),
       def.capacity ? null : el('span', {}, 'Range ', el('b', {}, def.attackRange ? String(def.attackRange) : 'melee')),
-      el('span', {}, 'Speed ', el('b', {}, String(def.moveSpeed)))));
+      el('span', {
+        title: def.naval ? '' : `With ${TECHS.roads.name} (Tech, Land tab), land units march ${TECHS.roads.speedPercent}% ` +
+          'faster in the regions their owner holds whole',
+      }, 'Speed ', speedText, roads)));
     const note = el('div', { class: 'disband-note' }, `Disbanding: loses ${DISBAND.hpPerSecond} HP per second until it dies`);
     note.hidden = true;
     this.panel.append(note);
-    this.dyn.unitHp = { fill: hpFill, text: hpText, id: u.id, def, note };
+    this.dyn.unitHp = { fill: hpFill, text: hpText, id: u.id, def, note, speedText, roads };
   }
 
   // Each unit icon's HP bar, and which icons are marked with Shift + click.
@@ -1855,6 +1873,9 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
         d.unitHp.fill.style.width = `${(u.hp / d.unitHp.def.hp) * 100}%`;
         d.unitHp.text.textContent = `${u.hp} / ${d.unitHp.def.hp}`;
         d.unitHp.note.hidden = !(u.flags & 4);
+        const f = g.roadFactor(u), speed = String(Math.round(d.unitHp.def.moveSpeed * f * 10) / 10);
+        if (d.unitHp.speedText.textContent !== speed) d.unitHp.speedText.textContent = speed;
+        d.unitHp.roads.hidden = f === 1;
       }
     }
   }

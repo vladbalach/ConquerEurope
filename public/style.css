@@ -127,6 +127,25 @@ button.link { background: none; border: none; padding: 0; color: var(--gold); te
 .room-options select:disabled, .room-options input:disabled { opacity: 0.7; cursor: default; }
 .opt-summary { margin: 10px 0 0; line-height: 1.45; }
 
+/* The waiting room: its card, and the chat beside it, as tall as the card (below it when the screen is too narrow). */
+.room-layout { margin: auto; display: flex; flex-wrap: wrap; justify-content: center; align-items: stretch; gap: 16px; width: 100%; max-width: 816px; }
+.room-layout > .card { flex: 1 1 440px; }
+.room-layout > .chat-card { flex: 1 1 300px; max-width: 440px; display: flex; flex-direction: column; padding: 22px 22px 20px; }
+.chat-card h3 { margin: 0 0 10px; }
+/* No height of its own (it takes what the card leaves), but never less than a few lines. */
+.room-chat-log {
+  flex: 1 1 0; height: 0; min-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 5px;
+  padding: 8px 10px; border-radius: 6px; background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.06);
+  line-height: 1.4; overflow-wrap: anywhere; -webkit-user-select: text; user-select: text;
+}
+.room-chat-log:empty::before { content: 'No messages yet. Say hello!'; margin: auto; color: var(--muted); font-style: italic; }
+.room-chat-log .chat-name { color: var(--paper-2); }
+.room-chat-log .chat-name.me { color: var(--gold); }
+.room-chat-log .chat-name.spectator { color: var(--muted); font-style: italic; }
+#room-chat-form { margin-top: 10px; gap: 8px; }
+#room-chat-form input { flex: 1; min-width: 0; padding: 8px 10px; }
+#room-chat-form button { flex: none; }
+
 /* ------------------------------------------------------------ game HUD */
 #view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: default; }
 /* Edit map mode (admins): a gold frame round the map while cities can be dragged. */
@@ -143,7 +162,7 @@ button.link { background: none; border: none; padding: 0; color: var(--gold); te
 /* A spectator has no empire: no gold, honor, cities, units or technologies of their own. */
 #topbar.spectating #stat-gold, #topbar.spectating #stat-honor, #topbar.spectating #stat-cities,
 #topbar.spectating #stat-units, #topbar.spectating #btn-tech { display: none; }
-.coin, .tower, .army, .hourglass, .honor { width: 16px; height: 16px; display: inline-block; flex: none; }
+.coin, .castle, .army, .hourglass, .honor { width: 16px; height: 16px; display: inline-block; flex: none; }
 /* Honor: a five-pointed star, silver so it never reads as gold. */
 .honor { background: radial-gradient(circle at 40% 35%, #ffffff, #c9ccd6 55%, #7d8494); clip-path: polygon(50% 0, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%); }
 /* The honor stat opens the Honor window. */
@@ -153,7 +172,12 @@ button.link { background: none; border: none; padding: 0; color: var(--gold); te
 #hud-turn-next { font-variant-numeric: tabular-nums; min-width: 72px; }
 #stat-turn.soon #hud-turn-next { color: var(--gold); }
 .coin { border-radius: 50%; background: radial-gradient(circle at 35% 35%, #ffe9a0, #c9a24a 60%, #7a5a1a); border: 1px solid #5a400f; }
-.tower { background: var(--paper-2); clip-path: polygon(0 100%, 0 25%, 20% 25%, 20% 0, 40% 0, 40% 25%, 60% 25%, 60% 0, 80% 0, 80% 25%, 100% 25%, 100% 100%); }
+/* Cities: the map's castle simplified, a crenellated wall with a taller keep, an arched gate and windows. */
+.castle {
+  --castle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill-rule='evenodd' d='M0 16V7V5.5H1.6V7H3.2V5.5H4.5V0.8H6.1V2.6H7.2V0.8H8.8V2.6H9.9V0.8H11.5V5.5H12.8V7H14.4V5.5H16V16ZM6.5 16V11.5A1.5 1.5 0 0 1 9.5 11.5V16ZM7.4 4.6H8.6V7H7.4ZM1.7 9H2.9V11H1.7ZM13.1 9H14.3V11H13.1Z'/%3E%3C/svg%3E");
+  background: var(--paper-2);
+  -webkit-mask: var(--castle) center / contain no-repeat; mask: var(--castle) center / contain no-repeat;
+}
 .army { background: var(--paper-2); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
 
 .feed { position: absolute; top: 60px; left: 8px; display: flex; flex-direction: column; gap: 4px; pointer-events: none; max-width: min(420px, 60vw); }
@@ -187,6 +211,41 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 @keyframes minimap-alert-battle {
   0%, 25% { border-color: #ffa53a; box-shadow: 0 0 0 2px rgba(255, 165, 58, 0.85), 0 0 22px rgba(255, 165, 58, 0.55); }
 }
+
+/* Chat (chat.js GameChat): just above the minimap and as wide as it (at least 320px); --minimap-w and --minimap-h
+   are set by render.js, and follow the minimap when it is resized. Closed, it shows the 6 newest messages for a few
+   seconds each, over the map and the results screen, and lets clicks through. Enter opens it: every message on a
+   panel to scroll back through, and the line to write in, over everything. */
+.game-chat {
+  position: absolute; left: 8px; bottom: calc(var(--minimap-h, 150px) + 14px); z-index: 9;
+  width: max(var(--minimap-w, 0px), 320px); max-width: calc(100vw - 16px);
+  display: flex; flex-direction: column; gap: 6px; pointer-events: none;
+}
+.game-chat.open { z-index: 21; pointer-events: auto; }
+.game-chat .chat-log {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px; overflow: hidden;
+  max-height: min(320px, calc(100vh - var(--minimap-h, 150px) - 150px));
+}
+.game-chat .chat-line {
+  max-width: 100%; padding: 3px 9px; border-radius: 4px; background: rgba(20, 15, 10, 0.82);
+  font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; transition: opacity 0.6s;
+}
+.game-chat .chat-line .pdot { margin-right: 5px; }
+.game-chat .chat-spectator { color: var(--muted); font-style: italic; }
+.game-chat:not(.open) .chat-line.fading { opacity: 0; }
+.game-chat:not(.open) .chat-line.old, .game-chat:not(.open) .chat-line:nth-last-child(n+7) { display: none; }
+.game-chat.open .chat-log {
+  overflow-y: auto; padding: 6px 4px; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+.game-chat.open .chat-line { background: none; padding: 1px 6px; }
+.game-chat.open .chat-log:empty::before { content: 'No messages yet'; padding: 1px 6px; color: var(--muted); font-style: italic; }
+.chat-bar {
+  display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 10px; background: var(--panel);
+  border: 1px solid var(--gold); border-radius: 8px; box-shadow: 0 0 12px rgba(201, 162, 74, 0.3), 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+.chat-to { flex: none; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.chat-bar input, .chat-bar input:focus { flex: 1; min-width: 0; padding: 6px 8px; font-size: 13px; border-color: transparent; box-shadow: none; background: rgba(0, 0, 0, 0.3); }
 
 /* Centred between the minimap (left) and the build column (right), clear of both. --minimap-w (the
    minimap's width with its frame, set by render.js) counts once the player makes it wider than the
