@@ -68,6 +68,7 @@ const METRICS = [
   { key: 'units', name: 'Units', tip: 'Units commanded at the end of each turn (units on board ships too)' },
   { key: 'army', name: 'Army value', tip: 'Gold value of every unit the player commanded at the end of each turn' },
   { key: 'income', name: 'Gold per turn', tip: 'Gold per turn the player\'s cities paid (Farms and whole regions included; a liberator: their pay), times their gold percentage' },
+  { key: 'gold', name: 'Gold', tip: 'Gold the player had in their treasury at the end of each turn' },
   { key: 'kills', name: 'Kills', tip: 'Gold value of the enemy units destroyed so far' },
   { key: 'losses', name: 'Losses', tip: 'Gold value of the units lost so far' },
 ];
@@ -430,7 +431,7 @@ export class Results {
     const g = this.g, w = this.model.byId.get(this.winner);
     if (this.reason) return { title: 'Game over', text: [this.reason] };
     if (this.winner === g.you) return { title: 'Victory!', text: ['Europe bows before you.'] };
-    if (w) return { title: 'Defeat', text: [this.tag(w, false), ' has conquered Europe.'] };
+    if (w) return { title: g.spectator ? 'Game over' : 'Defeat', text: [this.tag(w, false), ' has conquered Europe.'] };
     if (g.players.get(g.you)?.surrendered) return { title: 'Game over', text: ['You surrendered.'] };   // playing alone
     return { title: 'Game over', text: ['No one is left standing.'] };
   }
@@ -682,6 +683,7 @@ export class Results {
   // This player's line in their colour over everyone else's in grey; kills and losses side by side.
   detailCharts(p) {
     const m = this.model;
+    const tip = (key) => METRICS.find((x) => x.key === key).tip;
     const label = (i, short) => this.frameLabel(i, short);
     const against = (key) => [
       ...m.players.filter((q) => q.id !== p.id).map((q) => ({ id: q.id, name: q.name || q.colorName, color: q.color, values: q.values[key] || [], dim: true })),
@@ -698,9 +700,10 @@ export class Results {
     const legend = () => el('div', { class: 'chart-legend inline' }, mine.cloneNode(true), others.cloneNode(true));
     return el('section', { class: 'results-section' },
       el('div', { class: 'chart-grid' },
-        card('Cities', METRICS[0].tip, against('cities'), legend()),
-        card('Army value', METRICS[2].tip, against('army'), legend()),
-        card('Gold per turn', METRICS[3].tip, against('income'), legend()),
+        card('Cities', tip('cities'), against('cities'), legend()),
+        card('Army value', tip('army'), against('army'), legend()),
+        card('Gold per turn', tip('income'), against('income'), legend()),
+        card('Gold', tip('gold'), against('gold'), legend()),
         card('Kills and losses', 'Gold value of the enemy units destroyed and of the units lost, so far', [
           { id: 'kills', name: 'Kills', color: KILLS_COLOR, values: p.values.kills || [] },
           { id: 'losses', name: 'Losses', color: LOSSES_COLOR, values: p.values.losses || [] },

@@ -11,6 +11,7 @@
 // The tier II traditions are set apart by a double gold border with a crimson line between, and a faint red halo.
 // Technologies in the same style, the subject alone without the shield (drawTechEmblem):
 //   navigation    a compass rose, its north point in the player's colour
+//   gunnery       two bronze cannons crossed over three cannonballs, a ring on each in the player's colour
 
 const INK = '#1a120a';
 const rgbOf = (hex) => { const n = parseInt(hex.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
@@ -314,11 +315,38 @@ function compassRose() {
   return { box: [-50, -50, 50, 50], layers };
 }
 
+// Two cannons crossed in saltire, muzzles up, over a pile of three iron cannonballs (technology Gunnery). The
+// barrels are bronze (gold), each tapering to its muzzle, with a knob behind the breech and a reinforcing ring
+// enamelled in the player's colour.
+function crossedCannons() {
+  const barrel = () => {
+    const tube = new Path2D();
+    tube.moveTo(-5.5, -38); tube.lineTo(5.5, -38); tube.lineTo(10, 18);
+    tube.quadraticCurveTo(10, 30, 0, 30); tube.quadraticCurveTo(-10, 30, -10, 18);
+    tube.closePath();
+    const muzzle = new Path2D(); muzzle.rect(-9, -46, 18, 9);
+    const ring = new Path2D(); ring.rect(-12, 4, 24, 8);
+    const knob = new Path2D(); knob.rect(-3.5, 28, 7, 7); knob.moveTo(6, 38); knob.arc(0, 38, 6, 0, Math.PI * 2);
+    return [tube, muzzle, ring, knob];
+  };
+  const layers = [];
+  for (const deg of [-40, 40]) {               // the one pointing up-left behind the other
+    const [tube, muzzle, ring, knob] = barrel().map((p) => xf(p, new DOMMatrix().rotate(deg)));
+    layers.push({ role: 'accent', path: knob }, { role: 'accent', path: tube }, { role: 'enamel', path: ring },
+      { role: 'accent', path: muzzle });
+  }
+  for (const [x, y] of [[-9, 41], [9, 41], [0, 27]]) {   // the bottom two first, the top one on them
+    const ball = new Path2D(); ball.arc(x, y, 7.5, 0, Math.PI * 2);
+    layers.push({ role: 'main', path: ball });
+  }
+  return { box: [-46, -48, 46, 50], layers };
+}
+
 const SUBJECTS = {
   heroes: helmet, mercy: hospitallerCross, brotherhood, honoredDead: () => brazier(), eternalGlory: () => laurel(),
 };
 // Technologies drawn in this style, without the shield (drawTechEmblem).
-const TECH_SUBJECTS = { navigation: compassRose };
+const TECH_SUBJECTS = { navigation: compassRose, gunnery: crossedCannons };
 
 // The subject in silver and gold, `size` px across, centred on (cx, cy). Roles of its own here: `enamel`, a
 // part in the player's colour; `shade`, the shaded half of a faceted part (laid flat over it).

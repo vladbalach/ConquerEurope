@@ -50,6 +50,11 @@ everyone is revealed.
   a running game have none. The browser that runs the game must know every player's percentage to pay them, so it
   gets them with the roster, by id. Someone reading that browser's memory could match a percentage they saw in the
   waiting room to a colour; with everyone at 100% there is nothing to match.
+- **Spectators** (Watch in the lobby) learn no more than a player: like a player, their page gets ids and colours
+  only while the game runs. They have ids of their own (from `SPECTATOR_ID_BASE` in
+  [shared/protocol.js](shared/protocol.js)), are in no player list, and the host's browser never has their
+  nicknames. The lobby and the waiting room list spectators by nickname only, apart from the players, never with a
+  colour, and nobody in the game is told when one comes or goes. They get every nickname with the others at the end.
 - **One gap: IP addresses.** A direct WebRTC link shows the host each player's IP address, which could tell friends
   who is who. Running the server with `RELAY_ONLY=1` and a TURN relay sends all traffic through the relay, so nobody
   learns another player's address.
@@ -63,3 +68,5 @@ everyone is revealed.
 - [test/p2p-lobby.test.js](test/p2p-lobby.test.js) and [test/host-engine.test.js](test/host-engine.test.js): in
   browser-to-browser play the host's roster has ids and colours only, no nickname reaches any browser while the game
   runs, and only the lobby server reveals them at the end.
+- [test/spectator.test.js](test/spectator.test.js): no nickname reaches players or spectators while a watched game
+  runs; spectators are not in the host's roster or the players list.

@@ -54,13 +54,13 @@ export function drawIcon(ctx, type, cx, cy, size, variant = null) {
 // ------------------------------------------------------------------ unit cone
 // A unit's sprite: a cone, or a boat for ships. Both map the unit's position to CONE's base
 // centre (the waterline of a boat) and are about as wide as CONE.rx * 2 at the same size.
-// `variant`: a Hero's kind (its emblem, see drawIcon).
+// `variant`: a Hero's kind (its emblem, see drawIcon), or 'cannons' for a battleship of a player with Gunnery.
 export function unitSprite(color, type, variant = null) {
   const key = `${color}${type}${variant || ''}`;
   let c = unitCache.get(key);
   if (c) return c;
   if (UNIT_CLASSES[type].naval) {
-    c = UNIT_CLASSES[type].type === 'battleship' ? warshipSprite(color, type) : shipSprite(color, type);
+    c = UNIT_CLASSES[type].type === 'battleship' ? warshipSprite(color, type, variant) : shipSprite(color, type);
     unitCache.set(key, c);
     return c;
   }
@@ -181,9 +181,10 @@ function shipSprite(color, type) {
 }
 
 // A warship (battleship), bow to the right, drawn like shipSprite: a longer hull in the owner's colour
-// with a raised stern castle, a light band along its side pierced by a row of gun ports, and two masts.
-// The main sail carries the ship type's emblem; the pennant on the main mast is in the owner's colour.
-function warshipSprite(color, type) {
+// with a raised stern castle, a light band along its side, and two masts. The main sail carries the ship
+// type's emblem (a ballista); the pennant on the main mast is in the owner's colour. With `variant`
+// 'cannons' (its owner has Gunnery) the sail shows crossed cannons and the band a row of gun ports.
+function warshipSprite(color, type, variant = null) {
   const [c, ctx] = makeCanvas();
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
@@ -252,14 +253,14 @@ function warshipSprite(color, type) {
   ctx.fill(hull);
   ctx.save();
   ctx.clip(hull);
-  // The gun deck: a light band with a row of square ports, dark inside.
+  // The deck band: a light band, with cannons a row of square gun ports in it, dark inside.
   ctx.fillStyle = lighten(color, 0.62);
   ctx.beginPath(); ctx.moveTo(5, 37); ctx.lineTo(58, 36); ctx.lineTo(57.5, 40.5); ctx.lineTo(6, 41.5); ctx.closePath(); ctx.fill();
   ctx.strokeStyle = 'rgba(0,0,0,0.35)';
   ctx.lineWidth = 0.8;
   ctx.stroke();
   ctx.fillStyle = INK;
-  for (let x = 12; x <= 50; x += 6.3) ctx.fillRect(x, 37.4, 3, 3);
+  if (variant === 'cannons') for (let x = 12; x <= 50; x += 6.3) ctx.fillRect(x, 37.4, 3, 3);
   ctx.strokeStyle = 'rgba(0,0,0,0.3)';
   ctx.lineWidth = 1.2;
   ctx.beginPath(); ctx.moveTo(8, 45.5); ctx.lineTo(54, 44.5); ctx.stroke();    // a plank line
@@ -271,7 +272,7 @@ function warshipSprite(color, type) {
   ctx.lineWidth = 1.6;
   ctx.stroke(hull);
 
-  drawIcon(ctx, type, 29, 18.2, 20);
+  drawIcon(ctx, type, 29, 18.2, 20, variant);
   return c;
 }
 
@@ -702,21 +703,22 @@ export function traditionSmallIconURL(key, color) {
 
 // The picture of a technology in the Tech window (data URL), in the player's colour:
 //   seafaring   the transport it unlocks
-//   gunnery     the battleship it unlocks
+//   warships    the battleship it unlocks
 //   navigation  a compass rose in silver and gold, north in the player's colour (tradition-icons.js)
+//   gunnery     two bronze cannons crossed over a pile of iron cannonballs (tradition-icons.js)
 //   supporters  a crowd behind a gold coin (liberator gold every turn)
 //   influencer  a castle in the dashed ring that marks a city about to be liberated
 //   smuggling   gold flowing from a castle to a coin rimmed in your colour (the smuggling mark)
 export function techIconURL(key, color) {
   if (key === 'seafaring') return unitIconURL(color, UNIT_TYPES.indexOf('transport'));
-  if (key === 'gunnery') return unitIconURL(color, UNIT_TYPES.indexOf('battleship'));
+  if (key === 'warships') return unitIconURL(color, UNIT_TYPES.indexOf('battleship'));
   const cacheKey = `tech|${key}|${color}`;
   let u = urlCache.get(cacheKey);
   if (u) return u;
   const [c, ctx] = makeCanvas();
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  if (key === 'navigation') {
+  if (key === 'navigation' || key === 'gunnery') {
     drawTechEmblem(ctx, key, color);
   } else if (key === 'supporters') {
     drawPerson(ctx, 14, 20, 0.95, color);

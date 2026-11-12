@@ -30,7 +30,10 @@ input, select { -webkit-user-select: text; user-select: text; }
 #backdrop { position: fixed; inset: 0; width: 100%; height: 100%; filter: saturate(0.85) brightness(0.55) blur(1px); }
 
 .screen { position: fixed; inset: 0; }
-.screen.menu { display: flex; align-items: center; justify-content: center; padding: 16px; overflow-y: auto; }
+/* The card is centred by its auto margins: a card taller than the window starts at the top and scrolls
+   (align-items: center would push its top out of reach). */
+.screen.menu { display: flex; padding: 16px; overflow-y: auto; }
+.screen.menu > .card { margin: auto; }
 
 .card {
   position: relative; width: 100%; max-width: 440px; padding: 28px 30px;
@@ -83,6 +86,9 @@ button.link { background: none; border: none; padding: 0; color: var(--gold); te
 .chip small { color: var(--muted); }
 .chip.offline { opacity: 0.5; font-style: italic; }
 .chip.out { text-decoration: line-through; }
+/* Spectators of a game, by nickname, and the Join / Watch buttons side by side. */
+.game-item .watchers { margin-top: 6px; color: var(--muted); font-size: 12px; font-style: italic; }
+.game-actions { display: flex; gap: 6px; }
 .lobby-online { margin: -4px 0 10px; }
 .warning { margin: 14px 0 0; padding: 10px 12px; border-radius: 6px; background: rgba(192, 57, 43, 0.25); border: 1px solid rgba(192, 57, 43, 0.7); color: #ffd9d2; line-height: 1.45; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; }
@@ -101,6 +107,12 @@ button.link { background: none; border: none; padding: 0; color: var(--gold); te
 .room-gold input { width: 64px; padding: 4px 6px; font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
 .room-gold.changed { color: var(--gold); }
 .room-gold.changed input { border-color: rgba(201, 162, 74, 0.7); }
+.room-spectators { margin: 10px 0 0; }
+/* The host alone in the waiting room: the game is listed, share the link. */
+.room-share { margin: 14px 0 0; padding: 12px 14px; border-radius: 6px; background: rgba(201, 162, 74, 0.1); border: 1px solid rgba(201, 162, 74, 0.45); line-height: 1.45; }
+.room-share p { margin: 0 0 10px; color: var(--paper-2); }
+.room-share input { flex: 1; min-width: 0; padding: 7px 10px; font-size: 13px; color: var(--muted); }
+.room-share button { flex: none; }
 
 /* Game options in the waiting room: the host edits them, everyone else sees them. */
 .room-options { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; align-items: center; }
@@ -121,13 +133,16 @@ button.link { background: none; border: none; padding: 0; color: var(--gold); te
 #view.map-editing { outline: 3px solid rgba(201, 162, 74, 0.7); outline-offset: -3px; }
 .hud { position: absolute; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4); }
 
-#topbar { top: 8px; left: 8px; right: 8px; display: flex; align-items: center; gap: 18px; padding: 6px 12px; height: 42px; }
-#topbar .stat { display: flex; align-items: center; gap: 6px; font-size: 16px; white-space: nowrap; }
-#topbar .stat small { color: var(--muted); font-size: 12px; }
-#topbar .title { flex: 1; text-align: center; font-family: var(--serif); color: var(--paper-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#topbar .buttons { display: flex; gap: 6px; }
-#topbar .buttons button { padding: 4px 10px; font-size: 13px; }
+#topbar, .wiki-topbar { top: 8px; left: 8px; right: 8px; display: flex; align-items: center; gap: 18px; padding: 6px 12px; height: 42px; }
+#topbar .stat, .wiki-topbar .stat { display: flex; align-items: center; gap: 6px; font-size: 16px; white-space: nowrap; }
+#topbar .stat small, .wiki-topbar .stat small { color: var(--muted); font-size: 12px; }
+#topbar .title, .wiki-topbar .title { flex: 1; text-align: center; font-family: var(--serif); color: var(--paper-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#topbar .buttons, .wiki-topbar .buttons { display: flex; gap: 6px; }
+#topbar .buttons button, .wiki-topbar .buttons button { padding: 4px 10px; font-size: 13px; }
 #topbar .buttons button.active { background: rgba(201, 162, 74, 0.32); border-color: var(--gold); color: var(--paper); }
+/* A spectator has no empire: no gold, honor, cities, units or technologies of their own. */
+#topbar.spectating #stat-gold, #topbar.spectating #stat-honor, #topbar.spectating #stat-cities,
+#topbar.spectating #stat-units, #topbar.spectating #btn-tech { display: none; }
 .coin, .tower, .army, .hourglass, .honor { width: 16px; height: 16px; display: inline-block; flex: none; }
 /* Honor: a five-pointed star, silver so it never reads as gold. */
 .honor { background: radial-gradient(circle at 40% 35%, #ffffff, #c9ccd6 55%, #7d8494); clip-path: polygon(50% 0, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%); }
@@ -166,6 +181,11 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 #minimap-wrap.alert { animation: minimap-alert 0.9s ease-out 4; }
 @keyframes minimap-alert {
   0%, 25% { border-color: #ff4a3a; box-shadow: 0 0 0 2px rgba(255, 74, 58, 0.85), 0 0 22px rgba(255, 74, 58, 0.6); }
+}
+/* Your units or a city of yours under attack off screen (client.js attackAlerts): orange, twice. */
+#minimap-wrap.alert-battle { animation: minimap-alert-battle 0.9s ease-out 2; }
+@keyframes minimap-alert-battle {
+  0%, 25% { border-color: #ffa53a; box-shadow: 0 0 0 2px rgba(255, 165, 58, 0.85), 0 0 22px rgba(255, 165, 58, 0.55); }
 }
 
 /* Centred between the minimap (left) and the build column (right), clear of both. --minimap-w (the
@@ -213,6 +233,18 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 .build-btn .nm kbd { font-size: 10px; color: var(--muted); margin-left: 4px; }
 .build-btn .cost { grid-column: 3; grid-row: 1; font-size: 11px; color: var(--muted); white-space: nowrap; text-align: right; }
 .build-btn .eff { grid-column: 2 / 4; grid-row: 2; font-size: 11px; color: var(--muted); }
+/* A unit in training in a selected city: how far along, at the foot of its button. */
+.build-btn { position: relative; overflow: hidden; }
+.build-btn .prog { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--gold); }
+/* The guide's first step (client.js startGuide), first game of the session: the Infantry button glows. */
+.build-btn.guide-pulse:not(:disabled) { border-color: var(--gold); animation: guide-pulse 1.2s ease-in-out infinite; }
+@keyframes guide-pulse {
+  0%, 100% { background: rgba(201, 162, 74, 0.12); box-shadow: 0 0 0 0 rgba(255, 214, 110, 0); }
+  50% { background: rgba(201, 162, 74, 0.32); box-shadow: 0 0 12px 2px rgba(255, 214, 110, 0.75); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .build-btn.guide-pulse:not(:disabled) { animation: none; background: rgba(201, 162, 74, 0.26); box-shadow: 0 0 10px 2px rgba(255, 214, 110, 0.6); }
+}
 .queue { display: flex; gap: 6px; align-items: center; margin-top: 8px; min-height: 30px; }
 .queue .label { color: var(--muted); font-size: 12px; }
 .qitem { position: relative; width: 30px; height: 30px; border-radius: 5px; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.15); cursor: pointer; overflow: hidden; padding: 0; }
@@ -282,14 +314,105 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 .overlay td, .overlay th { padding: 5px 10px; text-align: left; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
 .overlay th { color: var(--muted); font-weight: 500; font-size: 12px; }
 /* Same size on every page, so the tabs stay put when you switch. */
-#help { width: min(820px, calc(100vw - 32px)); min-height: min(790px, calc(100vh - 32px)); flex-direction: column; }
-#help:not([hidden]) { display: flex; }
-#help-close { align-self: flex-start; margin-top: auto; }
-.help-page { padding-bottom: 14px; }
-#help td:first-child { color: var(--gold); white-space: nowrap; vertical-align: top; }
-#help p { line-height: 1.5; }
-#help b { color: var(--paper); }
-#help h3.help-sub { margin-top: 18px; }
+/* F1: the help, a small wiki (public/js/help/wiki.js): its pages listed on the left, the page on the right. */
+#help.help-wiki { width: min(1180px, calc(100vw - 32px)); height: min(880px, calc(100vh - 32px)); padding: 0; overflow: hidden;
+  background: #18120c; z-index: 20; }   /* opaque, and over the banners and the guide: it is read like a page */
+#help.help-wiki:not([hidden]) { display: grid; grid-template-columns: 214px minmax(0, 1fr); }
+.wiki-side { padding: 18px 12px; overflow-y: auto; background: rgba(0, 0, 0, 0.22); border-right: 1px solid rgba(255, 255, 255, 0.08); }
+.wiki-side h2 { margin: 0 0 12px 6px; font-size: 24px; }
+.wiki-search { width: 100%; padding: 7px 10px; margin-bottom: 6px; border-radius: 6px; border: 1px solid rgba(201, 162, 74, 0.4); background: rgba(0, 0, 0, 0.35); color: var(--text); }
+.wiki-group h5 { margin: 14px 6px 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.wiki-link, .wiki-link:hover:not(:disabled) { display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 8px; border: none; border-radius: 6px; background: none; text-align: left; font-size: 14px; color: var(--text); }
+.wiki-link:hover:not(:disabled) { background: rgba(201, 162, 74, 0.12); }
+.wiki-link.active, .wiki-link.active:hover:not(:disabled) { background: rgba(201, 162, 74, 0.22); color: var(--paper); }
+.wiki-ico { width: 18px; text-align: center; color: var(--gold); font-size: 14px; line-height: 1; font-variant-emoji: text; }
+.wiki-ico::before { content: '\2022'; }
+.ico-crown::before { content: '\265B\FE0E'; }
+.ico-screen::before { content: '\25A3\FE0E'; }
+.ico-cursor::before { content: '\27A6\FE0E'; }
+.ico-arrow::before { content: '\279C\FE0E'; }
+.ico-swords::before { content: '\2694\FE0E'; }
+.ico-eye::before { content: '\25C9\FE0E'; }
+.ico-keyboard::before { content: '\2328\FE0E'; }
+.ico-castle::before { content: '\265C\FE0E'; }
+.ico-shield::before { content: '\26E8\FE0E'; }
+.ico-anchor::before { content: '\2693\FE0E'; }
+.ico-coin::before { content: '\25CE\FE0E'; }
+.ico-scroll::before { content: '\2726\FE0E'; }
+.ico-star::before { content: '\2605\FE0E'; }
+.ico-trophy::before { content: '\2655\FE0E'; }
+.ico-flag::before { content: '\2691\FE0E'; }
+.wiki-nomatch { margin: 10px 6px; }
+.wiki-close { position: absolute; top: 10px; right: 12px; width: 32px; height: 32px; padding: 0; font-size: 22px; line-height: 1; border-color: transparent; background: none; color: var(--muted); }
+.wiki-close:hover:not(:disabled) { color: var(--paper); background: rgba(255, 255, 255, 0.08); border-color: transparent; }
+.wiki-page { overflow-y: auto; padding: 22px 30px 48px; outline: none; line-height: 1.55; font-size: 14.5px; }
+.wiki-page h1 { font-family: var(--serif); color: var(--gold); font-size: 30px; margin: 0 40px 10px 0; }
+.wiki-page p { margin: 0 0 10px; }
+.wiki-page b { color: var(--paper); }
+.wiki-lead { font-size: 16.5px; color: var(--paper-2); }
+.wiki-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; padding: 18px 0; border-top: 1px solid rgba(255, 255, 255, 0.07); }
+.wiki-card.has-demo { grid-template-columns: 440px minmax(0, 1fr); align-items: start; }
+.wiki-card h3, .wiki-sub { font-family: var(--serif); color: var(--gold); font-size: 20px; margin: 0 0 8px; }
+.wiki-sub { margin-top: 22px; }
+.wiki-card-body > :last-child { margin-bottom: 0; }
+.wiki-list { margin: 0 0 10px; padding-left: 20px; }
+.wiki-list li, .wiki-steps li { margin: 5px 0; }
+.wiki-steps { margin: 0 0 10px; padding-left: 22px; }
+.wiki-steps li::marker { color: var(--gold); font-weight: 700; }
+/* A demo: the game's map and units, animated (demo.js). The replay button plays it again. */
+figure.demo { margin: 0; width: 440px; }
+.demo-screen { position: relative; width: 440px; height: 250px; border-radius: 8px; overflow: hidden; background: #1f3d58;
+  border: 1px solid var(--panel-border); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45); }
+.demo-screen canvas { display: block; }
+/* What the demo is showing right now: a line under it, like a subtitle. */
+.demo-caption { min-height: 2.9em; margin-top: 7px; padding-left: 9px; border-left: 3px solid var(--gold); color: var(--paper-2); font-size: 13.5px; line-height: 1.45; }
+.demo-replay { position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; padding: 0; font-size: 16px; line-height: 1; border-radius: 50%;
+  background: rgba(20, 15, 10, 0.75); border-color: rgba(201, 162, 74, 0.6); opacity: 0; transition: opacity 0.15s; }
+.demo-screen:hover .demo-replay, .demo-replay:focus-visible { opacity: 1; }
+/* Keys, mouse buttons, words with more behind them (a tooltip). */
+.help-wiki kbd { display: inline-block; min-width: 1.7em; padding: 1px 6px; border: 1px solid rgba(201, 162, 74, 0.7); border-bottom-width: 2px; border-radius: 5px;
+  background: rgba(0, 0, 0, 0.35); color: var(--paper); font: 600 12.5px/1.45 var(--sans); text-align: center; white-space: nowrap; }
+.help-wiki kbd.mouse { border-color: rgba(157, 200, 255, 0.6); }
+.keys { white-space: nowrap; }
+.term { border-bottom: 1px dotted var(--gold); cursor: help; }
+.more { display: inline-grid; place-items: center; width: 16px; height: 16px; margin: 0 2px; border-radius: 50%; border: 1px solid var(--gold); color: var(--gold);
+  font: italic 700 11px/1 Georgia, serif; cursor: help; vertical-align: 1px; }
+.wiki-goto, .wiki-goto:hover:not(:disabled) { display: inline; padding: 0; border: none; background: none; color: var(--gold); font: inherit; text-decoration: underline dotted; text-underline-offset: 3px; }
+.wiki-goto:hover:not(:disabled) { color: var(--paper); }
+.wiki-next { display: flex; flex-wrap: wrap; gap: 8px; }
+.wiki-next .wiki-goto, .wiki-next .wiki-goto:hover:not(:disabled) { padding: 6px 12px; border: 1px solid rgba(201, 162, 74, 0.45); border-radius: 16px; text-decoration: none; }
+.wiki-next .wiki-goto:hover:not(:disabled) { background: rgba(201, 162, 74, 0.18); }
+/* The game's icons in text and tables. */
+.wiki-icon { width: 26px; height: 26px; vertical-align: middle; flex: none; }
+.wiki-icon.big { width: 46px; height: 46px; border-radius: 6px; background: rgba(0, 0, 0, 0.3); }
+.wiki-named { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.wiki-table { border-collapse: collapse; width: 100%; margin: 4px 0 10px; }
+.wiki-table th { color: var(--muted); font-weight: 500; font-size: 12px; text-align: left; padding: 4px 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.12); }
+.wiki-table td { padding: 6px 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); vertical-align: middle; }
+.wiki-table.keys td:first-child, .wiki-table.rows td:first-child { white-space: nowrap; width: 1%; padding-right: 16px; vertical-align: top; }
+.wiki-table.keys td:first-child { width: 230px; }   /* the same in every table of a page: the descriptions line up */
+.wiki-table.compact td, .wiki-table.compact th { padding: 4px 8px; font-variant-numeric: tabular-nums; }
+.wiki-tech { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 14px; align-items: start; padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+.wiki-tech h4 { margin: 0; font-size: 15.5px; color: var(--paper); }
+.wiki-tech h4 small { color: var(--muted); font-weight: 400; }
+.wiki-tech p { margin: 4px 0 0; }
+.wiki-tech .ultimate, .wiki-tech.ultimate h4 { color: #ff8d80; }
+/* "Your screen": a copy of the top bar, its parts numbered. */
+.wiki-topbar { position: static; margin: 4px 0 12px; height: auto; flex-wrap: wrap; row-gap: 6px; }
+.wiki-topbar .title { visibility: hidden; }
+.wiki-topbar .callout { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--gold); color: #1d140a;
+  font: 700 11px/1 var(--sans); font-style: normal; }
+@media (max-width: 1040px) {
+  .wiki-card.has-demo { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 720px) {
+  #help.help-wiki:not([hidden]) { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .wiki-side { max-height: 34vh; border-right: none; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+  .wiki-page { padding: 16px; }
+  figure.demo { width: 100%; }
+  .demo-screen { width: 100%; height: auto; aspect-ratio: 440 / 250; }
+  .demo-screen canvas { width: 100% !important; height: auto !important; }
+}
 .help-tabs { display: flex; gap: 4px; margin: -4px 0 14px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
 .help-tabs button, .help-tabs button:hover:not(:disabled) {
   background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0;
@@ -508,6 +631,7 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 .chart-legend:not(.inline) .legend-item { cursor: pointer; padding: 2px 4px; border-radius: 4px; }
 .chart-legend:not(.inline) .legend-item:hover { background: rgba(255, 255, 255, 0.06); }
 .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.chart-grid > .chart-card:last-child:nth-child(odd) { grid-column: 1 / -1; }   /* an odd last card: the whole row */
 .chart-card { padding: 10px 12px 6px; border-radius: 8px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.06); }
 .chart-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
 
@@ -595,6 +719,12 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 
 .top-center { position: absolute; top: 60px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; max-width: calc(100vw - 32px); }
 .banner { background: rgba(20, 15, 10, 0.88); border: 1px solid var(--panel-border); padding: 10px 18px; border-radius: 8px; font-size: 15px; text-align: center; }
+/* The guide at the start of a game (client.js startGuide): one step at a time, framed in gold, × hides it. */
+/* Narrow enough to clear the feed on the left (420px wide) on a wide screen, never narrower than 360px. */
+.guide { pointer-events: auto; display: flex; align-items: flex-start; gap: 10px; max-width: min(560px, max(360px, calc(100vw - 880px))); padding: 10px 8px 10px 18px; text-align: left; line-height: 1.45; border-color: var(--gold); box-shadow: 0 0 12px rgba(201, 162, 74, 0.35); }
+.guide kbd { display: inline-block; min-width: 1.6em; padding: 0 5px; border: 1px solid var(--gold); border-radius: 4px; font-family: inherit; font-size: 13px; font-weight: 700; line-height: 1.4; text-align: center; color: var(--gold); }
+.guide-close { flex: none; width: 26px; height: 26px; margin-top: -2px; padding: 0; display: grid; place-items: center; font-size: 20px; line-height: 1; color: var(--muted); background: none; border-color: transparent; }
+.guide-close:hover:not(:disabled) { color: var(--paper); background: rgba(255, 255, 255, 0.08); border-color: transparent; }
 /* Players close to the target: one line each, the one who wins when the turn ends in red (gold if it is you). */
 .race { display: flex; flex-direction: column; align-items: center; gap: 3px; }
 .race div { background: rgba(20, 15, 10, 0.86); border: 1px solid var(--panel-border); border-radius: 6px; padding: 3px 12px; font-size: 14px; white-space: nowrap; }

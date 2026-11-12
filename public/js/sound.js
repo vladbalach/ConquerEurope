@@ -5,6 +5,7 @@
 const FILES = {
   tick: '/sounds/tick.wav',
   'city-lost': '/sounds/city-lost.wav',
+  'under-attack': '/sounds/under-attack.wav',             // your units or a city under attack off screen (alerts.js)
   'tradition-learned': '/sounds/tradition-learned.wav',   // Honor window: a tradition learned
   'tech-learned': '/sounds/tech-learned.wav',             // Tech window: research complete
 };

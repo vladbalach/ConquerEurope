@@ -15,6 +15,7 @@ import { GAME } from '../shared/config.js';
 import { applyBalance } from '../shared/balance.js';
 import { saveGame, restoreGame } from './save.js';
 import { encodeMask } from '../shared/mountains.js';
+import { isSpectatorId } from '../shared/protocol.js';
 
 const DT = 1 / GAME.tickRate;
 
@@ -70,10 +71,18 @@ export class HostEngine {
   // A player's link is open (the host's own screen, or a peer that connected): they get the
   // full game state. Reconnecting after a drop says "is back" to everyone. Before the start, a
   // first connection means one more player has loaded the game (see Game.stepPrestart).
+  // A spectator (an id of their own, isSpectatorId) gets the game too, but has no place in it: nobody is
+  // told they came or went, and the start doesn't wait for them. The lobby server only lets those who
+  // watch this game reach this browser.
   connect(id) {
-    const g = this.game, p = g.players.get(id);
-    if (!p) return;
+    const g = this.game;
     const client = { send: (msg) => this.send(id, msg) };
+    if (isSpectatorId(id)) {
+      g.sendStart(g.attachSpectator(id, client));
+      return;
+    }
+    const p = g.players.get(id);
+    if (!p) return;
     this.awaiting?.delete(id);
     if (!p.everConnected) {
       p.everConnected = true;
@@ -90,15 +99,27 @@ export class HostEngine {
   }
 
   disconnect(id) {
+    if (isSpectatorId(id)) {
+      this.game.spectators.delete(id);
+      return;
+    }
     const p = this.game.players.get(id);
     if (p && p.connected) this.game.disconnect(p);
   }
 
   // A message from a player: a command, 'leave' (giving up: their cities become neutral), or
   // 'surrender' (the same, but they stay to watch the game). Both work during the countdown too.
+  // A spectator only says where their camera is ('view'), or that they leave.
   message(from, msg) {
+    if (!msg || typeof msg.t !== 'string') return;
+    const s = this.game.spectators.get(from);
+    if (s) {
+      if (msg.t === 'leave') this.game.spectators.delete(from);
+      else this.game.handleCommand(s, msg);     // 'view' only: a spectator gives no orders
+      return;
+    }
     const p = this.game.players.get(from);
-    if (!p || !msg || typeof msg.t !== 'string') return;
+    if (!p) return;
     if (msg.t === 'leave') {
       this.game.removePlayer(from);
       if (this.game.prestart) this.game.sendPrestart();   // one player fewer to wait for

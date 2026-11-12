@@ -29,6 +29,14 @@ const SOUNDS = {
     keep: 0.9,
     level: 0.035,
   },
+  // Your units or a city of yours under attack where you aren't looking (public/js/alerts.js, client.js).
+  // Rate-limited in the game, but it still comes often in a war: short, and quieter than city-lost.
+  'under-attack': {
+    text: 'Two short urgent blasts of a brass battle trumpet sounding the alarm, military call, no background noise',
+    seconds: 1.4,
+    keep: 1.2,
+    level: 0.026,
+  },
   // You learned a tradition in the Honor window (public/js/client.js).
   'tradition-learned': {
     text: 'A deep low male choir humming one solemn sacred chord in a stone cathedral, gentle reverb, no instruments',

@@ -76,6 +76,41 @@ test('riders alone form a block, not two wings', () => {
   assert.ok(Math.max(...s) - Math.min(...s) <= S * 3, 'as wide as a block');
 });
 
+// Width (the right button dragged: twice the drag): how many stand side by side, so how many rows.
+const layWide = (units, width, facing = 0) => formationSlots(units, 0, 0, {
+  spacing: S, facing, width, pos: (u) => [u.x, u.y], role: (u) => formationRole(u.type, u.kind),
+});
+const extent = (slots, facing = 0) => {
+  const p = [...slots.values()].map((q) => local(q, 0, 0, facing));
+  const f = p.map((q) => q.f), s = p.map((q) => q.s);
+  return { wide: Math.max(...s) - Math.min(...s), deep: Math.max(...f) - Math.min(...f) };
+};
+
+test('the wider the formation is made, the fewer its rows', () => {
+  const units = army({ infantry: 20 });
+  const wide = extent(layWide(units, 9 * S));
+  assert.equal(wide.wide, 9 * S, 'ten side by side');
+  assert.equal(wide.deep, S, 'two rows');
+  const narrow = extent(layWide(units, S));
+  assert.equal(narrow.wide, S, 'two side by side');
+  assert.equal(narrow.deep, 9 * S, 'ten rows');
+  const line = extent(layWide(units, 100 * S));
+  assert.equal(line.deep, 0, 'wider than the army: one line');
+  assert.equal(line.wide, 19 * S);
+});
+
+test('with a width, the wings and the middle share it and stand about as deep', () => {
+  const units = army({ infantry: 16, archer: 8, cavalry: 12 });
+  for (const facing of [0, 2]) {
+    const slots = layWide(units, 11 * S, facing);              // twelve side by side, wings and all
+    const { wide } = extent(slots, facing);
+    assert.ok(wide >= 11 * S && wide <= 13 * S, `about as wide as asked (${(wide / S).toFixed(1)} spacings)`);
+    const rows = (type) => new Set(units.filter((u) => u.type === type).map((u) => Math.round(local(slots.get(u), 0, 0, facing).f))).size;
+    assert.equal(rows('infantry') + rows('archer'), 3, 'the middle: 24 units, 8 side by side');
+    assert.equal(rows('cavalry'), 3, 'the wings: 6 each, 2 side by side');
+  }
+});
+
 // A big mixed army in a crowd 150 km wide west of Samara, all A's.
 function bigArmy(counts) {
   const s = setup();
@@ -183,4 +218,27 @@ test('a move order with `f` turns the formation that way', () => {
   const inf = units.filter((u) => u.type === 'infantry').map(at), arch = units.filter((u) => u.type === 'archer').map(at);
   assert.ok(inf.length && arch.length);
   assert.ok(Math.min(...inf.map((p) => p.f)) > Math.max(...arch.map((p) => p.f)), 'infantry north of the archers');
+});
+
+test('a move order with `w` makes the formation that wide', () => {
+  const { game, a, city, spawn } = setup();
+  const lyon = city('Lyon');
+  const x = lyon.x - 60, y = lyon.y;
+  const units = [];
+  for (let i = 0; i < 12; i++) units.push(spawn(a.id, 'infantry', x - 50 + (i % 4) * 8, y - 12 + Math.floor(i / 4) * 8));
+  const order = (msg) => { a.commandTokens = 10; game.handleCommand(a, { t: 'move', ids: units.map((u) => u.id), x, y: y + 10, ...msg }); };
+  const spread = (facing) => {
+    const p = units.map((u) => local([u.order.x, u.order.y], x, y + 10, facing));
+    const s = p.map((q) => q.s), f = p.map((q) => q.f);
+    return { wide: Math.round(Math.max(...s) - Math.min(...s)), deep: Math.round(Math.max(...f) - Math.min(...f)) };
+  };
+  order({ f: 0, w: 5 * S });
+  assert.deepEqual(spread(0), { wide: 5 * S, deep: S }, 'six side by side, two rows');
+  order({ f: 0, w: S });
+  assert.deepEqual(spread(0), { wide: S, deep: 5 * S }, 'two side by side, six rows');
+  order({ f: 0 });
+  const plain = spread(0);
+  assert.ok(plain.wide > plain.deep, 'no width: wider than deep, as before');
+  order({ f: 0, w: 1e9 });
+  assert.ok(spread(0).wide <= 11 * S, 'a width past the limit is cut down, and never more than one line');
 });
