@@ -28,6 +28,8 @@ export const DEBUG = false;
 //  hpRegen      HP regained per second once out of combat (see COMBAT.regenDelay)
 //  harbourFactor  (optional, ships) in harbour (NAVAL.harbourRange) the ship regains this many times its
 //               hpRegen, so the rate follows hpRegen; ships without it regain NAVAL.harbourRegen there
+//  boltSpeed    (optional, battleships) km per second its ballista bolts fly: a shot does its damage
+//               when it lands, not when it is fired (server/projectiles.js)
 //  cost         gold
 //  buildTime    seconds to produce in a city
 //  hotkey       key that builds the unit while one of your cities is selected
@@ -99,17 +101,20 @@ export const UNITS = {
     hotkey: 'B',
     capacity: 8,
   },
-  // A warship: shells ships, units ashore and cities within its range, like archers on land, one shot
-  // every `reload` seconds. Its shots take a coastal city like any attack; an inland city in reach goes
+  // A warship with ballistas: shoots ships, units ashore and cities within its range, one shot every
+  // `reload` seconds. Its bolts fly to their target and do their damage when they land; one at a unit
+  // follows it and can't be dodged. With the Gunnery technology it fires cannon shells at land targets
+  // instead (TECHS.gunnery). Its shots take a coastal city like any attack; an inland city in reach goes
   // down to 1 HP and no further, for troops to take. Between its shots a city doesn't regenerate
   // (City.receiveDamage).
   battleship: {
     name: 'Battleship',
     naval: true,
-    tech: 'gunnery',
+    tech: 'warships',
     hp: 500,
     damage: 30,        // per shot
     reload: 1.5,
+    boltSpeed: 110,
     attackRange: 60,
     moveSpeed: 32,
     accelTime: 0.75,
@@ -160,7 +165,7 @@ export const NAVAL = {
   returnRange: 150,   // a transport that lay at anchor this close to the beach it loads at sails back afterwards
   autoloadRange: 200, // Autoload: a transport takes your idle land units this close to it on board
   autoboardRange: 500, // Autoload with land units selected: they look for your transports this close to them
-  harbourRange: 40,   // a ship this close to the pier of one of its owner's coastal cities is in harbour...
+  harbourRange: 60,   // a ship this close to the pier of one of its owner's coastal cities is in harbour...
   harbourRegen: 5,    // ...where it regains this much HP per second instead of its hpRegen (a ship with a
                       // harbourFactor, the battleship: that many times its hpRegen instead)
                       // (like any regeneration, only after COMBAT.regenDelay seconds without being hit)
@@ -226,7 +231,7 @@ export const DISBAND = {
 
 // ------------------------------------------------------------------ economy
 export const ECONOMY = {
-  startGold: 50,
+  startGold: 60,
   turnSeconds: 60,            // length of one turn; gold is paid once at the end of every turn
   goldPerCityPerTurn: 10,     // gold each city you hold pays per turn
   regionBonusPerCity: 2,      // hold every city of a region: each of them pays this much more per turn
@@ -323,9 +328,19 @@ export const LIBERATOR = {
 //
 //  Tab 'sea' exists in every game; its technologies work as soon as they are researched.
 //    seafaring   coastal cities build transports, and units go on board them and land from them
-//    gunnery     coastal cities build battleships (UNITS.battleship)
+//    warships    coastal cities build battleships (UNITS.battleship), armed with ballistas
 //    navigation  every ship of the player sails speedPercent percent faster (transports and battleships,
 //                those already at sea too; a battleship still needs its accelTime to reach full speed)
+//    gunnery     battleships get cannons: at units on land and at cities they fire shells instead of
+//                ballista bolts (at ships, still bolts). A shell flies shellSpeed km per second and, like a
+//                bolt, follows the unit it was fired at. It does the battleship's whole damage to that unit,
+//                and splashShare of that damage to every other enemy unit whose edge is within splashRadius
+//                km of it (where it last stood, if it died before the shell landed). A shell at a city
+//                bursts on its walls: no splash damage. Ships already at sea get them too.
+//
+//  Tab 'land' exists in every game; its technologies work as soon as they are researched.
+//    roads       every land unit of the player goes speedPercent percent faster while it stands in a region
+//                the player holds whole (every city of it: shared/regions.js), units already on the march too
 //
 //  requires: a technology that must be researched, or ordered before it, first. Cancelling that one
 //  cancels this one too (its gold comes back).
@@ -347,29 +362,41 @@ export const TECHS = {
     tab: 'sea', name: 'Seafaring',
     levels: levels(1, 100, 30),
   },
-  gunnery: {
-    tab: 'sea', name: 'Gunnery', requires: 'seafaring',
+  warships: {
+    tab: 'sea', name: 'Warships', requires: 'seafaring',
     levels: levels(1, 150, 60),
   },
   navigation: {
     tab: 'sea', name: 'Navigation', requires: 'seafaring', speedPercent: 20,
     levels: levels(1, 120, 45),
   },
+  gunnery: {
+    tab: 'sea', name: 'Gunnery', requires: 'warships', shellSpeed: 90, splashShare: 0.2, splashRadius: 14,
+    levels: levels(1, 200, 60),
+  },
+  roads: {
+    tab: 'land', name: 'Roads', speedPercent: 20,
+    levels: levels(1, 150, 60),
+  },
 };
-// Order matters: it is the technology id used on the network.
-export const TECH_TYPES = ['supporters', 'influencer', 'smuggling', 'seafaring', 'gunnery', 'navigation'];
+// Order matters: it is the technology id used on the network (new ones go at the end).
+export const TECH_TYPES = ['supporters', 'influencer', 'smuggling', 'seafaring', 'warships', 'navigation', 'gunnery', 'roads'];
 // Tabs of the Tech window, in order (the window opens on the first). `death`: the tab exists only
 // with this game option.
 export const TECH_TABS = [
   { id: 'sea', name: 'Sea' },
+  { id: 'land', name: 'Land' },
   { id: 'rebellion', name: 'Rebellion', death: 'liberator' },
 ];
 
 // ------------------------------------------------------------------ game
 export const GAME = {
   maxPlayers: 20,
+  // Spectators watch a game without playing (Watch in the lobby). They never take one of the maxPlayers
+  // places; this many at most, since the host's browser sends each of them the game like a player.
+  maxSpectators: 10,
   startCities: 10,            // random cities every player starts with
-  winCities: 120,             // cities needed to win: the default; the host can change it (shared/options.js)
+  winCities: 140,             // cities needed to win: the default; the host can change it (shared/options.js)
   closeToWinCities: 25,       // everyone is told at the top of the screen when a player is this close to the target (or closer)
   formationSpacing: 17,       // distance between units in a group move
   tickRate: 20,               // simulation ticks per second
@@ -382,6 +409,10 @@ export const GAME = {
   // host leaves, another player's browser takes the game over from the last one, so at most this much is lost.
   checkpointEvery: 5,
 };
+
+// Chat in the waiting room and in the game (server/index.js, "chat"; public/js/chat.js): the longest message in
+// characters, and how many of the last messages are kept, for those who come in (or back) and on screen.
+export const CHAT = { maxLength: 200, keep: 50 };
 
 // ------------------------------------------------------------------ map editing
 //  Edit map (admins): a region's name can be dragged to a new place and resized with the mouse wheel.

@@ -1,5 +1,163 @@
 # Patch notes
 
+## 12 November 2026: Chat
+
+- **The waiting room has a chat**, beside the game's card: everyone in the room, players and spectators, by
+  nickname. Whoever comes in reads the last messages.
+- **Chat in the game:** press **Enter**, type, Enter again to send (Esc closes it). New messages show above the
+  minimap for a few seconds, each player in their colour ("Red", "Teal", ...; yours as "You"), never by nickname:
+  nobody learns who is who. Enter also opens every message so far, to scroll back.
+- **Spectators** talk among themselves while the game runs: players don't see what they write. Once the game is
+  over everyone is named, in the chat too.
+
+## 12 November 2026: Roads
+
+- **A new technology, Roads** (150 gold, 60 s), on a new **Land** tab of the Tech window: your land units march
+  **20% faster** in every region you hold whole, that is, every city of it. Units already on the march speed up
+  at once. Lose one city of a region and its roads no longer work for you. Ships are not affected.
+- The Region line of a city's panel and F1 → Economy mention it. Click another player's unit and its panel shows
+  its speed where it stands, with "on roads" while it has the bonus: their Roads work like yours.
+
+## 12 November 2026: Balance, cliffs and sharing your game
+
+### Balance
+
+| | Before | Now |
+| --- | --- | --- |
+| Battleship cost | 300 gold | 400 gold |
+| Battleship HP | 500 | 800 |
+| Battleship reload | 1.5 s | 1.3 s |
+| Battleship range | 56 | 65 |
+| Battleship speed | 34 | 35 |
+| Battleship regeneration | 1 HP/s | 2 HP/s |
+| Battleship repairs in harbour | 2 HP/s | 5 HP/s |
+| City range | 70 | 72 |
+| Tower range | +60% | +70% |
+| Wall II | +300 HP | +400 HP |
+| Archer HP | 36 | 35 |
+| Cavalry regeneration | 1 HP/s | 1.5 HP/s |
+
+Cities still outrange battleships (72 km against 65).
+
+### Map
+
+- **More cliffs:** transports can no longer take units on board or land them along much of the coast of North
+  Africa, from Tangier to Tunisia, nor along the north coast of Spain (Galicia, Asturias, Bilbao) or the coast
+  south of Granada. That coast is now drawn as cliffs.
+
+### Sharing your game
+
+- **Invite your friends:** when you create a game and are still alone in its waiting room, a box tells you the game
+  is listed in the lobby, with the site's link and a **Copy link** button to send to friends.
+- **Link previews:** a link to the game posted in a chat or on social media now shows a card with the game's name, a
+  short description and a picture of the map.
+
+## 12 November 2026: A new help (F1)
+
+- **A wiki of the game:** F1 (or Help) now opens a help with its pages listed on the left, in three parts:
+  Getting started (Welcome, Your screen), Controls (Selecting, Moving, Fighting, Camera & alerts, All keys) and
+  The game (Cities, Units, Navy, Economy, Technologies, Honor & traditions, Winning, Liberator). A search box finds
+  the pages that mention what you type. It opens on the page you read last.
+- **See it done:** almost every control and rule has a little animation, played on the real map like a recording
+  of a game: the pointer clicking, dragging a frame, right-clicking; the keys lighting up as they are pressed; and
+  your units obeying, in your colour. Selecting, moving in formation (and shaping it with a drag), queueing
+  orders, attacking, attack-moving, holding, stopping, disbanding, taking a city, training, rally points,
+  upgrades, going on board, landing, Autoload, battleships, harbour repairs, a whole region, Heroes and Healers. A
+  line under each says what is happening; ↻ plays it again.
+- **Always up to date:** every number on its pages is the game's current one, unit and upgrade tables included,
+  with the game's own icons. Details for those who want them are in tooltips: hover a dotted word or a small i.
+- **Your screen** shows the top bar with its parts numbered and explained, and what each panel is for.
+
+## 12 November 2026: A guide for your first steps
+
+- **Know your colour:** the game now tells you which colour you are as it starts ("You are Red").
+- **First steps:** a box at the top walks you through your first conquest, one step at a time: click one of
+  your cities and press **Q** to train infantry, then send them to storm a grey city nearby. Taking it ends the
+  guide. Do anything else instead and it gets out of your way; × closes it too.
+- **While it trains:** the guide says where your infantry is being trained and how many seconds it has left.
+- **Where to click:** in your first game since opening the tab, a gold arrow points at one of your cities and the
+  Infantry button glows once you have selected it. Once your first unit is out, your units are ringed in gold until
+  you select them, and a red arrow points at the grey city to storm.
+- **Training progress on the buttons:** a unit's button in the Units box now shows a gold bar filling up while
+  that unit trains in the selected city.
+- **H** no longer appears in the welcome message: it holds position and has not jumped between cities for a
+  while.
+
+## 12 November 2026: New game defaults
+
+- **New games start with different options** (the host can still change them all in the waiting room):
+  - **Cities to win:** 140, up from 120.
+  - **Countdown:** *From turn 10*: the target stays put for the first 10 turns, then drops by one city at the end
+    of every turn. It used to count down from the start.
+  - **Start gold:** 60, up from 50.
+
+## 12 November 2026: Ballistas and cannons
+
+- **Battleships shoot ballistas:** their shots are ballista bolts now, and a bolt does its damage when it lands,
+  not when it is fired. You see it fly.
+- **No dodging:** a bolt follows its target, a ship or troops on land, and always hits, unless the target dies
+  first.
+- **Warships:** the technology that unlocks battleships is now called Warships (same price and time).
+- **Gunnery, a new Sea technology** (200 gold, 60 s, after Warships): your battleships get cannons, the ones
+  already at sea too. At troops ashore and at cities they fire shells instead of bolts (at ships, still bolts). A
+  shell follows its target like a bolt and bursts there: the target takes the whole damage, and every other enemy
+  within 14 km of it takes 20% of it. A shell at a city bursts on its walls and does no
+  harm to the units around it. You can tell a battleship with cannons by the crossed cannons on its sail and the
+  row of gun ports along its side.
+- **Shots outlive their ship:** a shot in the air still lands, and counts for you, if your battleship sinks first.
+- **Repairs you can see:** a ship repairing in harbour, at the faster rate, shows its crew at work: a hammer
+  knocking at its stern and a saw going at its bow.
+- **Bigger harbours:** ships now repair at the faster harbour rate within 60 km of the pier of one of your coastal
+  cities, up from 40 km.
+
+## 12 November 2026: Formation width
+
+- **Drag to set the width:** when you hold the right button and drag, the length of the drag now sets how wide the
+  formation is: twice as wide as the drag is long. A short drag lines your army up in a narrow, deep column; a long
+  one in a wide line of a few rows. The grey ghosts show it as you drag. Cavalry wings and the middle share the
+  width by their numbers, so they stand about as deep. Ships too. A plain click still lays the formation out about
+  twice as wide as deep.
+
+## 12 November 2026: Cliffs you can see
+
+- **Where you can't land now shows:** coast where transports can't take units on board or land them was drawn as
+  a plain dark line, hard to tell from the rest. It is now drawn as cliffs: a ragged rock face dropping into the
+  sea, with surf at its foot and a shadow on the water, nothing like the teal shallows and sand of a beach. Tiny
+  islets with no room to land on look the same. On the minimap it stays a plain line.
+
+## 12 November 2026: Spectators
+
+- **Watch any game:** every game in the lobby has a **Watch** button, waiting or already in progress. You see the
+  map as the players do, every empire by its colour, but play no part: no gold, cities or units of your own, and no
+  orders. **Leave** takes you back to the lobby.
+- **Still 20 players:** spectators take no player's place. Up to 10 can watch one game at once.
+- **In the waiting room** spectators are listed under the players. **Play** takes a free place in the game, and a
+  player can press **Watch instead**.
+- **Who is watching:** the lobby lists each game's spectators by nickname ("Watching: Sue"). Inside the game nobody
+  is told, and spectators know players only by colour, like everyone else, until the results reveal them.
+- Spectators follow the game when its host leaves, keep watching after a page refresh, and see the results at the end.
+
+## 12 November 2026: Under attack
+
+- **Know when you're attacked:** when your units or one of your cities come under attack where you aren't looking,
+  the spot pings orange on the minimap, the feed says where ("Your units are under attack near Lyon") and a battle trumpet
+  sounds.
+- **Without a flood of messages:** you hear about each battle once, not about every hit: it counts once it has
+  cost a little, and is over after 25 seconds of quiet. Battles you can see on screen, and fights you sent your units
+  into (attack, attack-move), don't alert. The feed speaks at most every 10 seconds and the trumpet every 30; battles
+  starting in between share one line ("Your units are under attack in 3 places").
+- **These always get through:** your city under attack and your transport under fire with units on board alert at
+  once, at the first hit.
+- **Shift + Space** now goes through your last 5 alerts, newest first: your cities captured, your cities under
+  attack, your units under attack. Each press goes to the next older one ("2/5 · Red captured your city Lyon" in the
+  feed), then back to the newest. A battle still going on is shown where the fighting is now.
+
+## 12 November 2026: Gold in the results
+
+- **How much gold everyone had:** the results screen has a new **Gold** graph: the gold each player had in their
+  treasury at the end of every turn. Pick it above the graph in the Players tab; a player's own page shows it next
+  to Gold per turn.
+
 ## 11 November 2026: Smoother big battles
 
 - **No more stutter with a big army selected:** the panel of selected units was built again from scratch every time

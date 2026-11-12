@@ -10,7 +10,7 @@
 //
 // Runs in the host's browser too (served as /sim/): no Node-only modules here.
 import { Game } from './game.js';
-import { History } from './history.js';
+import { History, SERIES, repackFrames } from './history.js';
 import { createUnit } from './units/index.js';
 import { noTech } from '../shared/tech.js';
 import { sanitizeGoldPercent } from '../shared/options.js';
@@ -56,7 +56,8 @@ export function saveGame(game) {
       return out;
     }),
     units: [...game.units.values()].map(saveUnit),
-    history: { frames: h.frames, owners: h.owners, roster: [...h.roster], stats: [...h.stats] },
+    shots: game.projectiles.list,          // battleships' shots in flight (plain data, server/projectiles.js)
+    history: { series: SERIES, frames: h.frames, owners: h.owners, roster: [...h.roster], stats: [...h.stats] },
   };
 }
 
@@ -83,8 +84,9 @@ export function restoreGame(save, { map, nav, hostId }) {
     const u = loadUnit(game, s);
     game.units.set(u.id, u);
   }
+  game.projectiles.list = save.shots || [];
   const h = (game.history = new History());
-  h.frames = save.history.frames;
+  h.frames = repackFrames(save.history.frames, save.history.series);   // an older save: without the newer numbers
   h.owners = save.history.owners;
   h.roster = new Map(save.history.roster);
   h.stats = new Map(save.history.stats);

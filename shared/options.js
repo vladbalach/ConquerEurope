@@ -18,7 +18,7 @@ export const COUNTDOWN_MODES = ['none', 'start', 'turn'];
 export const DEATH_MODES = ['spectator', 'liberator'];
 
 export const DEFAULT_OPTIONS = Object.freeze({
-  countdown: 'start',
+  countdown: 'turn',
   countdownTurn: 10,
   winCities: GAME.winCities,
   death: 'liberator',
@@ -76,7 +76,7 @@ export function scaleGoldWhole(gold, percent) {
 }
 
 // Cities a player must hold to win once `turn` turns are over (the turn counter in the game).
-// "From start" lowers it at the end of every turn: 120 in the first turn, 119 in the second, …
+// "From start" lowers it at the end of every turn: 140 in the first turn, 139 in the second, …
 // "From turn N" keeps it until the counter passes N. Never below one city.
 export function citiesToWin(options, turn = 0) {
   const o = options || DEFAULT_OPTIONS;
@@ -85,7 +85,7 @@ export function citiesToWin(options, turn = 0) {
   return Math.max(1, o.winCities - Math.max(0, (turn || 0) - from));
 }
 
-// One line for the lobby list: "120 cities · countdown after turn 10".
+// One line for the lobby list: "140 cities · countdown after turn 10".
 export function summarizeOptions(options) {
   const o = options || DEFAULT_OPTIONS;
   const countdown = o.countdown === 'none' ? 'no countdown'

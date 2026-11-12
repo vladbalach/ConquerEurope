@@ -2,9 +2,9 @@
 // built only in coastal cities. Transport.js carries units: they come on board at a gather point on
 // the coast and are landed on the coast nearest to where the player sends them. It has no weapons:
 // attack and hold orders are ignored, and it never picks fights.
-// Ships with guns (`armed`: Battleship.js) fight like land units (Unit.update): attack orders,
+// Armed ships (`armed`: Battleship.js) fight like land units (Unit.update): attack orders,
 // attack-move, hold, and targets of their own. They hit what is within reach of the water: other
-// ships, and units and cities on land, which they shell from the water nearest to them.
+// ships, and units and cities on land, which they shoot at from the water nearest to them.
 import { Unit, MAX_QUEUED } from './Unit.js';
 import { DISBAND, NAVAL, COMBAT } from '../../shared/config.js';
 import { shipSpeedFactor } from '../../shared/tech.js';
@@ -18,6 +18,7 @@ export class Ship extends Unit {
     super(game, id, owner, x, y);
     this.cargo = [];          // units on board, out of the map until they are landed
     this.gather = null;       // { x, y, land }: where units walk to come on board
+    this.repairing = false;   // repaired in harbour this tick (regenerate): the browsers show its crew at work
   }
 
   get naval() { return true; }
@@ -53,12 +54,16 @@ export class Ship extends Unit {
 
   // Repairs: out of combat (COMBAT.regenDelay seconds without hitting or being hit), a ship regains its own
   // hpRegen per second, and in harbour more: harbourFactor times its hpRegen when it has one (battleships),
-  // otherwise NAVAL.harbourRegen.
+  // otherwise NAVAL.harbourRegen. `repairing` while it repairs in harbour, at that faster rate (unit flag 16
+  // in snapshots: its crew at work with hammers and saws); at sea it mends slowly, unseen.
   regenerate(dt) {
+    this.repairing = false;
     if (this.disbanding || this.hp >= this.maxHp || this.game.time - this.lastCombat <= COMBAT.regenDelay) return;
-    const s = this.stats;
-    const rate = !this.inHarbour() ? s.hpRegen : s.harbourFactor ? s.hpRegen * s.harbourFactor : NAVAL.harbourRegen;
+    const s = this.stats, harbour = this.inHarbour();
+    const rate = !harbour ? s.hpRegen : s.harbourFactor ? s.hpRegen * s.harbourFactor : NAVAL.harbourRegen;
+    if (rate <= 0) return;
     this.hp = Math.min(this.maxHp, this.hp + rate * dt);
+    this.repairing = harbour;
   }
 
   // Within NAVAL.harbourRange of the pier of one of its owner's coastal cities?

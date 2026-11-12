@@ -56,10 +56,8 @@ export class Unit {
     this.attacking = false;
     this.engaged = 0;
     this.slide = 1;
-    // Units that fire single shots (`reload` in UNITS: battleships): the game time their guns are loaded
-    // again, and the time of their last shot (sendSnapshots tells the browsers, which draw it).
+    // Units that fire single shots (`reload` in UNITS: battleships): the game time they are loaded again.
     this.readyAt = 0;
-    this.shotAt = -1;
     // Units with `accelTime` (battleships): how fast they go now, and the last tick they moved (currentSpeed).
     this.speed = 0;
     this.movedTick = -1;
@@ -67,8 +65,9 @@ export class Unit {
 
   // ---------------------------------------------------------------- attributes
   get stats() { return UNITS[this.type]; }
-  // Full speed (km/s): its moveSpeed, faster for ships with Navigation (Ship).
-  get moveSpeed() { return this.stats.moveSpeed; }
+  // Full speed (km/s) where it stands now: its moveSpeed, faster on Roads in a region its owner holds whole
+  // (Game.roadFactor). Ships have their own (Ship: Navigation, never Roads).
+  get moveSpeed() { return this.stats.moveSpeed * this.game.roadFactor(this.owner, this.x, this.y); }
   get maxHp() { return this.stats.hp; }
   get r() { return this.stats.size; }
   get isCity() { return false; }
@@ -91,7 +90,7 @@ export class Unit {
   }
 
   // Can it hit `o` from where it stands? Within reach and, for ranged units (archers, battleships), with no
-  // mountains between them: arrows and shells don't fly over them (NavGrid.lineOfFire).
+  // mountains between them: arrows, bolts and shells don't fly over them (NavGrid.lineOfFire).
   canHit(o) {
     return this.dist(o) <= this.reach(o) && (!this.isRanged || this.game.nav.lineOfFire(this.x, this.y, o.x, o.y));
   }
@@ -540,7 +539,7 @@ export class Unit {
   }
 
   // Damage every second; units with `reload` (battleships) instead fire one shot of `damage` whenever
-  // their guns are loaded. Reloading goes on whatever the unit does, moving included, so it can sail
+  // they are loaded (fire). Reloading goes on whatever the unit does, moving included, so it can sail
   // off between two shots and fire at once on coming back.
   hit(target, dt) {
     this.attacking = true;
@@ -554,7 +553,11 @@ export class Unit {
     const now = this.game.time;
     if (now < this.readyAt - 1e-6) return;          // still loading (1e-6: ticks add up to a little less)
     this.readyAt = now + reload;
-    this.shotAt = now;
+    this.fire(target);
+  }
+
+  // One shot of `damage` at `target`: here it strikes at once. A battleship's flies (Battleship.fire).
+  fire(target) {
     target.receiveDamage(this.damage, this);
   }
 

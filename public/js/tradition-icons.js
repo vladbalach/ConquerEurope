@@ -11,6 +11,8 @@
 // The tier II traditions are set apart by a double gold border with a crimson line between, and a faint red halo.
 // Technologies in the same style, the subject alone without the shield (drawTechEmblem):
 //   navigation    a compass rose, its north point in the player's colour
+//   gunnery       two bronze cannons crossed over three cannonballs, a ring on each in the player's colour
+//   roads         a paved Roman road coming out of a triumphal arch, its inscription panel in the player's colour
 
 const INK = '#1a120a';
 const rgbOf = (hex) => { const n = parseInt(hex.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
@@ -314,11 +316,97 @@ function compassRose() {
   return { box: [-50, -50, 50, 50], layers };
 }
 
+// Two cannons crossed in saltire, muzzles up, over a pile of three iron cannonballs (technology Gunnery). The
+// barrels are bronze (gold), each tapering to its muzzle, with a knob behind the breech and a reinforcing ring
+// enamelled in the player's colour.
+function crossedCannons() {
+  const barrel = () => {
+    const tube = new Path2D();
+    tube.moveTo(-5.5, -38); tube.lineTo(5.5, -38); tube.lineTo(10, 18);
+    tube.quadraticCurveTo(10, 30, 0, 30); tube.quadraticCurveTo(-10, 30, -10, 18);
+    tube.closePath();
+    const muzzle = new Path2D(); muzzle.rect(-9, -46, 18, 9);
+    const ring = new Path2D(); ring.rect(-12, 4, 24, 8);
+    const knob = new Path2D(); knob.rect(-3.5, 28, 7, 7); knob.moveTo(6, 38); knob.arc(0, 38, 6, 0, Math.PI * 2);
+    return [tube, muzzle, ring, knob];
+  };
+  const layers = [];
+  for (const deg of [-40, 40]) {               // the one pointing up-left behind the other
+    const [tube, muzzle, ring, knob] = barrel().map((p) => xf(p, new DOMMatrix().rotate(deg)));
+    layers.push({ role: 'accent', path: knob }, { role: 'accent', path: tube }, { role: 'enamel', path: ring },
+      { role: 'accent', path: muzzle });
+  }
+  for (const [x, y] of [[-9, 41], [9, 41], [0, 27]]) {   // the bottom two first, the top one on them
+    const ball = new Path2D(); ball.arc(x, y, 7.5, 0, Math.PI * 2);
+    layers.push({ role: 'main', path: ball });
+  }
+  return { box: [-46, -48, 46, 50], layers };
+}
+
+// A paved Roman road (technology Roads) coming toward you out of a triumphal arch on the horizon. The road
+// is silver flagstones in rows that close up with the distance, its right half shaded (a cambered road lit
+// from the left), between two gold kerbs. The arch is gold, with pilasters, a keystone over its opening, a
+// cornice, and an inscription panel enamelled in the player's colour.
+function romanRoad() {
+  // The road from the arch's foot (y TOP, half-width FAR) to the bottom (BOT, NEAR); the kerbs widen from KF to KN.
+  const TOP = -12, BOT = 48, FAR = 9, NEAR = 36, KF = 2.5, KN = 10, ROWS = 5;
+  const along = (y) => (y - TOP) / (BOT - TOP);
+  const half = (y) => FAR + (NEAR - FAR) * along(y);
+  const kerbW = (y) => KF + (KN - KF) * along(y);
+  const quad = (x0, x1, x2, x3) => {           // top-left, top-right, bottom-right, bottom-left x
+    const p = new Path2D();
+    p.moveTo(x0, TOP); p.lineTo(x1, TOP); p.lineTo(x2, BOT); p.lineTo(x3, BOT); p.closePath();
+    return p;
+  };
+  const road = quad(-FAR, FAR, NEAR, -NEAR);
+  const crown = quad(0, FAR, NEAR, 0);
+  const kerbs = [-1, 1].map((s) => quad(s * FAR, s * (FAR + KF), s * (NEAR + KN), s * NEAR));
+  // Flagstones: rows closing up toward the arch, joints staggered from row to row and running to the
+  // vanishing point; each kerb stone as long as its row.
+  const ys = Array.from({ length: ROWS + 1 }, (_, k) => TOP + (BOT - TOP) * (k / ROWS) ** 1.55);
+  const joints = new Path2D(), kerbJoints = new Path2D();
+  for (let k = 0; k < ROWS; k++) {
+    const y0 = ys[k], y1 = ys[k + 1], mid = (y0 + y1) / 2;
+    if (k) { joints.moveTo(-half(y0), y0); joints.lineTo(half(y0), y0); }
+    for (const u of k % 2 ? [-0.5, 0, 0.5] : [-0.75, -0.25, 0.25, 0.75]) {
+      joints.moveTo(u * half(y0), y0); joints.lineTo(u * half(y1), y1);
+    }
+    for (const s of [-1, 1]) { kerbJoints.moveTo(s * half(mid), mid); kerbJoints.lineTo(s * (half(mid) + kerbW(mid)), mid); }
+  }
+  // The arch: its body with a round-headed opening as wide as the road, standing on the road's end.
+  const arch = new Path2D();
+  arch.moveTo(-24, TOP); arch.lineTo(-24, -44); arch.lineTo(24, -44); arch.lineTo(24, TOP); arch.lineTo(FAR, TOP);
+  arch.lineTo(FAR, -24); arch.arc(0, -24, FAR, 0, Math.PI, true); arch.lineTo(-FAR, TOP); arch.closePath();
+  const opening = new Path2D();
+  opening.moveTo(-FAR, TOP); opening.lineTo(-FAR, -24); opening.arc(0, -24, FAR, Math.PI, 0); opening.lineTo(FAR, TOP); opening.closePath();
+  const cornice = new Path2D(); cornice.rect(-28, -50, 56, 7);
+  const panel = new Path2D(); panel.rect(-14, -41.5, 28, 6);
+  const keystone = new Path2D();
+  keystone.moveTo(-3, -34.5); keystone.lineTo(3, -34.5); keystone.lineTo(2, -29.5); keystone.lineTo(-2, -29.5); keystone.closePath();
+  const archLines = new Path2D();
+  for (const s of [-1, 1]) {
+    archLines.moveTo(s * 17, -43); archLines.lineTo(s * 17, TOP);            // pilasters
+    archLines.moveTo(s * 24, -24); archLines.lineTo(s * 17, -24);            // imposts
+  }
+  return {
+    box: [-50, -50, 50, 50],
+    layers: [
+      { role: 'hole', path: opening },
+      { role: 'main', path: road }, { role: 'shade', path: crown },
+      { role: 'line', path: joints, clip: road, w: 0.9 },
+      { role: 'accent', path: kerbs[0] }, { role: 'accent', path: kerbs[1] },
+      { role: 'line', path: kerbJoints, w: 0.8 },
+      { role: 'accent', path: arch }, { role: 'line', path: archLines, clip: arch, w: 0.9 },
+      { role: 'accent', path: cornice }, { role: 'enamel', path: panel }, { role: 'accent', path: keystone },
+    ],
+  };
+}
+
 const SUBJECTS = {
   heroes: helmet, mercy: hospitallerCross, brotherhood, honoredDead: () => brazier(), eternalGlory: () => laurel(),
 };
 // Technologies drawn in this style, without the shield (drawTechEmblem).
-const TECH_SUBJECTS = { navigation: compassRose };
+const TECH_SUBJECTS = { navigation: compassRose, gunnery: crossedCannons, roads: romanRoad };
 
 // The subject in silver and gold, `size` px across, centred on (cx, cy). Roles of its own here: `enamel`, a
 // part in the player's colour; `shade`, the shaded half of a faceted part (laid flat over it).

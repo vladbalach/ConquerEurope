@@ -3,7 +3,8 @@
 //    every turn, and a last one when the game ends. A frame keeps only the cities that changed hands
 //    since the frame before it.
 //  - every player's numbers in each frame, for the graphs: cities, units, army value, income (the gold per
-//    turn their cities pay at that moment, or a liberator's pay), kills and losses so far.
+//    turn their cities pay at that moment, or a liberator's pay), kills and losses so far, and the gold in
+//    their treasury (private while the game runs; the results screen shows everyone's).
 //  - every player's totals, for their page of advanced stats: units trained, lost and destroyed by type,
 //    city upgrades built, cities taken and lost, gold earned and spent, honor, when each technology and
 //    tradition was learned, Heroes and Healers made, War Cries, and when they fell, surrendered or left.
@@ -16,7 +17,21 @@ import { liberatorIncome } from '../shared/tech.js';
 import { scaleGoldWhole } from '../shared/options.js';
 
 // The numbers kept for every player in every frame, in this order (results.js reads them by name).
-export const SERIES = ['cities', 'units', 'army', 'income', 'kills', 'losses'];
+export const SERIES = ['cities', 'units', 'army', 'income', 'kills', 'losses', 'gold'];
+// The numbers of a save from before saves named them.
+const OLD_SERIES = ['cities', 'units', 'army', 'income', 'kills', 'losses'];
+
+// Frames kept with other numbers (a save from an older version), in the order of SERIES; a number they
+// did not keep is null (no line there in the graphs).
+export function repackFrames(frames, series = OLD_SERIES) {
+  if (!Array.isArray(series) || series.join() === SERIES.join()) return frames;
+  const stride = 1 + series.length, at = SERIES.map((k) => series.indexOf(k));
+  return frames.map((f) => {
+    const old = f.p || [], p = [];
+    for (let i = 0; i + stride <= old.length; i += stride) p.push(old[i], ...at.map((j) => (j < 0 ? null : old[i + 1 + j])));
+    return { ...f, p };
+  });
+}
 
 const round = (v) => Math.round(v * 10) / 10;
 const add = (obj, key, n = 1) => { obj[key] = round((obj[key] || 0) + n); };
@@ -82,7 +97,8 @@ export class History {
     for (const pl of game.players.values()) {
       this.roster.set(pl.id, pl.color);
       const gold = scaleGoldWhole(pl.liberator ? liberatorIncome(pl.tech) : income.get(pl.id) || 0, pl.goldPercent);
-      p.push(pl.id, pl.cityCount, pl.unitCount, round(army.get(pl.id) || 0), round(gold), round(pl.kills), round(pl.losses));
+      p.push(pl.id, pl.cityCount, pl.unitCount, round(army.get(pl.id) || 0), round(gold), round(pl.kills), round(pl.losses),
+        Math.floor(pl.gold || 0));   // whole gold, as the player's own screen shows it
     }
     this.frames.push({ t: turn, s: Math.round(game.time), o: own, p });
   }

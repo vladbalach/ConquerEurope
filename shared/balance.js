@@ -11,6 +11,7 @@ const UNIT_FIELDS = [
   { key: 'hp', label: 'HP', min: 1, max: 100000 },
   { key: 'damage', label: 'Damage/s', min: 0, max: 10000, hint: 'per shot for units with Reload' },
   { key: 'reload', label: 'Reload s', min: 0.1, max: 60, only: true, hint: 'seconds between two shots (battleships)' },
+  { key: 'boltSpeed', label: 'Bolt km/s', min: 1, max: 10000, only: true, hint: 'how fast its ballista bolts fly (battleships)' },
   { key: 'attackRange', label: 'Range', min: 0, max: 1000, hint: '0 = melee' },
   { key: 'moveSpeed', label: 'Speed', min: 0, max: 1000 },
   { key: 'accelTime', label: 'Accel s', min: 0.05, max: 60, only: true, hint: 'seconds from standing still to full speed (battleships)' },

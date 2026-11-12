@@ -1,7 +1,8 @@
 // App shell: name entry, lobby, waiting room, and launching the game client.
 import { Net } from './net.js';
 import { GameClient } from './client.js';
-import { GAME, DEBUG } from '/shared/config.js';
+import { RoomChat } from './chat.js';
+import { GAME, DEBUG, CHAT } from '/shared/config.js';
 import { PROTOCOL_VERSION } from '/shared/protocol.js';
 import { applyBalance } from '/shared/balance.js';
 import {
@@ -164,7 +165,9 @@ function renderGames(games, lobbyNames = []) {
     const info = elem('div');
     info.append(elem('div', 'name', g.title));
     const count = Array.isArray(g.players) ? g.players.length : g.players;
+    const watching = Array.isArray(g.spectators) ? g.spectators : [];
     info.append(elem('div', 'meta', `Host: ${g.host} · ${count}/${g.max} players` +
+      (watching.length ? ` · ${watching.length} watching` : '') +
       (g.options ? ` · ${summarizeOptions(g.options)}` : '')));
 
     const chips = elem('div', 'players');
@@ -182,25 +185,37 @@ function renderGames(games, lobbyNames = []) {
       chips.append(chip);
     }
     info.append(chips);
+    // Spectators by nickname only: they have no colour.
+    if (watching.length) info.append(elem('div', 'watchers', `Watching: ${watching.join(', ')}`));
 
     const badge = elem('span', `badge ${g.status}`,
       g.status === 'lobby' ? 'Waiting' : g.status === 'running' ? 'In progress' : 'Finished');
-    const btn = elem('button');
-    btn.type = 'button';
+    const actions = elem('div', 'game-actions');
+    const button = (text, onClick, cls = '') => {
+      const b = elem('button', cls, text);
+      b.type = 'button';
+      if (onClick) b.addEventListener('click', onClick);
+      actions.append(b);
+      return b;
+    };
     if (g.rejoin) {
-      btn.textContent = 'Rejoin';
-      btn.className = 'primary';
-      btn.addEventListener('click', () => net.send({ t: 'join', gameId: g.id, token: loadTokens()[g.id] }));
+      button('Rejoin', () => net.send({ t: 'join', gameId: g.id, token: loadTokens()[g.id] }), 'primary');
     } else if (g.status === 'lobby') {
-      btn.textContent = 'Join';
-      btn.disabled = !g.canJoin;
-      btn.addEventListener('click', () => net.send({ t: 'join', gameId: g.id }));
-    } else {
-      btn.textContent = g.status === 'running' ? 'Started' : 'Finished';
-      btn.disabled = true;
-      btn.title = g.status === 'running' ? 'New players cannot join a game in progress' : '';
+      const join = button('Join', () => net.send({ t: 'join', gameId: g.id }));
+      join.disabled = !g.canJoin;
+      if (!g.canJoin) join.title = `The game is full (${g.max} players). You can still watch it`;
+    } else if (g.status === 'ended') {
+      button('Finished').disabled = true;
     }
-    item.append(info, badge, btn);
+    // Anyone may watch a waiting game or one in progress. Spectators take no player's place.
+    if (!g.rejoin && g.status !== 'ended') {
+      const watch = button('Watch', () => net.send({ t: 'watch', gameId: g.id }));
+      watch.disabled = !g.canWatch;
+      watch.title = !g.canWatch ? `No room for more spectators (${g.maxSpectators} at most)`
+        : g.status === 'running' ? 'Watch this game as a spectator: you see the map, but play no part. New players cannot join a game in progress'
+          : 'Wait in the room as a spectator and watch the game once it starts. You play no part';
+    }
+    item.append(info, badge, actions);
     list.append(item);
   }
 }
@@ -208,13 +223,38 @@ function renderGames(games, lobbyNames = []) {
 function renderRoom() {
   if (!room || !joined) return;
   $('room-title').textContent = room.title;
-  const isHost = room.hostId === joined.playerId;
+  const isHost = room.hostId === joined.playerId, watching = !!joined.spectator;
+  const players = `${room.players.length}/${GAME.maxPlayers} players`;
   $('room-info').textContent = isHost
-    ? `${room.players.length}/${GAME.maxPlayers} players. Start whenever you are ready — you can also start alone to practise against neutral cities.`
-    : `${room.players.length}/${GAME.maxPlayers} players. Waiting for the host to start the game…`;
+    ? `${players}. Start whenever you are ready — you can also start alone to practise against neutral cities.`
+    : watching ? `${players}. You are a spectator: once the host starts the game, you watch it without playing.`
+      : `${players}. Waiting for the host to start the game…`;
+  // Alone in the room: the host is told the game is listed and can share the site's link.
+  $('room-share').hidden = !(isHost && room.players.length === 1);
   renderRoomPlayers(isHost);
+  renderRoomSpectators();
   renderOptions(room.options, isHost);
   $('room-start').hidden = !isHost;
+  // Play or watch: a spectator takes a free place, a player becomes a spectator (not the only one: the
+  // game runs in a player's browser).
+  const role = $('room-role');
+  role.hidden = false;
+  role.textContent = watching ? 'Play' : 'Watch instead';
+  role.disabled = watching ? room.players.length >= GAME.maxPlayers : room.players.length <= 1;
+  role.title = watching
+    ? (role.disabled ? `The game is full (${GAME.maxPlayers} players)` : 'Take part in the game as a player')
+    : role.disabled ? 'Someone has to play: you are the only player'
+      : `Watch the game as a spectator instead of playing${isHost ? '. The next player becomes the host' : ''}`;
+}
+
+// Spectators by nickname, in the order they came: no colours before the game.
+function renderRoomSpectators() {
+  const list = room.spectators || [];
+  const p = $('room-spectators');
+  p.hidden = !list.length;
+  p.textContent = list.length
+    ? `Watching (${list.length}/${GAME.maxSpectators}): ${list.map((s) => (s.id === joined.playerId ? `${s.name} (you)` : s.name)).join(', ')}`
+    : '';
 }
 
 // One row per player, kept by player id: rows are updated in place, so a gold percentage the host is
@@ -321,6 +361,28 @@ function sendOptions() {
 }
 for (const id of OPTION_INPUTS) $(id).addEventListener('change', sendOptions);
 
+// ------------------------------------------------------------------ chat
+// The messages of the room or game we are in, as the lobby server sends them (chatLog: all of them so far, or
+// none when a game starts; chat: one more). The waiting room shows them beside its card; a game, over its
+// minimap (chat.js), starting with those that came before its page was ready.
+let chatMessages = [];
+const roomChat = new RoomChat({ send: (text) => net.send({ t: 'chat', text }), me: () => (joined ? joined.playerId : null) });
+
+function resetChat(list = []) {
+  chatMessages = list.slice(-CHAT.keep);
+  roomChat.reset(chatMessages);
+  if (game) game.chat.reset(chatMessages);
+}
+
+net.on('chatLog', (msg) => resetChat(Array.isArray(msg.messages) ? msg.messages : []));
+net.on('chat', (msg) => {
+  if (typeof msg.text !== 'string') return;
+  chatMessages.push(msg);
+  if (chatMessages.length > CHAT.keep) chatMessages.shift();
+  roomChat.add(msg);
+  if (game) game.chat.add(msg);
+});
+
 // Leaving on purpose gives up your empire, so the rejoin token is forgotten too.
 function leaveGame() {
   // Tell the host first that we give up (our cities become neutral), then close the link. While a duel
@@ -346,6 +408,7 @@ function leaveGame() {
   joined = null;
   room = null;
   if (game) { game.destroy(); game = null; }
+  resetChat();
   show('screen-lobby');
   drawBackdrop();
 }
@@ -415,6 +478,7 @@ net.on('welcome', (msg) => {
   endSession();
   if (game) { game.destroy(); game = null; }
   joined = null;
+  resetChat();
   store(sessionStorage, RESUME_KEY, null);
   show('screen-lobby');
   drawBackdrop();
@@ -431,12 +495,16 @@ net.on('games', (msg) => {
 net.on('joined', (msg) => {
   checkProtocol(msg);
   introduced = true;
-  joined = { gameId: msg.gameId, playerId: msg.playerId };
+  // `spectator`: watching the game, not playing it (Watch in the lobby).
+  joined = { gameId: msg.gameId, playerId: msg.playerId, spectator: !!msg.spectator };
   store(sessionStorage, RESUME_KEY, JSON.stringify({ gameId: msg.gameId, token: msg.token }));
-  saveToken(msg.gameId, msg.token);
+  // Rejoin in the lobby is for players, who have an empire to come back to. A spectator just watches again.
+  saveToken(msg.gameId, msg.spectator ? null : msg.token);
   if (msg.status === 'lobby') {
     show('screen-room');
     drawBackdrop();
+  } else if (msg.spectator && !game) {
+    toast('Connecting to the game…');
   }
 });
 
@@ -467,8 +535,9 @@ const GAME_MESSAGES = {
     game = new GameClient({
       map, net, link, gameId: joined.gameId, you: msg.you, title: msg.title, options: msg.options, players: msg.players,
       ports: msg.ports, beaches: msg.beaches, onLeave: leaveGame, debug, admin: isAdmin, mapState, prestart: msg.prestart,
-      goldPercent: msg.goldPercent,
+      goldPercent: msg.goldPercent, spectator: !!msg.spectator, chat: chatMessages,
     });
+    if (msg.spectator) $('toast').hidden = true;   // "Connecting to the game…": it has come
     if (game.goldPercent !== GOLD_PERCENT.default) {
       game.hud.feed(`The host set your gold to ${game.goldPercent}%: everything you earn is scaled by it.`);
     }
@@ -518,6 +587,8 @@ net.on('connectHost', (msg) => {
     else {
       $('room-info').textContent = text;
       $('room-start').hidden = true;
+      $('room-role').hidden = true;
+      $('room-share').hidden = true;
       for (const id of OPTION_INPUTS) $(id).disabled = true;
     }
   };
@@ -542,6 +613,10 @@ net.on('connectHost', (msg) => {
         game.hud.feed('Lost the connection to the host: waiting for the game to carry on…', 'bad');
         clearTimeout(hostWait);
         hostWait = setTimeout(() => { if (game && !session) game.onHostLost(text); }, HOST_WAIT_MS);
+      } else if (joined && joined.spectator) {
+        // Came to watch, but the game never reached us: back to the lobby (Watch tries again).
+        toast(text);
+        leaveGame();
       } else { status(text); toast(text); }
     },
   });
@@ -645,6 +720,7 @@ net.on('kicked', (msg) => {
   endSession();
   if (game) { game.destroy(); game = null; }
   joined = null;
+  resetChat();
   show('screen-lobby');
   drawBackdrop();
 });
@@ -673,7 +749,31 @@ $('create-form').addEventListener('submit', (e) => {
 });
 
 $('room-leave').addEventListener('click', leaveGame);
+
+// The link the host shares: the site itself, where friends type a name and find the game in the lobby.
+const shareLink = $('room-share-link');
+shareLink.value = `${location.origin}/`;
+shareLink.addEventListener('focus', () => shareLink.select());
+let copiedTimer = 0;
+$('room-share-copy').addEventListener('click', async () => {
+  const button = $('room-share-copy');
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(shareLink.value);
+    copied = true;
+  } catch {
+    // No clipboard API (a plain-http address on the local network): copy the selected text instead.
+    shareLink.select();
+    copied = document.execCommand('copy');
+  }
+  button.textContent = copied ? 'Copied' : 'Press Ctrl+C';     // the link is selected
+  clearTimeout(copiedTimer);
+  copiedTimer = setTimeout(() => { button.textContent = 'Copy link'; }, copied ? 1500 : 4000);
+});
 $('room-start').addEventListener('click', () => net.send({ t: 'start' }));
+$('room-role').addEventListener('click', () => {
+  if (joined) net.send({ t: 'setRole', role: joined.spectator ? 'player' : 'spectator' });
+});
 
 // Handy for debugging from the browser console (debug builds): coe.game.cam, coe.game.renderUnits, ...
 if (DEBUG) window.coe = { get game() { return game; }, get session() { return session; }, net };

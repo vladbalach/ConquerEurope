@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { UNITS, TECHS, ECONOMY } from '../shared/config.js';
 import { splitMessage, Parts, PART_SIZE } from '../public/js/p2p.js';
 import { setup } from './helpers.js';
+import { repackFrames } from '../server/history.js';
 
 // A game that only ends when a test says so: no countdown to a lower target.
 function quietSetup() {
@@ -68,7 +69,7 @@ test('the game-over message carries the history, and it survives JSON', () => {
   assert.equal(msg.t, 'gameover');
   assert.equal(msg.winner, b.id);
   assert.equal(msg.history.frames.length, 3);
-  assert.deepEqual(msg.history.series, ['cities', 'units', 'army', 'income', 'kills', 'losses']);
+  assert.deepEqual(msg.history.series, ['cities', 'units', 'army', 'income', 'kills', 'losses', 'gold']);
   assert.ok(msg.history.stats[b.id], 'stats by player id');
 });
 
@@ -93,6 +94,35 @@ test('units trained, destroyed and lost are counted by type, with the gold they 
   game.endTurn();
   const army = numbers(game.history, game.history.frames.at(-1), a.id).army;
   assert.ok(army >= UNITS.knight.cost + UNITS.infantry.cost, 'army value counts every unit');
+});
+
+test('every frame keeps the gold each player had, in whole gold', () => {
+  const { game, a, b, run } = quietSetup();
+  run(0.05);
+  a.gold = 1234.7;
+  game.endTurn();
+  const h = game.history;
+  assert.equal(numbers(h, h.frames.at(-1), a.id).gold, Math.floor(a.gold), 'after the turn paid them');
+  assert.equal(numbers(h, h.frames.at(-1), b.id).gold, Math.floor(b.gold));
+});
+
+test('a save from before the gold numbers: its frames get them as null, the rest where they were', () => {
+  const { game, a, run } = quietSetup();
+  run(0.05);
+  game.endTurn();
+  const h = game.history;
+  const want = numbers(h, h.frames.at(-1), a.id);
+  // The frames as an older version kept them: without gold, and no series in the save.
+  const old = h.frames.map((f) => {
+    const p = [];
+    for (let i = 0; i < f.p.length; i += 8) p.push(...f.p.slice(i, i + 7));
+    return { ...f, p };
+  });
+  const back = repackFrames(old);
+  assert.deepEqual(back.map((f) => f.p.length), h.frames.map((f) => f.p.length));
+  h.frames = back;
+  assert.deepEqual(numbers(h, back.at(-1), a.id), { ...want, gold: null });
+  assert.equal(repackFrames(h.frames, h.toJSON().series), h.frames, 'a save of this version: as it is');
 });
 
 test('research is dated by the turn it was finished in, with its cost', () => {

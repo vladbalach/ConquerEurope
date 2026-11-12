@@ -1,5 +1,5 @@
 // Technologies (TECHS in shared/config.js): what they do for a liberator, and what they open up
-// (ships: transports, battleships). Used by the game (server/game.js, in the host's browser) and by every player's page (HUD,
+// (ships: transports, battleships, their cannons). Used by the game (server/game.js, in the host's browser) and by every player's page (HUD,
 // Tech window), so both always agree on incomes, limits and what may be ordered.
 import { TECHS, TECH_TYPES, TECH_TABS, LIBERATOR, UNITS } from './config.js';
 
@@ -42,8 +42,20 @@ export function shipSpeedFactor(tech) {
   return 1 + (lvl(tech, 'navigation') * TECHS.navigation.speedPercent) / 100;
 }
 
+// Roads: how many times faster than its moveSpeed a land unit of a player with these technologies goes
+// in a region the player holds whole (Game.roadFactor); 1 without them.
+export function roadSpeedFactor(tech) {
+  return 1 + (lvl(tech, 'roads') * TECHS.roads.speedPercent) / 100;
+}
+
+// Gunnery: the player's battleships fire cannon shells at units on land and at cities (ballista bolts
+// without it, and always at ships).
+export function hasGunnery(tech) {
+  return lvl(tech, 'gunnery') > 0;
+}
+
 // May cities train this unit type with these technologies? A unit with a `tech` (UNITS) needs it: transports
-// Seafaring, battleships Gunnery. Anything else (land units, upgrades) needs none.
+// Seafaring, battleships Warships. Anything else (land units, upgrades) needs none.
 export function canTrain(type, tech) {
   const need = UNITS[type]?.tech;
   return !need || lvl(tech, need) > 0;

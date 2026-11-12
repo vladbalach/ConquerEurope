@@ -6,8 +6,10 @@
 
 export const COAST_PIECE_KM = 2;      // the coast is walked in pieces at most this long
 
-// Calls piece(ax, ay, bx, by, first) for every piece of coastline, in order along each stretch of
-// coast; `first` is true for the first piece of a stretch.
+// Calls piece(ax, ay, bx, by, first, land, hole) for every piece of coastline, in order along each
+// stretch of coast; `first` is true for the first piece of a stretch. `land` (1 or -1): the land lies
+// toward land * (ay - by, bx - ax) from the piece, the water the other way. `hole`: the piece is on the
+// edge of a hole in a landmass (a lake or an enclave), not on the sea.
 export function forEachCoastPiece(map, piece) {
   const key = (r, i, j) => (r[i] < r[j] || (r[i] === r[j] && r[i + 1] < r[j + 1])
     ? `${r[i]},${r[i + 1]},${r[j]},${r[j + 1]}` : `${r[j]},${r[j + 1]},${r[i]},${r[i + 1]}`);
@@ -24,8 +26,16 @@ export function forEachCoastPiece(map, piece) {
   const b = map.bounds;
   const cut = (ax, ay, bx, by) => !!b && ((ax === bx && (ax === b.x0 || ax === b.x1)) || (ay === by && (ay === b.y0 || ay === b.y1)));
   for (const p of map.polys) {
-    for (const r of p.r) {
+    p.r.forEach((r, k) => {
       const n = r.length / 2;
+      // The first ring is the landmass's outline, the others its holes: going round a ring the land
+      // lies on one side, by the way it winds (its signed area) and whether it is a hole.
+      let area = 0;
+      for (let i = 0; i < r.length; i += 2) {
+        const j = (i + 2) % r.length;
+        area += r[i] * r[j + 1] - r[j] * r[i + 1];
+      }
+      const hole = k > 0, side = (area > 0) !== hole ? 1 : -1;
       // Not coast: a land border, or the edge of the map.
       const land = (e) => {
         const i = 2 * e, j = 2 * ((e + 1) % n);
@@ -42,11 +52,11 @@ export function forEachCoastPiece(map, piece) {
         const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / COAST_PIECE_KM));
         for (let s = 0; s < steps; s++) {
           const t0 = s / steps, t1 = (s + 1) / steps;
-          piece(ax + (bx - ax) * t0, ay + (by - ay) * t0, ax + (bx - ax) * t1, ay + (by - ay) * t1, !open);
+          piece(ax + (bx - ax) * t0, ay + (by - ay) * t0, ax + (bx - ax) * t1, ay + (by - ay) * t1, !open, side, hole);
           open = true;
         }
       }
-    }
+    });
   }
 }
 

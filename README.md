@@ -1,7 +1,7 @@
 # Conquest of Europa
 
 A multiplayer, top-down real-time strategy game played in the browser on a map of Europe.
-Up to 20 players each start with 10 random cities and race to hold **120 of the 223 cities** (the host can
+Up to 20 players each start with 10 random cities and race to hold **140 of the 223 cities** (the host can
 change the number, and by default it counts down every turn).
 
 Core design rules, such as anonymous players, are in [GAME_DESIGN.md](GAME_DESIGN.md).
@@ -24,11 +24,70 @@ npm test             # automated tests (test/*.test.js)
 
 Open the URL, type a name, then create a game or join one from the lobby. All games are public, and the lobby
 lists every game with its players (offline players are greyed out). The host starts the game; it can be started
-solo to practise against neutral cities. Once a game has started, nobody new can join it.
+solo to practise against neutral cities. Once a game has started, nobody new can join it, but anyone can watch it.
+
+**The guide at the start of a game** (`startGuide` in [public/js/client.js](public/js/client.js)): a box at the top
+tells you your colour and the goal, then one thing to do at a time, moving on as soon as it is done: click one of
+your cities and press **Q** to train infantry, then storm a grey (neutral) city with them. Taking a city ends it
+with a line on what cities give and how to win.
+- While the first infantry trains, it says where and how many seconds are left; once one is out, where to send it.
+- In the first game of the browser tab's session it also shows where: a gold arrow over one of your cities, the
+  Infantry button glowing once a city is selected, then, once the first unit is out, your units ringed in gold
+  until you select them and a red arrow over the nearest grey city your infantry can walk to (on the minimap too).
+  Later games of the session give the words alone.
+- Doing something else instead (an upgrade or another unit, a rally point, research, a tradition) ends the guide
+  at once and counts as seen, as does its ×. A player coming back to a game already under way is only told their
+  colour.
+
+**The help (F1)** is a small wiki of the game ([public/js/help/wiki.js](public/js/help/wiki.js)): its pages listed on
+the left (Getting started, Controls, The game) with a search box, the page on the right. Pages are written from the
+current numbers each time they are shown (an admin may have changed the balance; Economy, Winning and Liberator also
+speak of your game), with the game's own icons; advanced details are in tooltips (a dotted underline, or a small
+round i). It opens on the page it showed last. Most controls and rules have an **animated demo**, as if recorded
+from a game:
+- A scene ([public/js/help/scenes.js](public/js/help/scenes.js)) sets up cities and units round a real city of the
+  map (Paris for land, London and Plymouth for the sea) and plays a script: a pointer moves, clicks and drags, the
+  keys light up as they are pressed (the mouse in the corner shows which button), and a line under the demo says
+  what is shown. ↻ plays it again; a demo faster than the game says so (×2).
+- It is drawn by the game's own renderer ([public/js/help/demo.js](public/js/help/demo.js): `DemoRenderer`, a
+  `Renderer` that borrows the map geometry the game's one has built) on a stand-in for the game made from the game
+  client's prototype, so the map, castles, units, selection rings, formations' ghosts, click markers, HP bars,
+  rally flags, docks and effects look exactly as in a game. A small simulation moves it: walking, formations
+  (`shared/formation.js`), fighting, cities shooting, training, captures, boarding, harbour repairs. Only the
+  cities a scene is about take part; the others are scenery.
+- A demo plays only while it is in view (and the help open); the others cost nothing.
+
+**Watching a game (spectators):** press **Watch** on a waiting game or on one in progress. A game still has room for
+20 players: spectators take none of those places. Up to 10 can watch one game at once (`GAME.maxSpectators` in
+[shared/config.js](shared/config.js)).
+- **In the lobby** the game lists them by nickname under its players ("Watching: Sue") and counts them ("1 watching").
+- **In the waiting room** they are listed apart from the players. **Play** takes a free place in the game; a player
+  can press **Watch instead** (not the only player: a game needs one, and a host who watches instead hands the room
+  to the next player).
+- **In the game** a spectator sees the map as a player who owns nothing does: every empire by colour, battles,
+  the Players list (Tab), the feed. The top bar has no gold, honor, cities, units or Tech, and nothing they do gives
+  an order. The title says "spectating". Nobody in the game is told when a spectator comes or goes.
+- The game reaches spectators like a player: from the host's browser (see below), which sends each of them as much
+  as it sends a player. A refreshed tab keeps watching. When the host leaves, spectators follow the game to the next
+  host's browser. **Leave** takes them back to the lobby; so does the game ending because every player left.
+- At the end they see the results screen with everyone revealed, as the players do.
 
 **Players are anonymous during a game:** everyone is known only by colour ("Red", "Teal", ...; you are "You"), and
 for a game in progress the lobby lists nicknames only. Everyone is revealed on the results screen. The rule is in
 [GAME_DESIGN.md](GAME_DESIGN.md).
+
+**Chat** ([public/js/chat.js](public/js/chat.js)): the waiting room has a chat beside its card, by nickname, for
+players and spectators alike. In the game, new messages show above the minimap for 12 seconds, each player by
+colour (a dot and "Red", "Teal", ...; your own as "You"); **Enter** opens the chat to write and to scroll back,
+Enter sends, Esc closes it.
+- Messages go through the lobby server, never the host's browser, so nobody can pass one off as someone else's. While
+  the game runs the server sends a player's id and colour with their message, never their nickname.
+- Spectators talk among themselves while the game runs ("To spectators"): players never read them, so they are
+  neither told who watches nor helped by someone who sees every empire. Once the game is over everyone is revealed,
+  in the chat too, and everyone reads everyone.
+- Whoever comes into the room, or back to the game after a refresh, gets the last 50 messages (`CHAT` in
+  [shared/config.js](shared/config.js), 200 characters at most each). A game starts with an empty chat: the waiting
+  room's is gone. Five messages in a row at most, then one every 1.5 seconds.
 
 **Coming back after a disconnect:** a player who drops out keeps their empire (it can still be conquered) until
 the game ends.
@@ -46,15 +105,15 @@ The server only runs the lobby. When the host presses Start, the game runs in th
 every other player's browser connects straight to it (WebRTC data channels), like a "listen server" in other games.
 So the server needs almost no CPU or bandwidth, and it can run on a free plan.
 
-- **The server:** names, lobby, waiting room, rejoin tokens, admin balance and map edits. When a game starts, it deals
+- **The server:** names, lobby, waiting room, chat, rejoin tokens, admin balance and map edits. When a game starts, it deals
   the colours, gives the host's browser the list of players (ids and colours, no nicknames), and passes the WebRTC
-  connection messages between each player and the host. When the game ends, it reveals every nickname.
+  connection messages between each player (or spectator) and the host. When the game ends, it reveals every nickname.
 - **The host's browser:** simulates the game in a Web Worker ([server/host-engine.js](server/host-engine.js), the same
   code the tests run in Node, served to browsers as `/sim/`). A worker keeps full speed while the host's tab is in
   the background. The host sends each player the changes since the last snapshot, compressed
   ([public/js/delta.js](public/js/delta.js)): with the whole map in view, about 2–20 KB/s per player in a game of 2–8
   players, 45 KB/s with 20 players of 100 units each. So the host needs about 1 Mbit/s of upload for 8 players and
-  7 Mbit/s for 20.
+  7 Mbit/s for 20. Each spectator costs as much as a player.
 - **Other browsers:** send their orders to the host and get snapshots back, as they did from the server before.
 - **The start:** the host's game stands still until every player's link is open (at most 30 seconds, for a player who
   never connects), then counts down 10 seconds, so the host gets no head start (`GAME.startWait`,
@@ -99,6 +158,24 @@ the others see them leave and come back. The game plays the same. It just costs 
 (Render: 5 GB), set up the Cloudflare TURN relay above if many of your players need the fallback. The browser
 console (F12) says which way each player connected.
 
+### Search engines and link previews
+
+The page tells search engines and link previews (Discord, WhatsApp, Facebook and others) what the game is: its
+title and description, a canonical address, a preview picture ([public/og-image.jpg](public/og-image.jpg), 1200×630),
+and structured data that names the site "Conquest of Europa". The server also answers `/robots.txt` (everything may be crawled) and `/sitemap.xml` (the one page).
+
+These need the game's public address. Set it on the server:
+
+| Variable | Effect |
+|---|---|
+| `SITE_URL` | The address players open, such as `https://conquest.example.com`. It goes into the page, `robots.txt` and `sitemap.xml`. Without it, the server uses the address each request came to (https when a proxy says so with `X-Forwarded-Proto`), which works but can differ between addresses the site answers on. |
+
+To get the game into Google: open [Google Search Console](https://search.google.com/search-console), add the site's
+address, and prove it is yours (with the HTML-file method, put the file Google gives you in `public/`; the server
+serves it as it is). Then submit `sitemap.xml` under Sitemaps, and use URL inspection > Request indexing on the main
+page. A link to the game from other sites (this repository's description, game listings, forums) helps Google find
+it sooner and rank it higher.
+
 ## Rules
 
 | | HP | Damage | Range | Speed | Regen* | Cost | Build time |
@@ -108,7 +185,7 @@ console (F12) says which way each player connected.
 | Cavalry | 70 | 15/s | melee | 52 | 0.5/s | 20 | 7 s |
 | Knight | 250 | 45/s | melee | 45 | 1/s | 150 | 8 s |
 | Transport (ship) | 150 | — | — | 38 | 0.5/s, 5/s in harbour | 10 | 12 s |
-| Battleship (ship) | 500 | 30 per shot, every 1.5 s | 60 | 32 (0.75 s to get there from a stop) | 1/s, 2× that in harbour | 200 | 20 s |
+| Battleship (ship) | 500 | 30 per bolt, every 1.5 s | 60 | 32 (0.75 s to get there from a stop) | 1/s, 2× that in harbour | 200 | 20 s |
 | City | 100 | 20/s | 70 | — | 5/s (always, but not between a battleship's shots) | — | — |
 
 \* Units regenerate only after 3 seconds without fighting.
@@ -126,7 +203,9 @@ console (F12) says which way each player connected.
   In the formation the infantry stands in front, the archers behind it and Healers at the back; cavalry and knights
   split into two wings, left and right (a Hero by its kind). At sea, battleships sail in front of the transports.
   The formation faces the way the group goes, or the way you drag the right button: hold it and grey ghosts show
-  where each unit will stand; drag, and the formation turns to face the way you drag. Letting go gives the order.
+  where each unit will stand; drag, and the formation turns to face the way you drag. The length of the drag sets
+  its width: twice as wide as the drag is long, so a short drag makes a narrow, deep column and a long one a wide
+  line of few rows (without a drag it is about twice as wide as deep). Letting go gives the order.
 - **Mountains:** no unit crosses them. The great ranges are on the map (the Alps, Pyrenees, Carpathians, Caucasus,
   Scandinavian Mountains, Apennines, Dinaric Alps, Atlas, Taurus, Urals and more, [tools/mountains.js](tools/mountains.js)),
   drawn as solid rocky ground with hill signs on it (neither the colour of the region they lie in nor its borders show
@@ -141,41 +220,56 @@ console (F12) says which way each player connected.
   straight line to them (`NavGrid.lineOfFire`). An archer told to attack a target behind them walks round until it
   has a clear shot; a city doesn't fire at units behind them. Melee units are not affected.
 - **Navy:** ships sail only on the sea. Building transports, and taking units on board or landing them, needs the
-  **Seafaring** technology (Tech, Sea tab: 100 gold, 30 s); battleships need **Gunnery** as well (150 gold, 60 s).
-  **Navigation** (120 gold, 45 s) makes all your ships 20% faster.
+  **Seafaring** technology (Tech, Sea tab: 100 gold, 30 s); battleships need **Warships** as well (150 gold, 60 s).
+  **Navigation** (120 gold, 45 s) makes all your ships 20% faster, and **Gunnery** (200 gold, 60 s, after Warships)
+  gives battleships cannons.
   - **Coastal cities:** a city with the sea within 30 km is coastal (admins can change it in Edit map). It is marked with an anchor (next to the castle, or
     next to the dot when zoomed out), has a timber pier where its ships are launched, and its panel says Port. Only
     coastal cities build ships (Barracks don't speed them up). Every city has two rally points: right-click land (cities selected) for new units, right-click the water for new ships of coastal cities on that sea. Without one, new ships stay in the port.
   - **Beaches and cliffs:** transports take units on board and land them only on **beaches**, drawn as shallow
     water off the shore (a soft teal fringe) with a thin line of sand. All of the coast is beach, every island's
-    too (`markBeaches` in [server/nav.js](server/nav.js)); only where admins paint cliffs in Edit map is it cliff
-    (the plain dark line against deep water), where ships can't dock. What the map shows is exactly where ships
-    dock: every piece of drawn coastline takes the state of the land-grid cell nearest to it, and only those cells
-    can be beaches ([shared/coastline.js](shared/coastline.js)). Islets too small for the 5 km land grid have no
-    land to land on: their coast is drawn plain.
+    too (`markBeaches` in [server/nav.js](server/nav.js)); only where admins paint cliffs in Edit map, and where
+    mountains reach the sea, is it cliff, where ships can't dock. Cliffs are drawn as seen from above: the dark
+    line of the cliff top, and a ragged rock face below it dropping into the sea, lit where it faces the top left
+    and in shade where it faces away, with surf along its foot and a shadow on the water (`cliffFaces` in
+    [public/js/render.js](public/js/render.js); on the minimap a plain line). What the map shows is exactly where
+    ships dock: every piece of drawn coastline takes the state of the land-grid cell nearest to it, and only those
+    cells can be beaches ([shared/coastline.js](shared/coastline.js)). Islets too small for the 5 km land grid have
+    no land to land on: their coast is drawn as cliffs.
   - **Seas:** the Mediterranean, the Atlantic, the North Sea and the Baltic are one sea. The Black Sea joins it through
     the Bosporus and the Dardanelles, which only ships can pass. The Caspian is a sea of its own. Lakes can't be sailed.
-  - **Repairs:** a ship within 40 km of the pier of one of your coastal cities regains 5 HP per second instead of 0.5,
+  - **Repairs:** a ship within 60 km of the pier of one of your coastal cities regains 5 HP per second instead of 0.5,
     once it has not been hit for 3 seconds (`NAVAL.harbourRange`, `NAVAL.harbourRegen`). A battleship instead repairs
     there at **twice its own regeneration** (`harbourFactor` in `UNITS.battleship`), so the harbour rate follows any
-    change to its regeneration; it doesn't repair while it is shooting either.
+    change to its regeneration; it doesn't repair while it is shooting either. A ship repairing in harbour shows its crew at
+    work: a hammer knocking at its stern and a saw going at its bow (everyone sees it; not at sea, where it mends
+    slowly).
   - **Transport:** carries 8 units, one place each. It has no weapons. Cities shoot ships like any unit (neutral cities
     shoot everyone), and archers on the shore can hit them. Ships steer clear of the range of coastal cities where the
     sea allows, but not around the city they sail from or to. A sunk transport takes everyone on board with it: they count
     as losses, and as kills for whoever sank it.
-  - **Battleship** (**N**, needs Gunnery): a warship that fights like archers do on land. It shells anything within
-    60 km of it: other ships, units on the shore and cities. It fires single shots, **30 damage every 1.5 seconds**,
-    and its guns reload whatever it does, sailing included. So you can **shoot, move, shoot**: let it fire, sail it
+  - **Battleship** (**N**, needs Warships): a warship armed with ballistas. It shoots anything within 60 km of it:
+    other ships, units on the shore and cities. It fires single bolts, **30 damage every 1.5 seconds**, and reloads
+    whatever it does, sailing included. **A bolt flies** (110 km a second, `boltSpeed`) and does its damage when it
+    lands, not when it is fired. A bolt **follows its target and can't be dodged**, at sea or on land: it hits unless
+    the target dies first (then it falls into the sea, or sticks in the ground). A bolt at a city always hits. A shot
+    still lands, and counts for its owner, if its ship sinks meanwhile.
+    **Gunnery** gives battleships **cannons**: at troops ashore and at cities they fire **shells** instead of bolts
+    (at ships, still bolts). A shell (90 km a second) follows its target like a bolt and bursts there: the target takes
+    the whole 30, and **every other enemy unit within 14 km of it takes 20%** (`TECHS.gunnery`: `splashRadius`,
+    `splashShare`); if the target dies first, the shell still bursts where it last stood. A shell at a city bursts on its walls: no splash. Battleships
+    of a player with Gunnery carry crossed cannons on their sail and a row of gun ports, so everyone can tell.
+    So you can **shoot, move, shoot**: So you can **shoot, move, shoot**: let it fire, sail it
     out of trouble, and order the attack again once it has reloaded; it fires on the first moment the target is in
     reach. A battleship is heavy: from a standstill (it stops to shoot, too) it takes **0.75 s to reach full speed**,
     so a ship that keeps running gains on one that stops to fire. A plain move order never shoots; attack-move (A + right click) fights whatever it meets, and an idle
     battleship fires at enemies in reach and goes after enemy ships in sight. Attack a unit or city on land and it
     sails to the water nearest to the target that is within its range and has a clear line of fire to it, no
-    mountains in between (none there: the order is dropped). Its guns never fire over mountains.
+    mountains in between (none there: the order is dropped). It never shoots over mountains.
     A battleship **takes a coastal city** (one marked with an anchor) like any other attack, when its shot brings
     the city's HP to zero. An **inland city** within its range goes down to **1 HP and no further**: troops have to
-    take it. A city regenerates even under attack, but **not between a battleship's shots**: each shot stops its regeneration until
-    the ship could fire again (1.5 s), so it doesn't win back between shots what it loses to them. Cities outrange
+    take it. A city regenerates even under attack, but **not between a battleship's shots**: each shot that lands stops its
+    regeneration until the next one could land (1.5 s), so it doesn't win back between shots what it loses to them. Cities outrange
     battleships (70 km against 60) and fire at them all the while; walls and a castle make a coastal city a hard
     target for a lone ship.
   - **Going on board:** select land units and right-click one of your transports. While land units are selected, your
@@ -257,7 +351,7 @@ console (F12) says which way each player connected.
 - **Turns and gold:** the game runs in turns of 60 seconds. At the end of every turn each city pays its owner
   10 gold, all at once. The top bar shows how many turns have passed and the countdown to the next payout.
   A clock ticks in the last 3 seconds of every turn.
-  Players start with 50 gold. The **Economy** page of the help (F1) explains every way to get gold.
+  Players start with 60 gold. The **Economy** page of the help (F1) explains every way to get gold.
 - **Kills pay:** destroying an enemy unit pays you **25% of its cost** in gold at once (Infantry 3, Archers 2.5,
   Cavalry 5, Knight 37.5, Transport 2.5, Battleship 50) and **its full cost in honor** (Infantry 12, Archers 10, Cavalry 20,
   Knight 150, Transport 10, Battleship 200): honor grows exactly like your Kills in the Players list. Honor is shown with a silver star
@@ -323,6 +417,7 @@ console (F12) says which way each player connected.
   names are printed on the map and dark solid lines are their borders; faint lines divide the cities of one region.
   Hold every city of a region and each of them pays **+2 gold** more per turn (`regionBonusPerCity` in
   [shared/config.js](shared/config.js)). Lose one and the whole region loses the bonus. A one-city region counts.
+  With **Roads** (Tech, Land tab) your land units also march 20% faster in every region you hold whole.
   The city panel shows how many cities of its region the owner holds, and the feed says when you complete or lose one.
   Taking a region's last city also lights the region up for a few seconds: a gold wave spreads from that city, the
   region's outline glows, each of its cities shows a gold ring and "+2/turn", and its name shines (`REGION_GLOW` in
@@ -345,10 +440,10 @@ console (F12) says which way each player connected.
   standing wins at once if the game started with 2 or more players: everyone else is eliminated, has surrendered or
   has left. A game started alone (to practise) has no such win: it goes on until you surrender or leave. The host sets
   the target in the waiting room (**Game options**):
-  - **Cities to win:** the starting target, 120 by default (11 up to every city on the map).
-  - **Countdown:** *From start* (the default) lowers the target by one city at the end of every turn: 120 in the first
-    turn, 119 in the second, and so on. *From turn N* (10 by default) keeps it until turn N is over, then counts down
-    the same way. *No* keeps it fixed. It never drops below one city.
+  - **Cities to win:** the starting target, 140 by default (11 up to every city on the map).
+  - **Countdown:** *From turn N* (the default, N = 10) keeps the target until turn N is over, then lowers it by one
+    city at the end of every turn. *From start* lowers it from the first turn: 140 in the first turn, 139 in the
+    second, and so on. *No* keeps it fixed. It never drops below one city.
   - The top bar shows your cities next to the current target (▾ while it is counting down).
   - **Close to winning:** when a player is 25 cities or fewer from the target, everyone sees it at the top centre of
     the screen, by colour: "Maroon needs 10 more cities to win". A player who holds the target gets a red line with
@@ -369,7 +464,7 @@ console (F12) says which way each player connected.
   - Liberators are never eliminated, so with this option the game is won only by holding the target number of cities
     (or by being the only player left once everyone else has surrendered or left).
   - The numbers are in `LIBERATOR` in [shared/config.js](shared/config.js). F1 → **Liberator** explains it in the game.
-- **Start gold** (also a game option): the gold every player has at the start, the same for everyone. 50 by default
+- **Start gold** (also a game option): the gold every player has at the start, the same for everyone. 60 by default
   (`startGold` in `ECONOMY` in [shared/config.js](shared/config.js)), 0–100000. The lobby's game list shows it when it
   isn't the default.
 - **Gold percentage** (waiting room): to even out players of different strength, the host sets a percentage for each
@@ -387,12 +482,23 @@ console (F12) says which way each player connected.
   the higher levels of that technology queued after it. It opens on the **Sea** tab:
   - **Seafaring** (100 gold, 30 s): coastal cities build transports, and units can go on board and land (see Navy).
     Without it there are no ships.
-  - **Gunnery** (150 gold, 60 s): coastal cities build battleships (see Navy). It needs Seafaring: its card stays
-    locked until Seafaring is researched or ordered, and taking Seafaring out of the queue takes Gunnery out too
-    (gold back for both).
+  - **Warships** (150 gold, 60 s): coastal cities build battleships, armed with ballistas (see Navy). It needs
+    Seafaring: its card stays locked until Seafaring is researched or ordered, and taking Seafaring out of the queue
+    takes Warships out too (gold back for both).
   - **Navigation** (120 gold, 45 s): all your ships sail 20% faster, transports and battleships, the ones already at
-    sea too (a battleship still takes its 1.5 s to gather speed after a stop). It needs Seafaring, like Gunnery.
+    sea too (a battleship still takes its 1.5 s to gather speed after a stop). It needs Seafaring, like Warships.
     The panel of a selected ship shows its speed with Navigation.
+  - **Gunnery** (200 gold, 60 s): your battleships get cannons, the ones already at sea too: shells with splash at
+    troops ashore and at cities (see Navy). It needs Warships; taking Seafaring or Warships out of the queue takes it
+    out too.
+
+  The **Land** tab:
+  - **Roads** (150 gold, 60 s): your land units march 20% faster in every region you hold whole (every city of it,
+    see Regions), the ones already on the march too; lose a city of the region and its roads stop working for you.
+    Ships are not affected. The panel of another player's unit you click shows its speed where it stands, with "on
+    roads" while it has the bonus. A unit's region is the territory under it, as the map draws it (`Game.regionAt`: one lookup in a
+    table of the land grid's cells, `regionGrid` in [shared/regions.js](shared/regions.js), cheap enough for every
+    unit every tick).
 
   The **Rebellion** tab exists only with Death: Liberator. Rebellion technologies can be researched at any time (also before you fall) but work only while you
   are a liberator. **Ordered as a liberator they cost half** (`LIBERATOR.rebellionCost`, rounded up; the card shows the
@@ -429,10 +535,12 @@ Every number lives in **[shared/config.js](shared/config.js)**, which both the s
 
 - `UNITS`: for each unit, `hp`, `damage`, `attackRange` (0 = melee), `moveSpeed`, `size` (collision radius), `hpRegen`, `cost` and `buildTime`.
   Ships have `naval: true`; a transport's `capacity` is how many units it carries. A unit with `reload` (the battleship)
-  fires single shots of `damage` every `reload` seconds instead of dealing `damage` every second; one with `accelTime`
+  fires single shots of `damage` every `reload` seconds instead of dealing `damage` every second (its bolts fly
+  `boltSpeed` km a second: [server/projectiles.js](server/projectiles.js)); one with `accelTime`
   needs that many seconds to get from a standstill to `moveSpeed`. `tech` names the
-  technology a unit needs before cities build it (Seafaring, Gunnery). In `TECHS`, `requires` names a technology that
-  must come first; Navigation's `speedPercent` is how much faster it makes ships.
+  technology a unit needs before cities build it (Seafaring, Warships). In `TECHS`, `requires` names a technology that
+  must come first; Navigation's `speedPercent` is how much faster it makes ships, and Roads' how much faster land
+  units march in whole regions; Gunnery's `shellSpeed`, `splashRadius` and `splashShare` are its shells'.
 - `NAVAL`: how close the sea must be for a coastal city, and the distances for going on board.
 - `CITY_UPGRADES`: cost, build time and bonus of each city upgrade.
 - `HONOR`, `TRADITIONS`, `HERO`: the honor a kill gives (`killShare` of the unit's cost), the traditions it buys,
@@ -514,7 +622,7 @@ if they send the messages themselves.
 | Shift + click / drag | Add units, or add cities, to the selection |
 | Double click | On one of your units: select all your units of that type on screen. On one of your cities: select all your cities on screen. Shift adds them |
 | Right click | Move, attack a unit or city, or set a rally point of the selected cities: on land for new units, which attack-move there, fighting anything they meet on the way; on the water for new ships (coastal cities on that sea) |
-| Hold right button | Units selected: grey ghosts show where each unit will stand. Drag to turn the formation to face the way you drag; let go to give the move (Esc cancels it) |
+| Hold right button | Units selected: grey ghosts show where each unit will stand. Drag to turn the formation to face the way you drag; the longer the drag, the wider the formation (twice the drag) and the fewer its rows; let go to give the move (Esc cancels it) |
 | Alt + right click | Cities selected: clear both their rally points (so does a right click on one of them) |
 | Hold A + right click | Units selected: attack-move, fighting anything met on the way (also on the minimap). They fight the nearest enemy: one that moves out of reach is swapped for whichever is nearest then, and one that gets out of sight is let go while they walk on (an attack order, by contrast, follows its target anywhere). On an enemy city: attack-move to it, fighting the defenders met on the way, then the city |
 | Shift + right click | Units selected: queue the move, attack-move or attack after the orders they already have; they carry them out one after another. Units with nothing to do start at once. A right click without Shift (or S, H) replaces the whole queue. Selected units show their queued route as dashed lines |
@@ -533,11 +641,30 @@ if they send the messages themselves.
 | Shift + Q / W / E / R / B | Cities selected, with the tradition Eternal Glory: build that unit paid with honor (3 times its gold cost) |
 | Ctrl+1–9, 1–9 | Save / recall a control group |
 | Hold Alt | Show the attack radius of every city. Alt + drag a frame selects only your cities, even with your units inside it |
-| Space / Shift + Space | Center on the selection / jump to your city captured last. When a city of yours falls, it pings red on the minimap for a few seconds and the minimap's frame glows red |
+| Space / Shift + Space | Center on the selection / go through your last 5 alerts, newest first: your cities captured, your cities and units under attack. Each press goes to the next older one and the feed says which ("2/5 · Red captured your city Lyon"); after the oldest, back to the newest. Wait 8 seconds and it starts over from the newest. When a city of yours falls, it pings red on the minimap for a few seconds and the minimap's frame glows red; an attack, orange (see [Attack alerts](#attack-alerts)) |
 | Drag the minimap's top-right corner | Resize the minimap. It keeps the map's shape and grows up and to the right; the browser keeps the size for your next games. Double click the corner for the default size |
 | Arrows, screen edge, middle drag, wheel | Move and zoom the camera. Zooming keeps the point under the cursor in place. Zoomed far out, cities are small dots in their owner's colour and country names are hidden. The view can go a little past every edge of the map, so the land along it (North Africa at the bottom) can be seen clear of the minimap and panels |
-| Tab / F1 | Players / help (pages: Controls, Economy) |
+| Tab / F1 | Players / help: a wiki of the game with animated demos (see "The help (F1)") |
+| Enter | Open the chat over the minimap: type, then Enter sends it to everyone (a spectator's, to the other spectators while the game runs); Esc closes it (see "Chat") |
 | Esc (game over) | Fold the results screen into a bar at the top, to look at the map. Show results opens it again |
+
+### Attack alerts
+
+When your units or a city of yours come under attack where you aren't looking, you hear about it once per battle,
+not once per hit (`public/js/alerts.js`):
+
+- **One alert per battle.** Hits within 250 km of each other are one battle, which follows the fighting as it moves.
+  A battle of units alerts once it has cost 15% of a unit's HP or a unit has died. It is over after 25 seconds
+  without a hit. If the fighting flares up again after that, it alerts again.
+- **Not news:** a battle on screen (zoomed in closer than the strategic view, with the game's tab in front), and
+  fights you sent your units into (attack, attack-move) until they are done with them and stand idle.
+- **How it shows:** every battle pings orange on the minimap as soon as it counts. The feed line ("Your units are
+  under attack near Lyon") comes at most once every 10 seconds, and the trumpet at most once every 30. Battles that
+  start in between wait and then share one line ("…under attack in 3 places").
+- **These don't wait:** your city under attack, and your transport under fire with units on board. They alert at
+  their first hit, with the trumpet, whatever the timers say.
+- **Shift + Space** goes through your last 5 alerts, newest first, cities captured included (see Controls). A battle
+  still going on is shown where the fighting is now; a city's "under attack" alert gives way to its loss.
 
 ### The results screen
 
@@ -590,7 +717,7 @@ New commands are added in [public/js/debug/index.js](public/js/debug/index.js).
 shared/config.js        All game numbers (units, cities, combat, economy), used by server and client
 shared/balance.js       Which stats the Edit button may change, their limits, apply / reset
 shared/options.js       Game options the host sets in the waiting room: cities to win, countdown, death, start gold, gold percentages
-shared/regions.js       Regions: their cities, and who holds a whole region (gold bonus)
+shared/regions.js       Regions: their cities, who holds a whole region (gold bonus, Roads), and the region at a point
 shared/formation.js     Group-move formations (infantry front, archers back, cavalry wings), for the game and the move preview
 shared/mountains.js     The mountain cells' code, shared by the land grid (navgrid.json) and the map (map.json)
 shared/tech.js          Technologies: levels, liberator income, influence and smuggling limits, smuggled gold
@@ -615,10 +742,12 @@ server/units/Transport.js  The transport ship
 server/data/navgrid.json  Generated land grid (committed)
 public/                 Browser client (vanilla JS modules, Canvas 2D, no build step)
   js/main.js            Screens: name, lobby, waiting room; starts hosting or joining a game
+  js/chat.js            Chat: beside the waiting room's card, and over the minimap in the game (Enter)
   js/p2p.js             Browser-to-browser links: HostSession (worker + one WebRTC channel per player), PeerSession
   js/delta.js           Snapshots and scores as changes to the last one sent (lossless), rebuilt on the player's page
   js/host-worker.js     Web Worker that runs the game in the host's browser
   js/client.js          Snapshot interpolation, selection, commands, effects
+  js/alerts.js          Attack alerts: your units and cities under attack off screen, one alert per battle
   js/render.js          Map, territories, cities, cone units, minimap
   js/mountains.js       Draws the mountains from their cells: rocky land, and close up rows of hill signs
   js/map-labels.js      Places the region names: inside their region, off the cities and each other; region outlines
@@ -627,11 +756,16 @@ public/                 Browser client (vanilla JS modules, Canvas 2D, no build 
   js/results.js         The results screen once the game is over: players, a player's stats, the timeline
   js/balance-editor.js  Edit button table: change unit, upgrade and city stats (admins)
   js/tooltip.js         Custom tooltips for every element with a title
+  js/help/wiki.js       The help (F1): its pages, written from the current numbers, with the game's icons
+  js/help/demo.js       The help's animated demos: the game's renderer on a stand-in game, a small simulation, the pointer
+  js/help/scenes.js     The demos' scripts: one scene per control or rule, round a real city of the map
   js/sprites.js         Procedural cone / ship / castle sprites, anchor badge of coastal cities
   js/sound.js           Sound effects (Web Audio), starts on the first click or key press
   js/units/*.js         One class per unit type: icon and tooltip
   map.json              Generated map data (committed)
   sounds/               Sound effects made by tools/gen-sfx.js (committed)
+  favicon.svg           The tab icon (and the one Google shows next to the site)
+  og-image.jpg          The picture shown when someone shares a link to the game
 tools/cities.js         The 64 regions and 223 cities (lat/lon)
 tools/mountains.js      The mountain ranges: chains along their crests (lat/lon, width), passes between the chains
 tools/build-map.js      Builds public/map.json and server/data/navgrid.json from Natural Earth data

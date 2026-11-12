@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { Game } from './game.js';
 import { NavGrid } from './nav.js';
-import { DEBUG, GAME } from '../shared/config.js';
+import { DEBUG, GAME, CHAT } from '../shared/config.js';
 import { iceConfig } from './ice.js';
 import { PROTOCOL_VERSION } from '../shared/protocol.js';
 import { applyBalance, resetBalance, snapshot } from '../shared/balance.js';
@@ -23,6 +23,8 @@ const PORT = Number(process.env.PORT) || 3000;
 
 const EMPTY_GAME_MS = 15 * 60 * 1000;   // a running game with nobody connected is deleted after this
 const ENDED_GAME_MS = 2 * 60 * 1000;
+// A spectator whose connection closed during a game can come back to it (a refresh) for this long.
+const SPECTATOR_AWAY_MS = 2 * 60 * 1000;
 // Every connection is pinged this often (browsers answer by themselves); one silent for SILENT_MS is
 // dropped. A host whose browser crashed or lost its network is noticed this way, not minutes later.
 const HEARTBEAT_MS = 5000;
@@ -80,8 +82,9 @@ function sendBalance(client, changed = false) {
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
   '.wav': 'audio/wav', '.mp3': 'audio/mpeg',
+  '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml; charset=utf-8',
 };
 
 // Text files go gzipped to browsers that take it (about 3 times smaller). Every file has an ETag:
@@ -132,6 +135,71 @@ function sendFromDisk(req, res, file, notFound) {
 
 let mapTag = { json: null, tag: null };  // the map changes when admins move cities (Edit map)
 
+// ------------------------------------------------------------------ search engines
+// The page names its own address (canonical link, link previews, structured data: index.html has
+// %SITE_URL% there), and robots.txt points search engines to sitemap.xml. SITE_URL is the public address
+// players open, such as https://conquest.example.com. Without it, the address the request came to
+// (behind a proxy that says so, https). Only plain URL characters, so it goes into HTML and JSON as it is.
+const SITE_URL = (() => {
+  const raw = (process.env.SITE_URL || '').trim();
+  if (!raw) return '';
+  let url = null;
+  try { url = new URL(raw); } catch { /* reported below */ }
+  const site = url && /^https?:$/.test(url.protocol) ? (url.origin + url.pathname).replace(/\/+$/, '') : '';
+  if (!site || !/^[\w.~:/%[\]-]+$/.test(site)) {
+    console.warn(`SITE_URL is not a web address, so it is not used: ${raw}`);
+    return '';
+  }
+  return site;
+})();
+
+function siteUrl(req) {
+  if (SITE_URL) return SITE_URL;
+  const host = /^[\w.:[\]-]+$/.test(req.headers.host || '') ? req.headers.host : 'localhost';
+  const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https' ? 'https' : 'http';
+  return `${proto}://${host}`;
+}
+
+// The page itself, with the site's address put in. Read again when index.html changes.
+const INDEX_FILE = path.join(PUBLIC, 'index.html');
+let indexTemplate = { mtimeMs: -1, text: '' };
+const indexPages = new Map();             // site address -> { body, tag }
+
+function sendIndex(req, res) {
+  fs.stat(INDEX_FILE, (err, st) => {
+    if (err) { res.writeHead(500).end(); return; }
+    const send = () => {
+      const site = siteUrl(req);
+      let page = indexPages.get(site);
+      if (!page) {
+        if (indexPages.size >= 20) indexPages.clear();       // many host names: start over
+        const body = Buffer.from(indexTemplate.text.replaceAll('%SITE_URL%', site));
+        page = { body, tag: textTag(body) };
+        indexPages.set(site, page);
+      }
+      sendFile(req, res, '.html', page.tag, page.body);
+    };
+    if (indexTemplate.mtimeMs === st.mtimeMs) { send(); return; }
+    fs.readFile(INDEX_FILE, 'utf8', (err2, text) => {
+      if (err2) { res.writeHead(500).end(); return; }
+      indexTemplate = { mtimeMs: st.mtimeMs, text };
+      indexPages.clear();
+      send();
+    });
+  });
+}
+
+function sendText(req, res, ext, text) {
+  sendFile(req, res, ext, textTag(text), Buffer.from(text));
+}
+
+const robotsTxt = (site) => `User-agent: *\nAllow: /\n\nSitemap: ${site}/sitemap.xml\n`;
+// The game is one page: the lobby, waiting rooms and games all run in it.
+const sitemapXml = (site) => '<?xml version="1.0" encoding="UTF-8"?>\n'
+  + '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+  + `  <url><loc>${site}/</loc></url>\n`
+  + '</urlset>\n';
+
 const server = http.createServer((req, res) => {
   let urlPath;
   try {
@@ -145,6 +213,9 @@ const server = http.createServer((req, res) => {
     sendFromDisk(req, res, NAV_FILE, () => res.writeHead(500).end());
     return;
   }
+  if (urlPath === '/' || urlPath === '/index.html') { sendIndex(req, res); return; }
+  if (urlPath === '/robots.txt') { sendText(req, res, '.txt', robotsTxt(siteUrl(req))); return; }
+  if (urlPath === '/sitemap.xml') { sendText(req, res, '.xml', sitemapXml(siteUrl(req))); return; }
   let base = PUBLIC;
   if (urlPath.startsWith('/shared/')) {
     base = SHARED;
@@ -176,7 +247,6 @@ const server = http.createServer((req, res) => {
     res.writeHead(404, { 'Content-Type': 'text/plain' }).end('Not found');
     return;
   }
-  if (urlPath === '/') urlPath = '/index.html';
   const file = path.normalize(path.join(base, urlPath));
   if (!file.startsWith(base + path.sep)) {
     res.writeHead(403).end();
@@ -250,12 +320,85 @@ function joinGame(client, game) {
   lobbyDirty = true;
 }
 
+// ------------------------------------------------------------------ spectators
+// Anyone in the lobby may watch a game (Watch): in the waiting room beside its players, or a game in
+// progress. A spectator has no place in the game (the 20 players stay 20), no colour, and is never its
+// host. client.player is their spectator record (Game.addSpectator), with `spectator: true`.
+function watchGame(client, game) {
+  const res = game.addSpectator(client);
+  if (res.error) {
+    client.send({ t: 'error', msg: res.error });
+    return;
+  }
+  client.game = game;
+  client.player = res.spectator;
+  sendJoined(client);
+  lobbyDirty = true;
+}
+
+// A spectator's page was refreshed, or their connection came back: they watch on.
+function rewatch(client, game, s) {
+  if (client.game && client.game !== game) leaveCurrent(client);
+  if (s.client && s.client !== client) {
+    const old = s.client;
+    old.game = null;
+    old.player = null;
+    old.send({ t: 'kicked', msg: 'You opened this game in another tab' });
+  }
+  s.client = client;
+  s.connected = true;
+  s.disconnectedAt = 0;
+  client.game = game;
+  client.player = s;
+  sendJoined(client);
+  lobbyDirty = true;
+}
+
+// In the waiting room a player may become a spectator and back. The game keeps at least one player (its
+// host's browser runs it); a host who watches instead hands the room to the next player.
+function setRole(client, role) {
+  const g = client.game, p = client.player;
+  if (!g || !p || g.status !== 'lobby') return;
+  let res;
+  if (role === 'spectator' && !p.spectator) {
+    if (g.players.size <= 1) {
+      client.send({ t: 'error', msg: 'Someone has to play: the game needs at least one player' });
+      return;
+    }
+    res = g.addSpectator(client);
+    if (!res.error) {
+      g.removePlayer(p.id);
+      client.player = res.spectator;
+    }
+  } else if (role === 'player' && p.spectator) {
+    res = g.addPlayer(client);
+    if (!res.error) {
+      g.removeSpectator(p.id);
+      client.player = res.player;
+    }
+  } else {
+    return;
+  }
+  if (res.error) {
+    client.send({ t: 'error', msg: res.error });
+    return;
+  }
+  sendJoined(client);                  // a new id and token; everyone in the room sees the change
+  lobbyDirty = true;
+}
+
+// Every spectator of game g still watching it.
+function spectatorsOf(g) {
+  return [...g.spectators.values()].filter((s) => s.client && s.client.game === g);
+}
+
 function sendJoined(client) {
   const g = client.game, p = client.player;
   client.send({
     t: 'joined', gameId: g.id, playerId: p.id, token: p.token, title: g.title, status: g.status,
-    protocol: PROTOCOL_VERSION,
+    ...(p.spectator ? { spectator: true } : {}), protocol: PROTOCOL_VERSION,
   });
+  sendChatLog(client);
   if (g.status === 'lobby') g.broadcastRoom();
   else if (g.status === 'running') resumeHosted(client, g, p);
 }
@@ -264,6 +407,14 @@ function leaveCurrent(client) {
   const g = client.game;
   if (!g) return;
   const p = client.player;
+  if (p.spectator) {
+    // Nothing changes in the game. Their page has told the host already (or its link just closes).
+    g.removeSpectator(p.id);
+    client.game = null;
+    client.player = null;
+    lobbyDirty = true;
+    return;
+  }
   if (g.status === 'lobby') {
     g.removePlayer(p.id);
   } else {
@@ -278,13 +429,21 @@ function leaveCurrent(client) {
   }
   client.game = null;
   client.player = null;
-  if (g.players.size === 0) deleteGame(g);
+  if (g.players.size === 0) deleteGame(g, 'Every player has left the game');
   lobbyDirty = true;
 }
 
-function deleteGame(g) {
+// A game is deleted. Its spectators go back to the lobby, told why; those of a finished game stay on
+// its results screen (like its players), only no longer in it.
+function deleteGame(g, reason = 'The game was closed') {
   clearTimeout(g.hostTimer);
   games.delete(g.id);
+  for (const s of spectatorsOf(g)) {
+    const c = s.client;
+    c.game = null;
+    c.player = null;
+    if (g.status !== 'ended') c.send({ t: 'kicked', msg: reason });
+  }
 }
 
 // ------------------------------------------------------------------ duels: Restart
@@ -310,7 +469,10 @@ function restartGame(g) {
   if (!g.players.has(g.hostId)) g.hostId = g.players.keys().next().value ?? null;   // its host left the game
   if (!g.restart()) return;
   // Pages drop the finished game first; the host's start follows, as for a game started in the room.
+  // Its spectators watch the new one.
   for (const p of g.players.values()) p.client.send({ t: 'restarted', gameId: g.id });
+  for (const s of spectatorsOf(g)) s.client.send({ t: 'restarted', gameId: g.id });
+  clearChat(g);                        // the finished game's, with nicknames
   handOver(g);
   lobbyDirty = true;
 }
@@ -332,6 +494,13 @@ function runsGame(client, g) {
   return !!h && h.gameId === g.id && h.epoch === g.hostEpoch;
 }
 
+// Spectators connect to the host like players, with their own ids (never in the roster).
+function connectSpectators(g, ice, moved = false) {
+  for (const s of spectatorsOf(g)) {
+    s.client.send({ t: 'connectHost', gameId: g.id, you: s.id, epoch: g.hostEpoch, ice, ...(moved ? { moved: true } : {}) });
+  }
+}
+
 // Start: the host gets the roster (ids and colours, never nicknames), everyone else is told to
 // connect to the host.
 async function handOver(g) {
@@ -351,6 +520,7 @@ async function handOver(g) {
       p.client.send({ t: 'connectHost', gameId: g.id, you: p.id, epoch, ice });
     }
   }
+  connectSpectators(g, ice);
 }
 
 // Another player's browser takes the game over from the host's last checkpoint, and everyone else
@@ -386,6 +556,7 @@ async function moveHost(g) {
       p.client.send({ t: 'connectHost', gameId: g.id, you: p.id, epoch, ice, moved: true });
     }
   }
+  connectSpectators(g, ice, true);
 }
 
 // The host's lobby connection closed. A page that runs the game may only have lost its network for a
@@ -401,8 +572,18 @@ function hostAway(g, client) {
   g.hostTimer.unref?.();
 }
 
-// A player came back to a running game (refresh, new tab, dropped connection).
+// A player came back to a running game (refresh, new tab, dropped connection). A spectator came to watch
+// it, or back: they connect to its host, if it has one (with nobody online it waits for the first player
+// to come back, and tells its spectators to connect then, as moveHost does).
 async function resumeHosted(client, g, p) {
+  if (p.spectator) {
+    if (g.hostId === null) return;
+    const ice = await iceConfig();
+    if (client.player === p && g.status === 'running') {
+      client.send({ t: 'connectHost', gameId: g.id, you: p.id, epoch: g.hostEpoch, ice });
+    }
+    return;
+  }
   if (runsGame(client, g) && (g.hostId === p.id || g.hostId === null)) {
     // The host's connection dropped and came back: its page still runs the game, and stays the host.
     // Players relayed through this server lost it meanwhile: told again, they pick their relay up again.
@@ -414,6 +595,7 @@ async function resumeHosted(client, g, p) {
     for (const q of g.players.values()) {
       if (q !== p && q.client) q.client.send({ t: 'connectHost', gameId: g.id, you: q.id, epoch: g.hostEpoch, ice });
     }
+    connectSpectators(g, ice);
     return;
   }
   if (g.hostId === p.id || g.hostId === null) {
@@ -439,8 +621,85 @@ function endHosted(g, winner, reason = null) {
   for (const p of g.players.values()) {
     if (p.client) p.client.send({ t: 'reveal', winner, players, reason });
   }
+  for (const s of spectatorsOf(g)) s.client.send({ t: 'reveal', winner, players, reason });
   sendRestartState(g);                 // a duel: Restart on the results screen
   lobbyDirty = true;
+}
+
+// ------------------------------------------------------------------ chat
+// The waiting room and the game have a chat. It goes through this server, never through the host's browser
+// (which could change who said what), and who reads what follows GAME_DESIGN.md, "Anonymous players":
+// - the waiting room: everyone in it, players and spectators, by nickname (no colours before the game);
+// - a game in progress: a player's message carries their id and colour, never a nickname, and reaches every
+//   player and spectator. A spectator's reaches the other spectators only, as "Spectator": players are never
+//   told who watches (nor helped by someone who sees every empire);
+// - a finished game: everyone is revealed, so messages carry nicknames again and reach everyone.
+// The last CHAT.keep messages are kept for those who come into the room, or back to the game (a refresh).
+// Each game starts with an empty chat: the waiting room's, by nickname, is gone (clearChat).
+// Messages: { t: 'chat', from, text, name?, color?, spectator? } and { t: 'chatLog', messages: [...] }.
+// Nobody floods it: at most CHAT_BURST messages in a row, then one every CHAT_REFILL_MS.
+const CHAT_BURST = 5;
+const CHAT_REFILL_MS = 1500;
+
+// What was typed, made safe to show: no control characters, and no direction marks or overrides, which
+// could make a line read as if someone else had written it. Spaces collapsed, at most CHAT.maxLength.
+export function chatText(raw) {
+  if (typeof raw !== 'string') return '';
+  const text = raw.replace(/[\u0000-\u001f\u007f‎‏‪-‮⁦-⁩]/g, ' ').replace(/\s+/g, ' ').trim();
+  return Array.from(text).slice(0, CHAT.maxLength).join('').trim();
+}
+
+function chatAllowed(client) {
+  const now = Date.now();
+  const b = client.chatBucket || (client.chatBucket = { tokens: CHAT_BURST, at: now });
+  b.tokens = Math.min(CHAT_BURST, b.tokens + (now - b.at) / CHAT_REFILL_MS);
+  b.at = now;
+  if (b.tokens < 1) return false;
+  b.tokens -= 1;
+  return true;
+}
+
+// Everyone in game g who reads a message: its players' pages (unless `spectatorsOnly`) and its spectators'.
+function chatReaders(g, spectatorsOnly) {
+  const out = spectatorsOnly ? [] : [...g.players.values()].map((p) => p.client).filter((c) => c && c.game === g);
+  for (const s of spectatorsOf(g)) out.push(s.client);
+  return out;
+}
+
+function sendChat(client, raw) {
+  const g = client.game, m = client.player;
+  if (!g || !m) return;
+  const text = chatText(raw);
+  if (!text) return;
+  if (!chatAllowed(client)) {
+    client.send({ t: 'error', msg: 'You are sending messages too fast' });
+    return;
+  }
+  const running = g.status === 'running';
+  const msg = { t: 'chat', from: m.id, text };
+  if (!running) msg.name = m.name;                                  // never while the game runs
+  if (g.status !== 'lobby' && !m.spectator) msg.color = m.color;    // dealt at the start
+  if (m.spectator) msg.spectator = true;
+  const spectatorsOnly = running && !!m.spectator;
+  const log = g.chat || (g.chat = []);
+  log.push({ msg, spectatorsOnly });
+  if (log.length > CHAT.keep) log.shift();
+  for (const c of chatReaders(g, spectatorsOnly)) c.send(msg);
+}
+
+// The messages a member of the game may read, for their page: on joining the room, coming back to the game,
+// or watching it.
+function sendChatLog(client) {
+  const g = client.game, m = client.player;
+  if (!g || !m) return;
+  const messages = (g.chat || []).filter((e) => m.spectator || !e.spectatorsOnly).map((e) => e.msg);
+  client.send({ t: 'chatLog', messages });
+}
+
+// The game starts (or a duel starts again): a new, empty chat for everyone in it.
+function clearChat(g) {
+  g.chat = [];
+  for (const c of chatReaders(g, false)) c.send({ t: 'chatLog', messages: [] });
 }
 
 function handle(client, msg) {
@@ -466,6 +725,11 @@ function handle(client, msg) {
         const p = g ? g.findRejoinable(null, r.token) : null;
         if (p) {
           rejoin(client, g, p);
+          return;
+        }
+        const s = g ? g.findSpectator(r.token) : null;
+        if (s) {
+          rewatch(client, g, s);
           return;
         }
       }
@@ -510,6 +774,32 @@ function handle(client, msg) {
       joinGame(client, g);
       return;
     }
+    case 'watch': {
+      // Watch a game as a spectator: a waiting one (from its room) or one in progress.
+      if (!client.name) return;
+      const g = games.get(String(msg.gameId));
+      if (!g) {
+        client.send({ t: 'error', msg: 'That game no longer exists' });
+        sendGameList(client);
+        return;
+      }
+      if (client.game === g) {
+        sendJoined(client);
+        return;
+      }
+      const err = g.canWatch();
+      if (err) {
+        client.send({ t: 'error', msg: err });
+        return;
+      }
+      leaveCurrent(client);
+      watchGame(client, g);
+      return;
+    }
+    case 'setRole':
+      // The waiting room: play (`role: 'player'`) or watch (`role: 'spectator'`) instead.
+      setRole(client, msg.role);
+      return;
     case 'leave':
       // `gameId`: only that game. A host's page sends its leave once its last checkpoint is out, by
       // when the player may be in another game already.
@@ -520,6 +810,7 @@ function handle(client, msg) {
     case 'start': {
       const g = client.game;
       if (g && g.status === 'lobby' && client.player && g.hostId === client.player.id && g.beginStart()) {
+        clearChat(g);                  // the waiting room's, by nickname
         handOver(g);                   // the host's browser runs the game from here on
         lobbyDirty = true;
       }
@@ -539,10 +830,10 @@ function handle(client, msg) {
     }
     case 'signal': {
       // WebRTC connection messages (offer, answer, ICE candidates) between a player and the host.
-      // Players reach only the host; the host reaches any player of its game.
+      // Players and spectators reach only the host; the host reaches any player or spectator of its game.
       const g = client.game, p = client.player;
       if (!g || !p || g.status !== 'running' || !msg.data || typeof msg.data !== 'object') return;
-      const target = g.players.get(p.id === g.hostId ? msg.to : g.hostId);
+      const target = p.id === g.hostId ? g.member(msg.to) : g.players.get(g.hostId);
       if (!target || target === p || !target.client) return;
       target.client.send({ t: 'signal', from: p.id, data: msg.data });
       return;
@@ -572,23 +863,26 @@ function handle(client, msg) {
     case 'restart': {
       // A player of a finished duel wants to play it again. Once both do, it starts again.
       const g = client.game, p = client.player;
-      const state = g && p ? restartState(g) : null;
+      const state = g && p && !p.spectator ? restartState(g) : null;
       if (!state || !state.open) return;
       (g.restartVotes || (g.restartVotes = new Set())).add(p.id);
       if ([...g.players.keys()].every((id) => g.restartVotes.has(id))) restartGame(g);
       else sendRestartState(g);
       return;
     }
+    case 'chat':
+      sendChat(client, msg.text);
+      return;
     case 'ping':
       return;                          // keeps the connection (and a sleeping free host) awake
     case 'relay': {
       // Fallback when a player's browser cannot open a direct link to the host (some mobile,
       // company or home networks block it): their game messages go through this server.
-      // Players reach only the host; the host reaches any player of its game.
+      // Players and spectators reach only the host; the host reaches any player or spectator of its game.
       const g = client.game, p = client.player;
       if (!g || !p || g.status !== 'running' || !msg.msg || typeof msg.msg !== 'object') return;
       if (p.id === g.hostId) {
-        const target = g.players.get(msg.to);
+        const target = g.member(msg.to);
         if (target && target !== p && target.client) target.client.send({ t: 'relay', msg: msg.msg });
       } else {
         const host = g.players.get(g.hostId);
@@ -622,7 +916,7 @@ function handle(client, msg) {
       editor.handle(client, msg, clients);
       return;
     default:
-      if (client.game && client.player) client.game.handleCommand(client.player, msg);
+      if (client.game && client.player && !client.player.spectator) client.game.handleCommand(client.player, msg);
   }
 }
 
@@ -662,8 +956,10 @@ wss.on('connection', (ws) => {
     const g = client.game, p = client.player;
     if (g && p) {
       if (g.status === 'lobby') {
-        g.disconnect(p);
+        if (p.spectator) g.removeSpectator(p.id);
+        else g.disconnect(p);
       } else if (p.client === client) {
+        // A spectator too: they may come back (a refresh) for SPECTATOR_AWAY_MS.
         // The game runs in the host's browser and goes on; the lobby only notes who is offline.
         p.client = null;
         p.connected = false;
@@ -677,7 +973,7 @@ wss.on('connection', (ws) => {
         }
         sendRestartState(g);           // a finished duel: gone from its results screen, no restart
       }
-      if (g.players.size === 0) deleteGame(g);
+      if (g.players.size === 0) deleteGame(g, 'Every player has left the game');
       lobbyDirty = true;
     }
   });
@@ -701,6 +997,10 @@ setInterval(() => {
 setInterval(() => {
   const now = Date.now();
   for (const g of games.values()) {
+    // Spectators only count while online: one gone for good (not back after a refresh) is forgotten.
+    for (const [id, s] of g.spectators) {
+      if (!s.client && now - s.disconnectedAt > SPECTATOR_AWAY_MS) g.spectators.delete(id);
+    }
     const connected = [...g.players.values()].some((p) => p.connected);
     if (connected) g.emptySince = 0;
     else if (!g.emptySince) g.emptySince = now;
@@ -712,7 +1012,7 @@ setInterval(() => {
       for (const p of g.players.values()) {
         if (p.client) { p.client.game = null; p.client.player = null; }
       }
-      deleteGame(g);
+      deleteGame(g, g.players.size ? 'The game was closed: no player has been online for a long time' : 'Every player has left the game');
       lobbyDirty = true;
     }
   }

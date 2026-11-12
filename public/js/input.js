@@ -353,14 +353,17 @@ export class Input {
       return;
     }
     if (this.formDrag) {
-      // Dragged far enough: the formation faces the way from the place pressed to the cursor. Back near
-      // the place: the way the units go, as for a plain click.
+      // Dragged far enough: the formation faces the way from the place pressed to the cursor, and is twice as
+      // wide as the drag is long (the arrow reaches half way across it). Back near the place: the way the
+      // units go, at the width that suits their number, as for a plain click.
       const d = this.formDrag;
       if (Math.hypot(this.mouse.x - d.sx, this.mouse.y - d.sy) > FORMATION_DRAG) {
         const [wx, wy] = this.g.renderer.s2w(this.mouse.x, this.mouse.y);
         d.facing = Math.atan2(wy - d.wy, wx - d.wx);
+        d.width = 2 * Math.hypot(wx - d.wx, wy - d.wy);
       } else {
         d.facing = null;
+        d.width = null;
       }
       return;
     }
@@ -598,7 +601,7 @@ export class Input {
       }
       // A move: given when the button is let go (endFormation). Held, it shows where each unit will
       // go; dragged, it turns their formation to face the way it is dragged.
-      this.formDrag = { sx, sy, wx, wy, t0: performance.now(), facing: null, amove: this.attackKey, shift };
+      this.formDrag = { sx, sy, wx, wy, t0: performance.now(), facing: null, width: null, amove: this.attackKey, shift };
       return;
     }
     // Cities selected: right-click sets their rally point; Alt + right-click anywhere, or a
@@ -613,13 +616,18 @@ export class Input {
     else g.setRally(cities, wx, wy);
   }
 
+  // The way it was dragged: the formation's facing and width (formationSlots), or null (not dragged).
+  formationShape(d) {
+    return d.facing === null ? null : { facing: d.facing, width: d.width };
+  }
+
   // The right button let go after a press for a move (rightClick): the units go there, in a formation
-  // facing the way it was dragged (or the way they go).
+  // facing the way it was dragged and as wide as the drag made it (or facing the way they go).
   endFormation() {
     const d = this.formDrag;
     if (!d) return;
     this.formDrag = null;
-    this.g.commandMove(d.wx, d.wy, d.amove, d.shift, d.facing);
+    this.g.commandMove(d.wx, d.wy, d.amove, d.shift, this.formationShape(d));
   }
 
   // What the renderer shows while the right button is held for a move (drawFormation), or null: where each
@@ -628,7 +636,7 @@ export class Input {
     const d = this.formDrag;
     if (!d || (d.facing === null && performance.now() - d.t0 < FORMATION_HOLD_MS)) return null;
     return {
-      places: this.g.formationPreview(d.wx, d.wy, d.facing, d.shift),
+      places: this.g.formationPreview(d.wx, d.wy, this.formationShape(d), d.shift),
       x: d.wx, y: d.wy, facing: d.facing, amove: d.amove, cursor: { x: this.mouse.x, y: this.mouse.y },
     };
   }
@@ -704,6 +712,15 @@ export class Input {
       return;
     }
     if (k.startsWith('Arrow')) { this.keys.add(k); e.preventDefault(); return; }
+    // Enter: write in the chat. Also with a button focused (the last one clicked), which Enter would press again.
+    // Not when something on the page took the key already (a row of the results that opens on Enter).
+    if (k === 'Enter') {
+      if (!e.repeat && !e.defaultPrevented && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        g.chat.open();
+      }
+      return;
+    }
     if (k === 'Tab') { e.preventDefault(); g.hud.showScores(true); return; }
     if (k === 'F1' || k === '?') { e.preventDefault(); g.hud.toggleHelp(); return; }
     if (k === 'F2') { e.preventDefault(); g.select(g.renderUnits.filter((u) => u.owner === g.you).map((u) => u.id), false); return; }
@@ -765,9 +782,9 @@ export class Input {
         if (g.selectedCities.size) g.cancelLast();          // cities: cancel the last entry of each queue
         else if (g.selection.size) g.promote('hero');       // units: Make Hero, as the button in the unit panel
         break;
-      case 'Space':                      // Shift: your city captured last
+      case 'Space':                      // Shift: your latest alert (a battle, a city captured)
         e.preventDefault();
-        if (e.shiftKey) g.showLostCity();
+        if (e.shiftKey) g.showAlert();
         else g.centerOnSelection();
         break;
       default:

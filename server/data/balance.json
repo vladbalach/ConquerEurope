@@ -7,14 +7,14 @@
       "cost": 15
     },
     "archer": {
-      "hp": 36,
+      "hp": 35,
       "moveSpeed": 28,
       "hpRegen": 0.8,
       "cost": 14
     },
     "cavalry": {
       "hp": 140,
-      "hpRegen": 1,
+      "hpRegen": 1.5,
       "cost": 18,
       "buildTime": 6
     },
@@ -39,9 +39,13 @@
       "hpRegen": 1.4
     },
     "battleship": {
-      "attackRange": 56,
-      "moveSpeed": 34,
-      "cost": 300,
+      "hp": 800,
+      "reload": 1.3,
+      "attackRange": 65,
+      "moveSpeed": 35,
+      "hpRegen": 2,
+      "harbourFactor": 2.5,
+      "cost": 400,
       "buildTime": 10
     }
   },
@@ -52,12 +56,12 @@
     },
     "wall2": {
       "buildTime": 5,
-      "hp": 300
+      "hp": 400
     },
     "tower": {
       "cost": 10,
       "buildTime": 8,
-      "rangePercent": 60
+      "rangePercent": 70
     },
     "castle": {
       "buildTime": 8,
@@ -74,6 +78,7 @@
   "city": {
     "all": {
       "hp": 200,
+      "attackRange": 72,
       "captureHp": 80
     }
   }

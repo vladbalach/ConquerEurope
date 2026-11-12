@@ -23,12 +23,16 @@ export function formationRole(type, heroKind = null) {
 //   spacing  distance between two units
 //   facing   the way its front looks, in radians (0: east, PI / 2: south); null: the way the group goes,
 //            from the middle of where its units set off to (tx, ty)
+//   width    how wide the whole formation is, wings and all, in km (the right button dragged: twice as wide as
+//            the drag is long), so a wide one has few rows, a narrow one many; null: about twice as wide as deep
 //   pos(u)   where a unit sets off from, [x, y]
 //   role(u)  'front', 'back', 'rear' or 'wing' (formationRole)
 // The middle is rows across the facing: the front units first, then the back ones, then the rear ones, each
 // kind in rows of its own. The wing units split into two wings, left and right of the middle, as deep as
-// it. Units keep their order: those ahead now get the places ahead, those on the left the places on the left.
-export function formationSlots(units, tx, ty, { spacing = GAME.formationSpacing, facing = null, pos, role }) {
+// it (with a width, the middle and the wings share it by their numbers of units, so they come out about
+// as deep). Units keep their order: those ahead now get the places ahead, those on the left the places on
+// the left.
+export function formationSlots(units, tx, ty, { spacing = GAME.formationSpacing, facing = null, width = null, pos, role }) {
   const slots = new Map();
   if (!units.length) return slots;
   if (units.length === 1) { slots.set(units[0], [tx, ty]); return slots; }
@@ -63,7 +67,14 @@ export function formationSlots(units, tx, ty, { spacing = GAME.formationSpacing,
   if (!middle.some((g) => g.length)) { middle[0] = wings; wings = []; }   // only riders: one block
 
   const n = middle.reduce((s, g) => s + g.length, 0);
-  const cols = Math.max(1, Math.round(Math.sqrt(n * 2)));
+  let cols, wingCols = 0;
+  if (Number.isFinite(width) && width > 0) {
+    const across = Math.max(1, Math.round(width / spacing) + 1);      // units side by side, wings and all
+    cols = Math.min(n, Math.max(1, Math.round((across * n) / units.length)));
+    if (wings.length) wingCols = Math.max(1, Math.round((across - cols) / 2));
+  } else {
+    cols = Math.max(1, Math.round(Math.sqrt(n * 2)));
+  }
   const rows = middle.flatMap((g) => rowsOf(g, cols));
   const depth = rows.length;
   let half = 0;                       // half the width of the middle
@@ -81,9 +92,15 @@ export function formationSlots(units, tx, ty, { spacing = GAME.formationSpacing,
   if (bySide.length % 2 && side(bySide[k]) < 0) k++;
   for (const [wing, dir] of [[bySide.slice(0, k), -1], [bySide.slice(k), 1]]) {
     if (!wing.length) continue;
-    const wdepth = Math.max(depth, Math.ceil(wing.length / WING_COLUMNS));
-    const width = Math.ceil(wing.length / wdepth);
-    rowsOf(wing, width).forEach((row, r) => {
+    let wdepth, wcols;
+    if (wingCols) {
+      wcols = Math.min(wing.length, wingCols);
+      wdepth = Math.ceil(wing.length / wcols);
+    } else {
+      wdepth = Math.max(depth, Math.ceil(wing.length / WING_COLUMNS));
+      wcols = Math.ceil(wing.length / wdepth);
+    }
+    rowsOf(wing, wcols).forEach((row, r) => {
       const f = ((wdepth - 1) / 2 - r) * spacing;
       row.forEach((u, i) => {
         const col = dir < 0 ? row.length - 1 - i : i;      // counted outwards from the middle

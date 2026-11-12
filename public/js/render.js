@@ -17,6 +17,16 @@ const GHOST = '#8e8e8e';                 // the grey of the units in a move's pr
 const SHALLOWS = 'rgba(112,178,190,0.55)';
 const BEACH = 'rgb(226,200,130)';
 const BEACH_EDGE = 'rgba(90,64,28,0.7)';
+// Cliffs (no ship takes units on board or lands them there), seen from above: the land ends in the dark
+// line of the cliff top, and below it the rock face drops to the sea, lit where it faces the top left
+// (ICON_STYLE.md, as the mountains are) and in shade where it faces away, ragged at its foot, with surf
+// along the foot and a shadow on the water. About as wide as the beaches' shallows.
+const CLIFF = {
+  tones: ['#5d4d3b', '#786450', '#958067', '#b5a07f', '#d2c29e'],   // the rock face, from in shade to lit
+  low: 'rgba(28,18,8,0.3)',              // the lower half of the face, darker toward the sea
+  foam: 'rgba(228,238,240,0.75)',
+  shadow: 'rgba(4,12,22,0.45)',
+};
 const PLAN_COLORS = ['#9dff6a', '#ff9a3c', '#ff4a3a'];   // queued orders: move, attack-move, attack (as the click markers)
 
 // Below this zoom the map is the strategic view: small coloured city markers,
@@ -39,10 +49,13 @@ export const REGION_GLOW = { ms: 4200, spread: 0.35 };
 // to the region's edge in `spread`, the borders flash as it passes, and a ring of light spreads on
 // the ground round each city of the region for `ring` once the wave reaches it.
 const REGION_HOVER = { in: 180, out: 300, spread: 480, ring: 700 };
-// One of your cities is captured (client.js): for `ms` it pings on the minimap. A red ring goes out
-// from it every `every` ms, `waves` times, and a red frame blinks around its marker.
-export const LOST_PING = { ms: 7000, every: 1100, waves: 4 };
-const LOST_RED = '#ff4a3a';
+// Pings on the minimap (client.js): for `ms` a ring goes out from the place every `every` ms, `waves`
+// times, and a frame blinks around it. `lost`: one of your cities captured, in red. `battle`: your units
+// or a city of yours under attack where you aren't looking (alerts.js), in orange.
+export const PINGS = {
+  lost: { ms: 7000, every: 1100, waves: 4, color: '#ff4a3a' },
+  battle: { ms: 4500, every: 1100, waves: 3, color: '#ffa53a' },
+};
 // The minimap: players resize it by dragging its top-right corner (input.js), and the browser keeps
 // that width for their next games (`key`). Never narrower than `min` CSS px; never wider than
 // `maxShare` of the screen, nor so tall that less than `topRoom` px is left above it (the top bar
@@ -82,14 +95,22 @@ function saveMiniWidth(w) {
 // are drawn from map.segs only, where they divide two cities ([x0, y0, x1, y1, kind], kind 1 =
 // region border). `isBeach(x, y)`: the coast there is a beach (ships take units on board and land
 // them there). The coast is walked in short pieces as the game's host walks it (shared/coastline.js);
-// beach pieces go to `beach`, the rest of the coast (cliffs) to `coast`.
+// beach pieces go to `beach`, the rest of the sea's coast to `cliff`, also kept as `cliffRuns` to set
+// the rocks along (cliffRocks). Without `isBeach`, and round lakes, the coast is `coast`: a plain line.
 export function mapLines(map, isBeach = null) {
-  const coast = new Path2D(), beach = new Path2D();
-  let open = null;                  // the path the current stretch of coast is drawn on
-  forEachCoastPiece(map, (ax, ay, bx, by, first) => {
-    const path = isBeach && isBeach((ax + bx) / 2, (ay + by) / 2) ? beach : coast;
-    if (first || open !== path) { path.moveTo(ax, ay); open = path; }
+  const coast = new Path2D(), beach = new Path2D(), cliff = new Path2D();
+  const cliffRuns = [];             // { pts: [x, y, ...], cum: distance along it at each point, land, bbox }
+  let open = null, run = null;      // the path the current stretch of coast is drawn on; its cliff run
+  forEachCoastPiece(map, (ax, ay, bx, by, first, land, hole) => {
+    const path = !isBeach ? coast : isBeach((ax + bx) / 2, (ay + by) / 2) ? beach : hole ? coast : cliff;
+    if (first || open !== path) { path.moveTo(ax, ay); open = path; run = null; }
     path.lineTo(bx, by);
+    if (path !== cliff) return;
+    if (!run) cliffRuns.push(run = { pts: [ax, ay], cum: [0], land, x0: ax, y0: ay, x1: ax, y1: ay });
+    run.pts.push(bx, by);
+    run.cum.push(run.cum[run.cum.length - 1] + Math.hypot(bx - ax, by - ay));
+    run.x0 = Math.min(run.x0, bx); run.x1 = Math.max(run.x1, bx);
+    run.y0 = Math.min(run.y0, by); run.y1 = Math.max(run.y1, by);
   });
   const regions = new Path2D(), cities = new Path2D();
   const s = map.segs;
@@ -98,7 +119,94 @@ export function mapLines(map, isBeach = null) {
     path.moveTo(s[i], s[i + 1]);
     path.lineTo(s[i + 2], s[i + 3]);
   }
-  return { coast, beach, regions, cities };
+  return { coast, beach, cliff, cliffRuns, regions, cities };
+}
+
+// A number in [0, 1) for two integers: the same every time, so the cliffs never change shape.
+function hash2(a, b) {
+  let v = Math.imul(a, 374761393) + Math.imul(b, 668265263);
+  v = Math.imul(v ^ (v >>> 13), 1274126177);
+  return ((v ^ (v >>> 16)) >>> 0) / 4294967296;
+}
+
+// The rock faces of the cliffs (mapLines' cliffRuns) in `view` at zoom z, in world units: the whole face
+// (`base`), its pieces by how lit they are (`tones`, as CLIFF.tones), its lower half (`low`) and its foot
+// out at sea (`foot`). The face reaches from just inland (the land is painted over it) out to sea, 6.5 to
+// 12 px on screen at any zoom; how far varies along the cliff (smooth noise with bumps about 9 px apart on
+// screen, from points fixed along the cliff, two sizes blended by zoom, so zooming neither slides nor jumps
+// them) and it narrows where a cliff meets a beach. Each piece's light: the way it faces against the top left, and some
+// noise so the face reads as rock.
+function cliffFaces(runs, z, view) {
+  const W = clamp(4.5 + 1.5 * z, 6.5, 12) / z, step = 2 / z, inland = 1 / z;
+  const lam = Math.log2(9 / z), gap = 2 ** Math.ceil(lam), fine = Math.ceil(lam) - lam;
+  const pad = W * 2;
+  const base = new Path2D(), low = new Path2D(), foot = new Path2D(), tones = CLIFF.tones.map(() => new Path2D());
+  runs.forEach((run, ri) => {
+    if (run.x1 < view.x0 - pad || run.x0 > view.x1 + pad || run.y1 < view.y0 - pad || run.y0 > view.y1 + pad) return;
+    const { pts, cum, land } = run, total = cum[cum.length - 1], last = cum.length - 1;
+    // Value noise along the cliff: a value every `g` km from its start, eased between.
+    const noise = (d, g, salt) => {
+      const k = Math.floor(d / g), u = d / g - k, e = u * u * (3 - 2 * u);
+      const a = hash2(Math.round(k * g * 8), ri * 4 + salt), b = hash2(Math.round((k + 1) * g * 8), ri * 4 + salt);
+      return a + (b - a) * e;
+    };
+    const blend = (d, salt) => noise(d, gap, salt) * (1 - fine) + noise(d, gap / 2, salt) * fine;
+    const closed = Math.hypot(pts[0] - pts[2 * last], pts[1] - pts[2 * last + 1]) < 1e-6;   // all round an islet
+    const taper = Math.min(total / 2, W * 2);
+    // Out to sea from the piece k of the cliff.
+    const normal = (k) => {
+      const l = cum[k + 1] - cum[k] || 1;
+      return [land * (pts[2 * k + 3] - pts[2 * k + 1]) / l, -land * (pts[2 * k + 2] - pts[2 * k]) / l];
+    };
+    // Points along the coast, every corner and at most `step` apart: where they are, the way out to sea
+    // (at a corner between its two pieces), how far along the cliff, and the inner and outer edge of the face.
+    const S = [];
+    const add = (x, y, nx, ny, d) => {
+      const n = blend(d, 0);
+      let t = closed ? 1 : Math.min(1, d / taper, (total - d) / taper);
+      t = t * t * (3 - 2 * t);
+      const w = W * (0.55 + 0.6 * n) * (0.3 + 0.7 * t);
+      S.push({
+        nx, ny, d, ix: x - nx * inland, iy: y - ny * inland, ox: x + nx * w, oy: y + ny * w,
+        mx: x + nx * w * 0.5, my: y + ny * w * 0.5,
+      });
+    };
+    for (let k = 0; k < last; k++) {
+      const [nx, ny] = normal(k);
+      const parts = Math.max(1, Math.ceil((cum[k + 1] - cum[k]) / step));
+      for (let p = 0; p < parts; p++) {
+        let mx = nx, my = ny;
+        if (p === 0 && k > 0) {
+          const [px, py] = normal(k - 1), m = Math.hypot(mx + px, my + py) || 1;
+          mx = (mx + px) / m; my = (my + py) / m;
+        }
+        const t = p / parts;
+        add(pts[2 * k] + (pts[2 * k + 2] - pts[2 * k]) * t, pts[2 * k + 1] + (pts[2 * k + 3] - pts[2 * k + 1]) * t,
+          mx, my, cum[k] + (cum[k + 1] - cum[k]) * t);
+      }
+      if (k === last - 1) add(pts[2 * last], pts[2 * last + 1], nx, ny, total);
+    }
+    base.moveTo(S[0].ix, S[0].iy);
+    for (const s of S) base.lineTo(s.ix, s.iy);
+    for (let i = S.length - 1; i >= 0; i--) base.lineTo(S[i].ox, S[i].oy);
+    base.closePath();
+    low.moveTo(S[0].mx, S[0].my);
+    for (const s of S) low.lineTo(s.mx, s.my);
+    for (let i = S.length - 1; i >= 0; i--) low.lineTo(S[i].ox, S[i].oy);
+    low.closePath();
+    foot.moveTo(S[0].ox, S[0].oy);
+    for (const s of S) foot.lineTo(s.ox, s.oy);
+    for (let i = 0; i + 1 < S.length; i++) {
+      const a = S[i], b = S[i + 1];
+      const nx = a.nx + b.nx, ny = a.ny + b.ny, m = Math.hypot(nx, ny) || 1;
+      const lit = -(nx + ny) / (m * Math.SQRT2) + (blend((a.d + b.d) / 2, 1) - 0.5) * 0.9;
+      const tone = clamp(Math.round((lit + 1) * 2), 0, 4);
+      if (tone === 2) continue;                                // the base's own colour
+      const q = tones[tone];
+      q.moveTo(a.ix, a.iy); q.lineTo(b.ix, b.iy); q.lineTo(b.ox, b.oy); q.lineTo(a.ox, a.oy); q.closePath();
+    }
+  });
+  return { base, tones, low, foot };
 }
 
 export class Renderer {
@@ -293,13 +401,13 @@ export class Renderer {
     this.sizeMinimap();
   }
 
-  // One of your cities was captured: the minimap's frame glows red a few times (style.css) to catch
-  // the eye, while the city pings on it (drawLostPing).
-  alertMinimap() {
-    const wrap = this.miniWrap;
-    wrap.classList.remove('alert');
+  // The minimap's frame glows a few times (style.css) to catch the eye while a ping goes out on it
+  // (drawPing): red for one of your cities captured, orange (`battle`) for an attack.
+  alertMinimap(kind = 'lost') {
+    const wrap = this.miniWrap, cls = kind === 'battle' ? 'alert-battle' : 'alert';
+    wrap.classList.remove('alert', 'alert-battle');
     void wrap.offsetWidth;              // restarts the animation when it is already running
-    wrap.classList.add('alert');
+    wrap.classList.add(cls);
   }
 
   // ---------------------------------------------------------------- coordinates
@@ -326,6 +434,13 @@ export class Renderer {
   // Zoomed out far: cities are drawn as small markers (see FAR_ZOOM).
   farView() {
     return this.g.cam.zoom < FAR_ZOOM;
+  }
+  // Would the player see a fight at (x, y)? On screen, with the page in front and the map closer than the
+  // strategic view (where units are dots and a battle goes unnoticed). Attack alerts skip those (alerts.js).
+  seesFight(x, y) {
+    if (document.hidden || this.farView()) return false;
+    const v = this.viewRect();
+    return x >= v.x0 && x <= v.x1 && y >= v.y0 && y <= v.y1;
   }
   markerRadius() {
     return clamp(3 + this.g.cam.zoom * 6, 3.5, 5.5);
@@ -377,6 +492,29 @@ export class Renderer {
       ctx.strokeStyle = SHALLOWS;
       ctx.lineWidth = 11 / z;
       ctx.stroke(this.lines.beach);
+      // Cliffs: the rock face down to the sea, under the land (as the shallows): its shadow on the
+      // water (cast to the bottom right), the face, darker low down, and the surf along its foot.
+      if (this.lines.cliffRuns.length) {
+        const face = cliffFaces(this.lines.cliffRuns, z, this.viewRect());
+        ctx.save();
+        ctx.translate(1 / z, 1.4 / z);
+        ctx.strokeStyle = CLIFF.shadow;
+        ctx.lineWidth = 2.6 / z;
+        ctx.stroke(face.foot);
+        ctx.restore();
+        ctx.fillStyle = CLIFF.tones[2];
+        ctx.fill(face.base);
+        face.tones.forEach((path, k) => {
+          if (k === 2) return;
+          ctx.fillStyle = CLIFF.tones[k];
+          ctx.fill(path);
+        });
+        ctx.fillStyle = CLIFF.low;
+        ctx.fill(face.low);
+        ctx.strokeStyle = CLIFF.foam;
+        ctx.lineWidth = 0.9 / z;
+        ctx.stroke(face.foot);
+      }
     }
     ctx.fillStyle = LAND_DIM;
     ctx.fill(this.landDim, 'evenodd');
@@ -426,7 +564,8 @@ export class Renderer {
       ctx.lineCap = 'round';
     }
     // Beaches, where ships take units on board and land them: the shallows above, then a thin strip of
-    // sand on the shoreline. The rest of the coast is cliffs: the plain dark line, against deep water.
+    // sand on the shoreline. The rest of the coast is cliffs: their rock face above, and the dark line of
+    // the cliff top (on the minimap and the timeline only the line).
     ctx.strokeStyle = BEACH;
     ctx.lineWidth = (detailed ? 3 : 1.4) / z;
     ctx.stroke(lines.beach);
@@ -438,6 +577,7 @@ export class Renderer {
     ctx.strokeStyle = 'rgba(40,27,16,0.9)';
     ctx.lineWidth = (detailed ? 1.6 : 0.6) / z;
     ctx.stroke(lines.coast);
+    ctx.stroke(lines.cliff);
     ctx.lineCap = 'butt';
   }
 
@@ -838,12 +978,14 @@ export class Renderer {
     this.drawCities(now);
     this.drawPlans();
     this.drawDocks();
+    this.drawGuideUnits(now);
     this.drawUnits(now);
     this.drawFormation();
     this.drawUnloadAim();
     this.drawBrush();
     this.drawLabelFrame();
     this.drawEffects(now);
+    this.drawGuideMark(now);
     this.drawSelectionBox();
     this.drawRegionHoverNames(now);   // over everything
     this.drawMinimap(now);
@@ -1095,6 +1237,66 @@ export class Renderer {
     });
   }
 
+  // The guide at the start of a game (client.js guideMarkCity), first game of the session: where to
+  // click. Rings spread from the city and an arrow bobs over it: gold over your city to click (step 1),
+  // red over the grey city to storm (step 2).
+  drawGuideMark(now) {
+    const g = this.g, ci = g.guideMarkCity();
+    if (ci < 0) return;
+    const c = g.map.cities[ci];
+    const [sx, sy] = this.w2s(c.x, c.y);
+    if (!this.onScreen(sx, sy, 80)) return;
+    const ctx = this.ctx, far = this.farView(), size = this.citySize(), mr = this.markerRadius();
+    const rgb = g.guideStep === 2 ? '255,96,64' : '255,214,110';
+    ctx.save();
+    const r0 = far ? mr + 5 : size * 0.42;
+    for (let k = 0; k < 2; k++) {                  // two rings, one after the other
+      const t = (now / 1400 + k / 2) % 1;
+      ctx.strokeStyle = `rgba(${rgb},${(0.9 * (1 - t)).toFixed(3)})`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(sx, sy, r0 + t * 24, 0, Math.PI * 2); ctx.stroke();
+    }
+    // The arrow, its tip just over the city (and its HP bar).
+    const top = far ? sy - mr - 9 : sy - CASTLE_ANCHOR.y * (size / 64) - 8;
+    const y = top - 7 * (0.5 + 0.5 * Math.sin(now / 170));
+    ctx.beginPath();
+    ctx.moveTo(sx, y);
+    ctx.lineTo(sx - 11, y - 13); ctx.lineTo(sx - 4.5, y - 13); ctx.lineTo(sx - 4.5, y - 27);
+    ctx.lineTo(sx + 4.5, y - 27); ctx.lineTo(sx + 4.5, y - 13); ctx.lineTo(sx + 11, y - 13);
+    ctx.closePath();
+    ctx.fillStyle = `rgb(${rgb})`;
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+
+  // The guide's step 2 (client.js guideUnitsToSelect), first game of the session: your units to select,
+  // each in a pulsing gold ring at its feet, under the unit, until you select some.
+  drawGuideUnits(now) {
+    const list = this.g.guideUnitsToSelect();
+    if (!list.length) return;
+    const ctx = this.ctx, z = this.g.cam.zoom;
+    const pulse = 0.5 + 0.5 * Math.sin(now / 200);
+    ctx.save();
+    for (const u of list) {
+      const rpx = UNITS[UNIT_TYPES[u.t]].size * z;
+      const [sx, sy] = this.w2s(u.dx, u.dy);
+      if (!this.onScreen(sx, sy, 40)) continue;
+      // Big enough to see at the zoom a game opens at, where a new unit stands on its city's castle.
+      const rx = Math.max(14, rpx * 1.7) + 4 * pulse, ry = rx * 0.55;
+      ctx.beginPath(); ctx.ellipse(sx, sy, rx, ry, 0, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(28,19,11,0.7)';      // a dark edge: it shows on pale land and gold territory alike
+      ctx.lineWidth = 5;
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(255,214,110,${(0.65 + 0.35 * pulse).toFixed(3)})`;
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   // Strategic-view city: a dot in the owner's colour. Your own cities get a light outer ring,
   // as on the minimap.
   cityMarker(sx, sy, r, color, mine) {
@@ -1169,7 +1371,8 @@ export class Renderer {
       }
       if (u.flags & 8 && u.owner === g.you) this.drawHoldMark(sx, sy, rpx);
       const s = rpx / CONE.rx;
-      const variant = def.hero ? g.heroKind(u) : null;      // a Hero's kind: its mark behind the crown
+      // A Hero's kind (its mark behind the crown), a battleship's cannons (its owner has Gunnery).
+      const variant = g.spriteVariant(u);
       const sprite = unitSprite(color, u.t, variant);
       if (def.naval && this.facing.get(u.id) === -1) {
         ctx.save();
@@ -1181,6 +1384,7 @@ export class Renderer {
         ctx.drawImage(sprite, sx - CONE.cx * s, sy - CONE.by * s, 64 * s, 64 * s);
       }
       if (disbanding) this.drawDisbandMotes(sx, sy, rpx, u.id, now);
+      if (def.naval && u.flags & 16 && rpx >= 4) this.drawRepair(sx, sy, s, u.id, now);
       if (u.flags >> CARGO_SHIFT) this.drawCargoCount(sx + rpx * 1.15, sy - rpx * 1.45, rpx, u.flags >> CARGO_SHIFT);
 
       if (u.hp < def.hp || selected || disbanding) {
@@ -1205,6 +1409,77 @@ export class Renderer {
     ctx.strokeStyle = `rgba(150,228,255,${0.55 + 0.4 * pulse})`;
     ctx.lineWidth = hover ? 2.6 : 1.8;
     ctx.stroke();
+    ctx.restore();
+  }
+
+  // A ship under repair in harbour (unit flag 16: out of combat, below full HP and near the pier of one of its
+  // owner's coastal cities, where it repairs faster: Ship.regenerate): a hammer knocking at
+  // its stern, chips flying at each blow, and a saw going back and forth at its bow, shedding sawdust.
+  // `s`: screen px per px of the ship's 64 px sprite, whose point CONE.cx, CONE.by is (sx, sy).
+  drawRepair(sx, sy, s, id, now) {
+    const ctx = this.ctx, k = Math.max(0.75, s * 1.2), ink = '#1a120a';    // the tools a little larger than life
+    const at = (x, y) => [sx + (x - CONE.cx) * s, sy + (y - CONE.by) * s];
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+
+    // The hammer, held at (hx, hy): raised slowly, brought down fast.
+    const ph = (now / 650 + id * 0.37) % 1, up = -0.95, down = 0.75, strike = 0.18;
+    const ang = ph < strike ? up + (down - up) * (ph / strike) ** 2 : down + (up - down) * Math.min(1, (ph - strike) / 0.55);
+    const [hx, hy] = at(2, 15);
+    ctx.save();
+    ctx.translate(hx, hy);
+    ctx.rotate(ang);
+    ctx.strokeStyle = ink; ctx.lineWidth = 3.2 * k;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(11 * k, 0); ctx.stroke();
+    ctx.strokeStyle = '#b07a42'; ctx.lineWidth = 1.6 * k;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(11 * k, 0); ctx.stroke();
+    ctx.fillStyle = '#c3cad2'; ctx.strokeStyle = ink; ctx.lineWidth = Math.max(1, 1.1 * k);
+    ctx.beginPath(); ctx.rect(10 * k, -3.8 * k, 4.4 * k, 7.6 * k); ctx.fill(); ctx.stroke();
+    ctx.restore();
+    if (ph >= strike && ph < strike + 0.3) {          // chips from where it struck
+      const t = (ph - strike) / 0.3, r = 12.5 * k;
+      const bx = hx + Math.cos(down) * r, by = hy + Math.sin(down) * r;
+      ctx.fillStyle = `rgba(222,180,118,${1 - t})`;
+      for (let i = 0; i < 3; i++) {
+        const a = -Math.PI / 2 + (i - 1) * 0.8;
+        ctx.fillRect(bx + Math.cos(a) * 5 * k * t - 0.8 * k, by + Math.sin(a) * 5 * k * t + 5 * k * t * t - 0.8 * k, 1.6 * k, 1.6 * k);
+      }
+    }
+
+    // The saw, slanting down into the deck at the bow, its handle up: back and forth along its blade.
+    const q = Math.sin(now / 95 + id * 1.3);
+    const [wx, wy] = at(55, 23);
+    ctx.save();
+    ctx.translate(wx, wy);
+    ctx.rotate(-0.55);
+    const cut = [-2.5 * k, 2.6 * k];                  // where its teeth bite, before it slides
+    ctx.save();
+    ctx.translate(q * 2.6 * k, 0);
+    const blade = new Path2D();
+    blade.moveTo(-9 * k, -1.2 * k); blade.lineTo(4 * k, -3 * k); blade.lineTo(4 * k, 3 * k);
+    for (let i = 0, x = 4 * k; x > -9 * k; i++, x -= 1.3 * k) {
+      const y = 1.2 * k + ((x + 9 * k) / (13 * k)) * 1.8 * k;
+      blade.lineTo(x, y + (i % 2 ? 1 * k : 0));
+    }
+    blade.lineTo(-9 * k, 1.2 * k);
+    blade.closePath();
+    ctx.fillStyle = '#d4dae0'; ctx.strokeStyle = ink; ctx.lineWidth = Math.max(0.8, 0.9 * k);
+    ctx.fill(blade); ctx.stroke(blade);
+    ctx.fillStyle = '#8a5a2b';
+    ctx.beginPath(); ctx.rect(4 * k, -3.8 * k, 5.5 * k, 7.6 * k); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = ink;
+    ctx.beginPath(); ctx.ellipse(6.8 * k, 0, 1.2 * k, 2.2 * k, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    // Sawdust falling from the cut.
+    ctx.fillStyle = 'rgba(232,206,160,0.9)';
+    for (let i = 0; i < 3; i++) {
+      const t = (now / 600 + i / 3 + id * 0.11) % 1;
+      ctx.globalAlpha = 1 - t;
+      ctx.fillRect(cut[0] + (i - 1) * 1.4 * k, cut[1] + t * 7 * k, 1.2 * k, 1.2 * k);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
     ctx.restore();
   }
 
@@ -1554,10 +1829,18 @@ export class Renderer {
   drawEffects(now) {
     const ctx = this.ctx, z = this.g.cam.zoom, fx = this.g.effects;
 
+    // Battleships' shots in flight (client.js flyProjectiles): a cannonball, or a ballista bolt.
+    for (const p of fx.projectiles) {
+      if (!p.fired) continue;
+      const path = this.g.projectilePath(p);
+      if (path.k >= 1) continue;
+      if (p.shell) this.drawCannonball(path, path.k, z);
+      else this.drawBolt(path, path.k, z);
+    }
+
     for (const p of fx.shots) {
       const t = (now - p.t0) / p.dur;
       if (t < 0 || t > 1) continue;
-      if (p.cannon) { this.drawCannonball(p, t, z); continue; }
       const x = p.x0 + (p.x1 - p.x0) * t, y = p.y0 + (p.y1 - p.y0) * t;
       const lift = Math.sin(Math.PI * t) * p.arc;
       const [sx, sy] = this.w2s(x, y - lift);
@@ -1625,7 +1908,7 @@ export class Renderer {
     for (const f of fx.flashes) {
       const t = (now - f.t0) / 1600;
       if (t < 0 || t > 1) continue;
-      const c = this.g.map.cities[f.city];
+      const c = f.city >= 0 ? this.g.map.cities[f.city] : f;      // a city, or a place ({ x, y })
       const [sx, sy] = this.w2s(c.x, c.y);
       ctx.strokeStyle = f.color;
       ctx.globalAlpha = 1 - t;
@@ -1635,6 +1918,36 @@ export class Renderer {
     }
 
     this.drawRegionBursts(now);
+  }
+
+  // A ballista bolt at `t` (0 to 1) of its flight, on a nearly flat arc (client.js projectilePath): a dark
+  // wooden shaft with an iron head and pale fletching, pointing the way it flies, a faint streak behind it.
+  drawBolt(p, t, z) {
+    const ctx = this.ctx;
+    const x = p.x0 + (p.x1 - p.x0) * t, y = p.y0 + (p.y1 - p.y0) * t - Math.sin(Math.PI * t) * p.arc;
+    const [sx, sy] = this.w2s(x, y);
+    const ang = Math.atan2((p.y1 - p.y0) - Math.cos(Math.PI * t) * p.arc * Math.PI, p.x1 - p.x0);
+    const len = Math.max(9, 7.5 * z), w = Math.max(1.4, 0.5 * z), f = w * 1.8;
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(ang);
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(240,232,214,0.35)';
+    ctx.lineWidth = w;
+    ctx.beginPath(); ctx.moveTo(-len * 2.4, 0); ctx.lineTo(-len, 0); ctx.stroke();
+    ctx.strokeStyle = '#1a120a'; ctx.lineWidth = w + 1.4;
+    ctx.beginPath(); ctx.moveTo(-len, 0); ctx.lineTo(-len * 0.2, 0); ctx.stroke();
+    ctx.strokeStyle = '#7a5230'; ctx.lineWidth = w;
+    ctx.beginPath(); ctx.moveTo(-len, 0); ctx.lineTo(-len * 0.2, 0); ctx.stroke();
+    ctx.lineWidth = 0.8;
+    ctx.strokeStyle = '#1a120a';
+    ctx.fillStyle = '#efe6d2';                      // fletching
+    ctx.beginPath(); ctx.moveTo(-len * 0.72, 0); ctx.lineTo(-len - f * 0.6, -f); ctx.lineTo(-len, 0); ctx.lineTo(-len - f * 0.6, f); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#c9d0d8';                      // iron head
+    ctx.beginPath(); ctx.moveTo(len * 0.1, 0); ctx.lineTo(-len * 0.26, -f * 0.85); ctx.lineTo(-len * 0.26, f * 0.85); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
   }
 
   // A battleship's cannonball at `t` (0 to 1) of its flight: a dark iron ball in an arc, a little smoke
@@ -1658,14 +1971,71 @@ export class Renderer {
     ctx.beginPath(); ctx.arc(sx - r * 0.35, sy - r * 0.35, r * 0.35, 0, Math.PI * 2); ctx.fill();
   }
 
-  // Gun smoke at a battleship firing ('muzzle'), and where its shot lands: a splash on a ship
-  // ('splash') or a burst of fire and dust on land ('hit'). Each starts with a short flash, then fades.
+  // Gun smoke at a battleship firing a cannon ('muzzle'), and where its shot lands (client.js projectileLands):
+  // a shell's burst of fire and dust ('hit', a short flash first) and on land the ring of its reach ('ring');
+  // a bolt's splinters in a ship ('splinters'), dust and splinters on land ('thud'), or where its target died
+  // before it landed, a bolt stuck in the ground ('stuck') or a splash in the sea ('splash').
   drawBlast(b, now, z) {
     const t = (now - b.t0) / b.dur;
     if (t < 0 || t > 1) return;
     const ctx = this.ctx;
     const [sx, sy] = this.w2s(b.x, b.y);
     const u = Math.max(1, z);
+    if (b.kind === 'ring') {
+      // A shell's burst on land: a ring of dust spreading out to how far it reaches (b.r km: splashRadius).
+      const r = b.r * z * (0.3 + 0.7 * Math.sqrt(t));
+      ctx.beginPath(); ctx.ellipse(sx, sy, r, r * 0.55, 0, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(120,98,70,${0.16 * (1 - t)})`;
+      ctx.fill();
+      ctx.strokeStyle = `rgba(92,74,52,${0.75 * (1 - t)})`;
+      ctx.lineWidth = Math.max(1.2, 1.8 * u * (1 - t * 0.6));
+      ctx.stroke();
+      return;
+    }
+    if (b.kind === 'splinters' || b.kind === 'thud') {
+      // A bolt strikes: splinters thrown up and falling back (a ship), with a puff of dust on land ('thud').
+      if (b.kind === 'thud') {
+        ctx.fillStyle = `rgba(110,94,74,${0.55 * (1 - t)})`;
+        ctx.beginPath(); ctx.arc(sx, sy - 2 * u * t, (1.5 + 3 * t) * u, 0, Math.PI * 2); ctx.fill();
+      }
+      const w = Math.max(1.7, z);                       // light wood: it shows on the sea and on land
+      ctx.fillStyle = `rgba(222,166,98,${1 - t})`;
+      ctx.strokeStyle = `rgba(40,26,12,${0.8 * (1 - t)})`;
+      ctx.lineWidth = 0.7;
+      for (let k = 0; k < 6; k++) {
+        const a = -Math.PI / 2 + (k - 2.5) * 0.48, v = (3.2 + (k % 3) * 0.9) * w;
+        ctx.save();
+        ctx.translate(sx + Math.cos(a) * v * t * 1.5, sy + Math.sin(a) * v * t * 1.5 + 8 * w * t * t);
+        ctx.rotate(a + t * 7);
+        ctx.fillRect(-1.3 * w, -0.45 * w, 2.6 * w, 0.9 * w);
+        ctx.strokeRect(-1.3 * w, -0.45 * w, 2.6 * w, 0.9 * w);
+        ctx.restore();
+      }
+      return;
+    }
+    if (b.kind === 'stuck') {
+      // A bolt whose target fell first, stuck slanting in the ground, its tail towards where it came from; it fades.
+      const len = Math.max(8, 7 * z), w = Math.max(1.3, 0.5 * z);
+      const bx = -Math.cos(b.ang), by = -Math.sin(b.ang) * 0.5;
+      const tx = sx + bx * len * 0.65, ty = sy + by * len * 0.65 - len * 0.55;
+      ctx.globalAlpha = t < 0.7 ? 1 : (1 - t) / 0.3;
+      ctx.fillStyle = 'rgba(70,56,40,0.5)';
+      ctx.beginPath(); ctx.ellipse(sx, sy, 2.2 * u, 1 * u, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = '#1a120a'; ctx.lineWidth = w + 1.4;
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty); ctx.stroke();
+      ctx.strokeStyle = '#7a5230'; ctx.lineWidth = w;
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty); ctx.stroke();
+      const a = Math.atan2(ty - sy, tx - sx), f = w * 1.8;
+      ctx.save();
+      ctx.translate(tx, ty); ctx.rotate(a);
+      ctx.fillStyle = '#efe6d2'; ctx.strokeStyle = '#1a120a'; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(-len * 0.22, 0); ctx.lineTo(f * 0.6, -f); ctx.lineTo(0, 0); ctx.lineTo(f * 0.6, f); ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+      return;
+    }
     if (t < 0.2 && b.kind !== 'splash') {
       const f = 1 - t / 0.2;
       const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, 6.5 * u);
@@ -1787,24 +2157,32 @@ export class Renderer {
     ctx.lineWidth = 1;
     ctx.strokeRect((v.x0 - b.x0) * s + 0.5, (v.y0 - b.y0) * s + 0.5, (v.x1 - v.x0) * s, (v.y1 - v.y0) * s);
 
-    // Your cities captured in the last few seconds, on top of everything.
-    for (const e of g.effects.lost) this.drawLostPing(ctx, e, now);
+    // Your cities captured and the attacks of the last few seconds, on top of everything.
+    for (const e of g.effects.pings) this.drawPing(ctx, e, now);
+
+    // The city the guide points at (drawGuideMark), in case it is off screen: a ring closing in on it.
+    const gi = g.guideMarkCity();
+    if (gi >= 0) {
+      const c = g.map.cities[gi], t = (now / 1100) % 1;
+      ctx.strokeStyle = g.guideStep === 2 ? `rgba(255,96,64,${(0.4 + 0.6 * t).toFixed(3)})` : `rgba(255,214,110,${(0.4 + 0.6 * t).toFixed(3)})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc((c.x - b.x0) * s, (c.y - b.y0) * s, 3 + 9 * (1 - t), 0, Math.PI * 2); ctx.stroke();
+    }
   }
 
-  // One of your cities was just captured (LOST_PING): red rings go out from it on the minimap, a dark
-  // edge under each so they show on sea and land alike, and a red frame blinks around its marker.
-  // In minimap CSS px.
-  drawLostPing(ctx, e, now) {
-    const P = LOST_PING, age = now - e.t0;
+  // A ping on the minimap (PINGS, `e`: { x, y, kind, t0 }): rings go out from the place, a dark edge under
+  // each so they show on sea and land alike, and a frame blinks around it. In minimap CSS px.
+  drawPing(ctx, e, now) {
+    const P = PINGS[e.kind], age = now - e.t0;
     if (age < 0 || age > P.ms) return;
-    const b = this.g.map.bounds, s = this.miniScale(), c = this.g.map.cities[e.city];
-    const x = (c.x - b.x0) * s, y = (c.y - b.y0) * s;
+    const b = this.g.map.bounds, s = this.miniScale();
+    const x = (e.x - b.x0) * s, y = (e.y - b.y0) * s;
     const reach = clamp(this.miniW * 0.09, 14, 44);         // how far a ring goes, with the minimap's size
     const ring = (r, alpha) => {
       ctx.globalAlpha = alpha;
       ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 3.5; ctx.stroke();
-      ctx.strokeStyle = LOST_RED; ctx.lineWidth = 2; ctx.stroke();
+      ctx.strokeStyle = P.color; ctx.lineWidth = 2; ctx.stroke();
     };
     for (let k = 0; k < P.waves; k++) {
       const t = (age - k * P.every) / (P.every * 1.4);
@@ -1815,7 +2193,7 @@ export class Renderer {
       ctx.globalAlpha = Math.min(1, (P.ms - age) / 1000);
       ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 3.5;
       ctx.strokeRect(x - 5, y - 5, 10, 10);
-      ctx.strokeStyle = LOST_RED; ctx.lineWidth = 2;
+      ctx.strokeStyle = P.color; ctx.lineWidth = 2;
       ctx.strokeRect(x - 5, y - 5, 10, 10);
     }
     ctx.globalAlpha = 1;

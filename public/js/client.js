@@ -1,30 +1,52 @@
 // In-game client state: snapshot interpolation, selection, commands, effects.
 import {
-  UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES, PRODUCTION_ITEMS, ECONOMY, LIBERATOR, TECHS, TECH_TYPES,
+  UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES, PRODUCTION_ITEMS, ECONOMY, LIBERATOR, TECHS, TECH_TYPES, TECH_TABS,
   NEUTRAL_COLOR, PLAYER_COLOR_NAMES, TRADITIONS, TRADITION_TYPES, HERO, HERO_KINDS, HEALER, NAVAL, GAME,
 } from '/shared/config.js';
 import { formationSlots, formationRole, SHIP_SPACING } from '/shared/formation.js';
-import { liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring, canTrain, shipSpeedFactor } from '/shared/tech.js';
+import {
+  liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring, hasGunnery, canTrain, shipSpeedFactor,
+  roadSpeedFactor,
+} from '/shared/tech.js';
 import { sanitizeOptions, citiesToWin, describeOptions, sanitizeGoldPercent, scaleGoldWhole } from '/shared/options.js';
-import { regionCities, regionHolder } from '/shared/regions.js';
+import { regionCities, regionHolder, regionAtPoint } from '/shared/regions.js';
 import { nearestCell } from '/shared/coastline.js';
 import { CARGO_SHIFT, heroKindOf } from '/shared/protocol.js';
 import { nextGrade, upgradeGrades } from '/shared/upgrades.js';
 import { heroName } from './units/Hero.js';
-import { Renderer, REGION_GLOW, LOST_PING } from './render.js';
+import { Renderer, REGION_GLOW, PINGS } from './render.js';
+import { AttackWatch, AlertLog, ALERT } from './alerts.js';
 import { Input } from './input.js';
-import { Hud, colorTag } from './hud.js';
+import { Hud, colorTag, el } from './hud.js';
+import { GameChat } from './chat.js';
 import { playSound } from './sound.js';
 
 const INTERP_DELAY = 0.13;   // seconds behind the newest snapshot
+const BATTLESHIP = UNIT_TYPES.indexOf('battleship');
 const TICK_SECONDS = 3;      // a clock tick sounds in each of the last seconds of a turn
+const ATTACK_ORANGE = '#ffa53a';
+const LOST_RED = '#ff4a3a';
+const kbd = (key) => el('kbd', {}, key);
+
+// The guide at the start of a game (startGuide) shows where to click in the first game of the tab's
+// session only: once seen, here, later games give the words alone. Storage can be blocked (private
+// windows): then every game is a first one.
+const GUIDE_SEEN = 'guideSeen';
+function guideSeen() {
+  try { return sessionStorage.getItem(GUIDE_SEEN) === '1'; } catch { return false; }
+}
+function rememberGuideSeen() {
+  try { sessionStorage.setItem(GUIDE_SEEN, '1'); } catch { /* storage blocked: nothing to remember it in */ }
+}
 
 export class GameClient {
   constructor({
     map, net, link, gameId, you, title, options, players, ports, beaches, onLeave, debug = null, admin = false, mapState = null,
-    prestart = null, goldPercent = undefined,
+    prestart = null, goldPercent = undefined, spectator = false, chat = [],
   }) {
     this.map = map;
+    // Watching the game without playing (Watch in the lobby): `you` is a spectator's id, in no player list.
+    this.spectator = !!spectator;
     this.net = net;              // the lobby server: balance, map edits, a duel's Restart
     this.hostLink = link || net; // the game, run by the host's browser (p2p.js)
     this.link = { send: (msg) => this.order(msg) };   // orders go here, on to the host once the game has started
@@ -91,14 +113,20 @@ export class GameClient {
     this.groups = new Map();
 
     // regions: regions you just took whole, lit up for a moment ({ region, city taken last, t0 }).
-    // lost: your cities just captured, pinging on the minimap ({ city, t0 }, render.js LOST_PING).
-    // blasts: a battleship's gun smoke, and where its shot lands ({ x, y, t0, dur, kind }, render.js drawBlasts).
-    this.effects = { shots: [], sparks: [], deaths: [], markers: [], flashes: [], regions: [], lost: [], blasts: [] };
-    this.lostCity = -1;              // your city captured last: Shift + Space shows it
-    this.toldLostKey = false;        // the feed said so (with the first city you lose)
+    // pings: your cities just captured and attacks off screen, pinging on the minimap ({ x, y, kind, city, t0 },
+    // render.js PINGS).
+    // blasts: a battleship's gun smoke, and where its shot lands ({ x, y, t0, dur, kind }, render.js drawBlast).
+    // projectiles: battleships' shots in flight, on game time (from the snapshots' `f`, see addProjectiles).
+    this.effects = {
+      shots: [], sparks: [], deaths: [], markers: [], flashes: [], regions: [], pings: [], blasts: [], projectiles: [],
+    };
+    this.viewTime = 0;               // the game time the map shows now (interpolate)
+    this.attacks = new AttackWatch();   // your units and cities under attack where you aren't looking (alerts.js)
+    // Your latest alerts (attacks, cities captured), newest first: Shift + Space goes through them (showAlert).
+    this.alerts = new AlertLog();
+    this.toldAlertKey = false;       // the feed said Shift + Space shows them (with the first alert)
     this.unitTimers = new Map();
     this.cityTimers = new Map();
-    this.volleys = new Map();        // battleship id -> time of the snapshot whose shot was drawn
 
     this.ended = false;
     // A finished duel (two players): { votes: [ids of players who pressed Restart], open: both still
@@ -106,7 +134,10 @@ export class GameClient {
     this.restart = null;
     this.restarting = false;
     this.firstSnap = true;
-    this.turnSecond = null;      // whole seconds left in the turn at the last frame (countdown ticks)
+    this.guideStep = 0;          // the guide at the start of a game (startGuide): 0 when it is not shown
+    this.guideHighlight = false; // ...showing where to click too (first game of the session)
+    this.homeCity = -1;          // the city the map opened on (focusHome)
+    this.turnSecond = null;     // whole seconds left in the turn at the last frame (countdown ticks)
     this.viewSentAt = 0;
     this.viewDirty = true;
 
@@ -115,6 +146,8 @@ export class GameClient {
     this.cam = { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2, zoom: 0.3 };
     this.renderer = new Renderer(this, this.canvas, document.getElementById('minimap'));
     this.hud = new Hud(this);
+    // Over the minimap; Enter opens it (input.js). `chat`: the game's messages so far (main.js).
+    this.chat = new GameChat(this, chat);
     this.input = new Input(this);
     this.input.clampCamera();
 
@@ -160,6 +193,7 @@ export class GameClient {
   destroy() {
     cancelAnimationFrame(this.raf);
     this.input.destroy();
+    this.chat.destroy();
     this.hud.destroy();
   }
 
@@ -339,6 +373,9 @@ export class GameClient {
     for (let i = 0; i < msg.d.length; i += 4) {
       this.effects.deaths.push({ x: msg.d[i], y: msg.d[i + 1], color: this.colorOf(msg.d[i + 2]), t0: now });
     }
+    if (msg.f) this.addProjectiles(msg.f);
+
+    this.attackAlerts(units, now);
 
     // Own units are always included, so a missing id means the unit died.
     for (const id of this.selection) if (!units.has(id)) this.selection.delete(id);
@@ -351,9 +388,14 @@ export class GameClient {
     if (this.firstSnap) {
       this.firstSnap = false;
       this.focusHome();
-      this.hud.banner('Your 10 cities are scattered across Europe, marked in your colour. Press H to jump between them.', 9000);
+      // A spectator has no cities: the map stays on all of Europe.
+      if (this.spectator) {
+        this.hud.banner('You are watching this game as a spectator: you see what the players see, but play no part. ' +
+          'Tab lists the players; Leave takes you back to the lobby.', 9000);
+      } else this.startGuide();
       this.hud.feed(describeOptions(this.options));
     }
+    this.updateGuide();
   }
 
   // A player's name for the feed, "Red" or "You", written in their colour.
@@ -373,16 +415,17 @@ export class GameClient {
       const how = msg.debug ? ' (developer: Own)' : '';
       if (msg.to === this.you) {
         this.hud.feed([this.who(this.you), ` ${took} ${city.n}`, ...from, how], cls);
+        if (this.guideStep) this.guideDone(msg.city);
         // You took the city you were looking at: select it, so you can build there at once.
         if ((msg.liberated || msg.debug) && this.inspect?.k === 'c' && this.inspect.id === msg.city) this.selectCity(msg.city);
       } else if (msg.from === this.you) {
         playSound('city-lost');     // wherever the city is, on screen or not
-        this.cityLost(msg.city, now);
+        this.cityLost(msg.city, now, msg.to, took);
         const back = [msg.refund ? `+${msg.refund} gold` : '', msg.refundHonor ? `+${msg.refundHonor} honor` : ''].filter(Boolean);
         const refund = back.length ? ` (${back.join(', ')} from its queue refunded)` : '';
         // The first time, how to get there.
-        const look = this.toldLostKey ? '' : ' Shift + Space shows it.';
-        this.toldLostKey = true;
+        const look = this.toldAlertKey ? '' : ' Shift + Space shows it.';
+        this.toldAlertKey = true;
         this.hud.feed([this.who(msg.to), ` ${took} your city ${city.n}!${refund}${how}${look}`], cls);
       }
       else this.hud.feed([this.who(msg.to), ` ${took} ${city.n}`, ...from, how]);
@@ -448,8 +491,10 @@ export class GameClient {
     } else if (msg.kind === 'researched') {
       const def = TECHS[msg.tech];
       const what = msg.tech === 'seafaring' ? ': coastal cities build transports (B), and your units can go on board'
-        : msg.tech === 'gunnery' ? `: coastal cities build battleships (${UNITS.battleship.hotkey})`
-          : msg.tech === 'navigation' ? `: your ships sail ${TECHS.navigation.speedPercent}% faster` : '';
+        : msg.tech === 'warships' ? `: coastal cities build battleships (${UNITS.battleship.hotkey})`
+          : msg.tech === 'navigation' ? `: your ships sail ${TECHS.navigation.speedPercent}% faster`
+            : msg.tech === 'gunnery' ? ': your battleships fire cannon shells at troops ashore and at cities'
+              : msg.tech === 'roads' ? `: your land units march ${TECHS.roads.speedPercent}% faster in the regions you hold whole` : '';
       this.hud.feed(`Research complete: ${def.name}${def.levels.length > 1 ? ` ${msg.level}` : ''}${what}`, 'good');
       playSound('tech-learned');
     } else if (msg.kind === 'liberator') {
@@ -570,9 +615,9 @@ export class GameClient {
     if (!this.ended && !this.isOut()) this.hostLink.send({ t: 'surrender' });
   }
 
-  // Out of the game: eliminated, or surrendered. Such a player only watches.
+  // Out of the game: eliminated, or surrendered, or a spectator who never was in it. They only watch.
   isOut() {
-    return !!this.players.get(this.you)?.eliminated;
+    return this.spectator || !!this.players.get(this.you)?.eliminated;
   }
 
   // A finished duel: who has pressed Restart, from the lobby server (results.js shows it).
@@ -637,6 +682,7 @@ export class GameClient {
     }
     const span = s1.time - s0.time;
     const a = span > 0 ? Math.max(0, Math.min(1, (rt - s0.time) / span)) : 1;
+    this.viewTime = rt;             // battleships' shots fly on the same clock as the units drawn
 
     const list = [];
     this.unitById.clear();
@@ -645,9 +691,7 @@ export class GameClient {
       let x = u.x, y = u.y;
       if (p && p !== u) { x = p.x + (u.x - p.x) * a; y = p.y + (u.y - p.y) * a; }
       const vx = p && p !== u ? u.x - p.x : 0;     // ships face the way they sail
-      // shot: a battleship fired (flag 16) in the snapshot of that time, drawn once (spawnEffects).
-      const shot = u.flags & 16 ? s1.time : 0;
-      const ru = { id: u.id, t: u.t, owner: u.owner, x, y, dx: x, dy: y, vx, hp: u.hp, flags: u.flags, tgt: u.tgt, shot };
+      const ru = { id: u.id, t: u.t, owner: u.owner, x, y, dx: x, dy: y, vx, hp: u.hp, flags: u.flags, tgt: u.tgt };
       list.push(ru);
       this.unitById.set(u.id, ru);
     }
@@ -679,6 +723,17 @@ export class GameClient {
     return { ...def, moveSpeed: kind.moveSpeed, attackRange: kind.attackRange };
   }
 
+  // How many times its unitStats speed a unit goes where it stands now: a land unit whose owner has Roads,
+  // in a region the owner holds whole, roadSpeedFactor; otherwise 1 (the host's Unit.moveSpeed). The region
+  // comes from the map's territories: fine for the selected unit, too slow for every unit every frame.
+  roadFactor(u) {
+    if (UNITS[UNIT_TYPES[u.t]].naval) return 1;
+    const f = roadSpeedFactor(this.players.get(u.owner)?.tech);
+    if (f === 1) return 1;
+    const r = regionAtPoint(this.map, u.x, u.y);
+    return r >= 0 && this.regionHolder(r) === u.owner ? f : 1;
+  }
+
   // What a Hero was made from (HERO_KINDS: infantry, archer or cavalry).
   heroKind(u) { return HERO_KINDS[heroKindOf(u.flags)] || 'infantry'; }
 
@@ -696,12 +751,9 @@ export class GameClient {
 
   spawnEffects(now) {
     const fx = this.effects;
+    this.flyProjectiles(now);
     for (const u of this.renderUnits) {
-      // Battleships fire single shots: one cannonball for each shot the host reports, none in between.
-      if (u.shot && this.volleys.get(u.id) !== u.shot) {
-        this.volleys.set(u.id, u.shot);
-        this.cannonShot(u, now);
-      }
+      // Battleships fire single shots: drawn from the shots the host reports (flyProjectiles), none in between.
       if (!(u.flags & 1) || !u.tgt || this.unitStats(u).reload) continue;
       const next = this.unitTimers.get(u.id) || 0;
       if (now < next) continue;
@@ -738,9 +790,6 @@ export class GameClient {
     if (this.unitTimers.size > 4000) {
       for (const id of this.unitTimers.keys()) if (!this.unitById.has(id)) this.unitTimers.delete(id);
     }
-    if (this.volleys.size > 500) {
-      for (const id of this.volleys.keys()) if (!this.unitById.has(id)) this.volleys.delete(id);
-    }
     const alive = (arr, life) => arr.filter((e) => now - e.t0 < (e.dur || life));
     fx.shots = alive(fx.shots, 1000);
     fx.blasts = alive(fx.blasts, 700);
@@ -749,45 +798,160 @@ export class GameClient {
     fx.markers = alive(fx.markers, 550);
     fx.flashes = alive(fx.flashes, 1600);
     fx.regions = alive(fx.regions, REGION_GLOW.ms);
-    fx.lost = alive(fx.lost, LOST_PING.ms);
+    fx.pings = fx.pings.filter((e) => now - e.t0 < PINGS[e.kind].ms);
   }
 
-  // A battleship's shot at its target: smoke at its guns, a cannonball flying in an arc, and where it
-  // lands a splash (on a ship) or a burst of fire and dust (on land).
-  cannonShot(u, now) {
-    const tp = this.targetPos(u.tgt);
-    if (!tp) return;
-    const fx = this.effects;
-    const dx = tp[0] - u.x, dy = tp[1] - u.y, d = Math.hypot(dx, dy) || 1;
-    const x0 = u.x + (dx / d) * 4, y0 = u.y - 3;                     // its side facing the target
-    const x1 = tp[0] + (Math.random() - 0.5) * 5, y1 = tp[1] - 2 + (Math.random() - 0.5) * 4;
-    const dur = Math.max(220, d * 7);
-    const target = u.tgt > 0 ? this.unitById.get(u.tgt) : null;
-    fx.shots.push({ x0, y0, x1, y1, t0: now, dur, arc: d * 0.22, cannon: true });
-    fx.blasts.push({ x: x0, y: y0, t0: now, dur: 650, kind: 'muzzle' });
-    fx.blasts.push({ x: x1, y: y1, t0: now + dur, dur: 600, kind: target && this.isNaval(target.t) ? 'splash' : 'hit' });
+  // Battleships' shots fired since the last snapshot (server/game.js sendSnapshots: 9 values each). They fly
+  // on game time, from `t0` to `t1`, beside the units on the map (viewTime): they land on the map at the very
+  // moment the host has them land.
+  addProjectiles(f) {
+    for (let i = 0; i < f.length; i += 9) {
+      this.effects.projectiles.push({
+        shell: (f[i] & 1) === 1, homing: (f[i] & 2) === 2, owner: f[i + 1],
+        x0: f[i + 2], y0: f[i + 3], x1: f[i + 4], y1: f[i + 5], tgt: f[i + 6], t0: f[i + 7], t1: f[i + 8],
+        fired: false,
+      });
+    }
   }
 
-  // One of your cities was captured, wherever it is: it pings on the minimap (render.js drawLostPing),
-  // whose frame glows red, and Shift + Space now shows it.
-  cityLost(ci, now) {
-    this.lostCity = ci;
-    const fx = this.effects;
-    fx.lost = fx.lost.filter((e) => e.city !== ci);
-    fx.lost.push({ city: ci, t0: now });
-    this.renderer.alertMinimap();
+  // Where shot `p` is now: { x0, y0, x1, y1, arc, k }, from the ship's side facing its target to the unit it
+  // follows as the map shows it, or to its city. k: 0 just fired, 1 landing; arc: how high it flies (a shell
+  // high, a bolt nearly flat).
+  projectilePath(p) {
+    if (p.homing) {
+      const t = this.unitById.get(p.tgt);
+      if (t) {                                       // kept: the last place seen, should it die first
+        p.x1 = t.x; p.y1 = t.y;
+        p.naval = this.isNaval(t.t);
+      }
+    }
+    const dx = p.x1 - p.x0, dy = p.y1 - p.y0, d = Math.hypot(dx, dy) || 1;
+    const k = Math.max(0, Math.min(1, (this.viewTime - p.t0) / Math.max(1e-3, p.t1 - p.t0)));
+    return { x0: p.x0 + (dx / d) * 4, y0: p.y0 - 3, x1: p.x1, y1: p.y1 - 2, arc: d * (p.shell ? 0.22 : 0.07), k };
   }
 
-  // Shift + Space: the camera goes to your city captured last, and a red ring flashes on it.
-  showLostCity() {
-    const ci = this.lostCity;
-    if (ci < 0) {
-      this.hud.feed('None of your cities has been captured yet');
+  // The shots on the map's clock: a cannon fires with a puff of smoke, and each shot lands with what it does
+  // (projectileLands). Shots the map has gone far past (a hidden tab) just go.
+  flyProjectiles(now) {
+    const fx = this.effects, vt = this.viewTime;
+    fx.projectiles = fx.projectiles.filter((p) => {
+      if (vt < p.t0) return true;
+      if (!p.fired) {
+        p.fired = true;
+        if (p.shell && vt - p.t0 < 0.5) {
+          const { x0, y0 } = this.projectilePath(p);
+          fx.blasts.push({ x: x0, y: y0, t0: now, dur: 650, kind: 'muzzle' });
+        }
+      }
+      if (vt < p.t1) return true;
+      if (vt - p.t1 < 0.5) this.projectileLands(p, now);
+      return false;
+    });
+  }
+
+  // A shot lands. A bolt in a ship throws up splinters, one in troops on land or in a city dust and splinters;
+  // if its target died first, it falls into the sea with a splash or sticks in the ground. A shell bursts, on
+  // land with the ring of its burst (TECHS.gunnery.splashRadius), at a city without. The host decides what is
+  // hit (server/projectiles.js); this shows it from the same places at the same moment.
+  projectileLands(p, now) {
+    const fx = this.effects, { x0, y0, x1, y1 } = this.projectilePath(p);
+    const alive = p.tgt < 0 || this.unitById.has(p.tgt);
+    if (p.shell) {
+      fx.blasts.push({ x: x1, y: y1, t0: now, dur: 600, kind: 'hit' });
+      if (p.tgt >= 0) fx.blasts.push({ x: p.x1, y: p.y1, t0: now, dur: 750, kind: 'ring', r: TECHS.gunnery.splashRadius });
+    } else if (p.naval) {
+      fx.blasts.push({ x: x1, y: y1, t0: now, dur: 550, kind: alive ? 'splinters' : 'splash' });
+    } else if (alive) {
+      fx.blasts.push({ x: x1, y: y1, t0: now, dur: 550, kind: 'thud' });
+    } else {
+      fx.blasts.push({ x: p.x1, y: p.y1, t0: now, dur: 1600, kind: 'stuck', ang: Math.atan2(y1 - y0, x1 - x0) });
+    }
+  }
+
+  // What a unit's picture shows besides its type (sprites.js unitSprite `variant`): a Hero's kind, or for a
+  // battleship whose owner has Gunnery, 'cannons' (crossed cannons on its sail, gun ports along its side).
+  spriteVariant(u) {
+    const def = UNITS[UNIT_TYPES[u.t]];
+    if (def.hero) return this.heroKind(u);
+    if (u.t === BATTLESHIP && hasGunnery(this.players.get(u.owner)?.tech)) return 'cannons';
+    return null;
+  }
+
+  // One of your cities was captured (`took`: how) by player `by`, wherever it is: it pings on the minimap
+  // (render.js drawPing), whose frame glows red, and it is the newest alert for Shift + Space. Its alert
+  // for being under attack goes: this one says more.
+  cityLost(ci, now, by, took) {
+    const fx = this.effects, c = this.map.cities[ci];
+    fx.pings = fx.pings.filter((e) => e.city !== ci);
+    fx.pings.push({ x: c.x, y: c.y, kind: 'lost', city: ci, t0: now });
+    this.renderer.alertMinimap('lost');
+    this.alerts.drop((e) => e.city === ci);
+    this.alerts.add({ key: `c${ci}`, city: ci, x: c.x, y: c.y, color: LOST_RED, by, text: ` ${took} your city ${c.n}` });
+  }
+
+  // Your units or cities under attack where you aren't looking (alerts.js), from each snapshot: the battle
+  // pings on the minimap, the feed says where (no more than a line every so often) and the alert sounds.
+  attackAlerts(units, now) {
+    if (this.ended || this.prestart) return;
+    const { pings, lines, sound } = this.attacks.update({
+      time: this.snapTime, now, units, you: this.you,
+      cityOwner: this.cityOwner, cityHp: this.cityHp, cities: this.map.cities,
+      maxHp: (u) => UNITS[UNIT_TYPES[u.t]]?.hp || 1,
+      cargo: (u) => (this.isNaval(u.t) ? u.flags >> CARGO_SHIFT : 0),
+      sees: (x, y) => this.renderer.seesFight(x, y),
+    });
+    for (const b of pings) {
+      this.effects.pings.push({ x: b.x, y: b.y, kind: 'battle', t0: now });
+      // Shift + Space goes where the battle is then: `battle` follows the fighting while it lasts.
+      this.alerts.add({ key: `b${b.id}`, battle: b, city: b.city, color: ATTACK_ORANGE, text: this.attackText(b) });
+    }
+    for (const line of lines) this.hud.feed(this.attackLine(line), 'bad');
+    if (lines.length) this.renderer.alertMinimap('battle');
+    if (sound) playSound('under-attack');
+  }
+
+  // The feed line for battles told together (alerts.js): what one of them is, or how many there are.
+  attackLine(battles) {
+    const look = this.toldAlertKey ? '' : ` Shift + Space shows ${battles.length > 1 ? 'them' : 'it'}.`;
+    this.toldAlertKey = true;
+    if (battles.length > 1) return `Your units are under attack in ${battles.length} places!${look}`;
+    return `${this.attackText(battles[0])}!${look}`;
+  }
+
+  // What a battle is: "Your units are under attack near Cork".
+  attackText(b) {
+    if (b.city >= 0) return `Your city ${this.map.cities[b.city].n} is under attack`;
+    const near = this.map.cities[this.nearestCity(b.x, b.y)].n;
+    if (b.cargo) return `Your transport with ${b.cargo} unit${b.cargo === 1 ? '' : 's'} on board is under fire near ${near}`;
+    return `Your units are under attack near ${near}`;
+  }
+
+  nearestCity(x, y) {
+    let best = 0, bd = Infinity;
+    this.map.cities.forEach((c, i) => {
+      const d = Math.hypot(c.x - x, c.y - y);
+      if (d < bd) { bd = d; best = i; }
+    });
+    return best;
+  }
+
+  // Shift + Space: the camera goes to one of your last ALERT.log alerts (alerts.js AlertLog), a ring flashes
+  // there and the feed says which ("2/5 · Red captured your city Lyon"). The newest first; pressed again, the
+  // next older one, and after the oldest the newest again. A battle is shown where it is now, or where it
+  // ended.
+  showAlert() {
+    const now = performance.now();
+    const next = this.alerts.next(now);
+    if (!next) {
+      this.hud.feed(`No alerts yet. Shift + Space goes through your last ${ALERT.log}: your units and cities under ` +
+        'attack, your cities captured');
       return;
     }
-    const c = this.map.cities[ci];
-    this.input.centerOn(c.x, c.y);
-    this.effects.flashes.push({ city: ci, color: '#ff4a3a', t0: performance.now() });
+    const { e, i, n } = next;
+    const at = e.battle || e;
+    this.input.centerOn(at.x, at.y);
+    this.effects.flashes.push({ x: at.x, y: at.y, color: e.color, t0: now });
+    this.hud.feed([`${i + 1}/${n} · `, ...(e.by !== undefined ? [this.who(e.by)] : []), e.text]);
   }
 
   // ---------------------------------------------------------------- view
@@ -877,12 +1041,12 @@ export class GameClient {
   }
 
   // May your cities train this unit type: its technology (UNITS `tech`: transports Seafaring, battleships
-  // Gunnery) is researched? The feed says which one is missing.
+  // Warships) is researched? The feed says which one is missing.
   canTrain(type, tell = false) {
     const ok = canTrain(type, this.myTech());
     const need = UNITS[type]?.tech;
     if (!ok && tell) {
-      const tab = TECHS[need].tab === 'sea' ? 'Sea' : 'Rebellion';
+      const tab = TECH_TABS.find((t) => t.id === TECHS[need].tab).name;
       this.hud.feed(`${UNITS[type].name} needs ${TECHS[need].name}: research it in the Tech window (T), ${tab} tab`, 'bad');
     }
     return ok;
@@ -929,7 +1093,7 @@ export class GameClient {
 
   // "Own" (debug builds): the city becomes yours at once. The host ignores it outside debug builds.
   canTakeCity(ci) {
-    return this.cityOwner[ci] !== this.you && !this.ended && !this.players.get(this.you)?.eliminated;
+    return this.cityOwner[ci] !== this.you && !this.ended && !this.isOut();
   }
 
   takeCity(ci) {
@@ -1134,7 +1298,7 @@ export class GameClient {
     const prev = this.turnSecond;
     this.turnSecond = s;
     if (s === null || prev === null || s >= prev || s < 1 || s > TICK_SECONDS) return;
-    if (this.ended || this.players.get(this.you)?.eliminated) return;
+    if (this.ended || this.isOut()) return;
     playSound('tick');
   }
 
@@ -1171,7 +1335,158 @@ export class GameClient {
     }
     this.cam.zoom = 1.1;
     const c = this.map.cities[best];
+    this.homeCity = best;           // the guide points at it (guideMarkCity)
     this.input.centerOn(c.x, c.y);
+  }
+
+  // ---------------------------------------------------------------- guide
+  // The guide at the start of a game, at the top of the screen: your colour and the goal, then one thing
+  // to do at a time, each step moving on as soon as it is done.
+  //   1: click one of your cities and train infantry (Q).
+  //   2: train a few more and storm a grey (neutral) city with them.
+  // Taking any city ends it with a word on what cities give and how to win. Doing something else instead
+  // (an upgrade or another unit, a rally point, research, a tradition) ends it at once: the player knows
+  // the game already, or doesn't want the hints. So does ×.
+  // In the first game of the browser tab's session it also shows where: an arrow over the city to click,
+  // then over the city to storm (render.js drawGuideMark), and the Infantry button glows (hud.js).
+  // A guide that ran to its end, or was cut short, counts as seen: later games of the session skip those.
+  // A player coming back to a game already under way (units out, cities won or lost) is only told their colour.
+  startGuide() {
+    const me = this.players.get(this.you);
+    const color = me?.color || NEUTRAL_COLOR;
+    const you = ['You are ', colorTag(PLAYER_COLOR_NAMES[color] || 'this colour', color)];
+    const fresh = !this.ownUnitCount() && !this.queuedAnything() && !this.guideOffScript() &&
+      this.myCityCount() === GAME.startCities;
+    if (!fresh) {
+      this.hud.banner([...you, '. Your cities are marked in your colour and outlined in white on the minimap.'], 9000);
+      return;
+    }
+    this.guideStep = 1;
+    this.guideHighlight = !guideSeen();
+    this.guideFrom = this.homeCity ?? -1;     // where the infantry comes from: the target is the grey city nearest it
+    this.guideTarget = null;                  // the grey city to storm, picked in step 2 (-1: none within reach)
+    this.hud.guide([...you, `, and your ${GAME.startCities} cities are scattered across Europe (outlined in white on ` +
+      'the minimap). Take more cities to win: click one of yours and press ', kbd(UNITS.infantry.hotkey),
+      ' to train infantry.']);
+  }
+
+  // Each snapshot: the step done, or the player doing something else? Out of the game or over: no more guide.
+  updateGuide() {
+    if (!this.guideStep) return;
+    if (this.ended || this.isOut()) { this.endGuide(); return; }
+    if (this.guideOffScript()) { this.endGuide(true); return; }
+    if (this.guideStep === 1 && (this.queuedAnything() || this.ownUnitCount())) {
+      this.guideStep = 2;
+      this.guideKey = '';
+      for (const [ci, q] of this.myQueues) if (q.queue.length) { this.guideFrom = ci; break; }
+    }
+    if (this.guideStep === 2) this.showGuideStep2();
+  }
+
+  // Step 2. While the first infantry is in training: where, and how long it has left. Once one is out:
+  // where to send them (the red arrow shows only from then on). Rewritten only when the words change.
+  showGuideStep2() {
+    let key, parts;
+    if (!this.guideLandUnits().length) {
+      const ci = this.guideFrom, q = this.myQueues.get(ci);
+      const def = q?.queue.length ? UNITS[PRODUCTION_ITEMS[q.queue[0]]] : null;
+      const left = def ? Math.max(0, Math.ceil((def.buildTime - q.progress) / this.cityTrainRate(ci))) : null;
+      key = `train ${left}`;
+      const where = this.map.cities[ci] ? [' in ', colorTag(this.map.cities[ci].n, this.colorOf(this.you))] : [];
+      parts = ['Your infantry is being trained', ...where, left !== null ? `: ${left} s left (the bar under the city).` : '.',
+        ' Press ', kbd(UNITS.infantry.hotkey), ' again to train more: 2 or 3 take a city.'];
+    } else {
+      const grey = colorTag('grey', NEUTRAL_COLOR);
+      const marked = this.guideMarkCity() >= 0;
+      key = `out ${marked}`;
+      const which = marked ? ['the ', grey, ' city under the red arrow'] : ['a ', grey, ' city near you'];
+      parts = ['Train 2 or 3 more, then drag a box round your infantry', this.guideHighlight ? ' (ringed in gold)' : '',
+        ' to select them, and right-click ', ...which, ' to storm it.'];
+    }
+    if (key === this.guideKey) return;
+    this.guideKey = key;
+    this.hud.guide(parts);
+  }
+
+  // Your land units on the map (not on board ships): the ones step 2 asks you to select.
+  guideLandUnits() {
+    return this.renderUnits.filter((u) => u.owner === this.you && !this.isNaval(u.t));
+  }
+
+  // Step 2, first game of the session: your land units to select, ringed in gold (render.js drawGuideUnits)
+  // while none of your units is selected.
+  guideUnitsToSelect() {
+    if (!this.guideHighlight || this.guideStep !== 2 || this.selection.size) return [];
+    return this.guideLandUnits();
+  }
+
+  // Off the guide's path: something other than infantry queued, research or a tradition under way, and in
+  // step 1 a rally point. (In step 2 a right-click on the grey city with the city selected, instead of the
+  // units, sets a rally point there: a slip on the way, not something else.)
+  guideOffScript() {
+    for (const q of this.myQueues.values()) {
+      if (q.queue.some((id) => PRODUCTION_ITEMS[id] !== 'infantry')) return true;
+      if (this.guideStep !== 2 && (q.rally || q.seaRally)) return true;
+    }
+    return !!(this.research || this.researchQueue.length || this.learning || this.learnQueue.length);
+  }
+
+  // You took a city (`ci`): the last word, then the guide is over.
+  guideDone(ci) {
+    this.endGuide(true);
+    this.hud.banner([colorTag(this.map.cities[ci].n, this.colorOf(this.you)),
+      ' is yours! Every city you hold pays gold each turn, for more troops. Hold ',
+      el('b', {}, String(this.citiesToWin())), ' cities when a turn ends to win. F1 explains the rest.'], 12000);
+  }
+
+  // `seen`: the player went through it, cut it short or closed it (not just the game ending).
+  endGuide(seen = false) {
+    if (seen && this.guideStep) rememberGuideSeen();
+    this.guideStep = 0;
+    this.hud.guide(null);
+  }
+
+  // The city the guide points at on the map (render.js drawGuideMark), or -1. First game of the session
+  // only. Step 1: the city the map opened on, until you select one of yours. Step 2: the grey city
+  // nearest to where you trained, picked again if someone else takes it first.
+  guideMarkCity() {
+    if (!this.guideHighlight) return -1;
+    if (this.guideStep === 1) {
+      return !this.selectedCities.size && this.cityOwner[this.homeCity] === this.you ? this.homeCity : -1;
+    }
+    if (this.guideStep !== 2 || !this.guideLandUnits().length) return -1;     // not before the first unit is out
+    if (this.guideTarget === null || (this.guideTarget >= 0 && this.cityOwner[this.guideTarget] !== -1)) {
+      this.guideTarget = this.pickGuideTarget();
+    }
+    return this.guideTarget;
+  }
+
+  // The grey city nearest to guideFrom with land all the way there in a straight line, so infantry can
+  // walk it (the client has no path finding; a narrow strait may slip through). -1 if none of the
+  // nearest 16 is.
+  pickGuideTarget() {
+    const from = this.map.cities[this.guideFrom];
+    if (!from) return -1;
+    const near = [];
+    this.map.cities.forEach((c, i) => {
+      if (this.cityOwner[i] === -1) near.push({ i, d: Math.hypot(c.x - from.x, c.y - from.y) });
+    });
+    near.sort((a, b) => a.d - b.d);
+    for (const { i, d } of near.slice(0, 16)) {
+      const c = this.map.cities[i], n = Math.ceil(d / 12);
+      let land = true;
+      for (let k = 1; k < n && land; k++) {
+        land = this.renderer.isLand(from.x + ((c.x - from.x) * k) / n, from.y + ((c.y - from.y) * k) / n);
+      }
+      if (land) return i;
+    }
+    return -1;
+  }
+
+  // Something in any of your cities' queues (rally points alone don't count).
+  queuedAnything() {
+    for (const q of this.myQueues.values()) if (q.queue.length) return true;
+    return false;
   }
 
   centerOnSelection() {
@@ -1245,14 +1560,18 @@ export class GameClient {
   }
 
   // `queue` (Shift held): the units do it after the orders they already have, one after another.
-  // `facing`: the way their formation faces there, in radians (the right button dragged); null: the way they go.
-  commandMove(x, y, amove, queue = false, facing = null) {
+  // `shape`: { facing, width } of their formation there (the right button dragged: the way it faces, in radians,
+  // and how wide it is, in km); null: it faces the way they go, about twice as wide as deep.
+  commandMove(x, y, amove, queue = false, shape = null) {
+    const facing = shape?.facing, width = shape?.width;
     const ids = [...this.selection];
     if (!ids.length) return;
     this.boardRound = -1;
+    this.orderedUnits(ids, !!amove, queue);
     this.link.send({
       t: 'move', ids, x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, amove: !!amove, ...(queue ? { queue: true } : {}),
       ...(Number.isFinite(facing) ? { f: Math.round(facing * 1000) / 1000 } : {}),
+      ...(Number.isFinite(facing) && width > 0 ? { w: Math.round(width) } : {}),
     });
     this.marker(x, y, amove ? '#ff9a3c' : '#9dff6a');
   }
@@ -1264,7 +1583,7 @@ export class GameClient {
   // doesn't know the land grid: a place that falls in the sea or the mountains (which the host moves to
   // open ground near it) is shown where the formation puts it. Transports that will land their units
   // (a move onto land) are left out.
-  formationPreview(x, y, facing = null, queue = false) {
+  formationPreview(x, y, shape = null, queue = false) {
     const units = [...this.selection].map((id) => this.unitById.get(id)).filter((u) => u && u.owner === this.you);
     const role = (u) => formationRole(UNIT_TYPES[u.t], this.heroKind(u));
     const end = (u) => {
@@ -1273,7 +1592,7 @@ export class GameClient {
     };
     const out = [];
     const add = (group, spacing) => {
-      for (const [u, [px, py]] of formationSlots(group, x, y, { spacing, facing, pos: end, role })) out.push({ u, x: px, y: py });
+      for (const [u, [px, py]] of formationSlots(group, x, y, { spacing, ...shape, pos: end, role })) out.push({ u, x: px, y: py });
     };
     const land = units.filter((u) => !this.isNaval(u.t));
     const onLand = this.renderer.isLand(x, y);
@@ -1285,10 +1604,18 @@ export class GameClient {
     return out;
   }
 
+  // Units the player sends to fight (attack, attack-move), or gives another order: hits on them in a fight
+  // they were sent to are not news for the attack alerts (alerts.js). Only units that can fight count.
+  orderedUnits(ids, fight, queue = false) {
+    const armed = fight ? ids.filter((id) => UNITS[UNIT_TYPES[this.unitById.get(id)?.t]]?.damage > 0) : ids;
+    this.attacks.ordered(armed, fight, queue, performance.now());
+  }
+
   commandAttack(k, id, x, y, queue = false) {
     const ids = [...this.selection];
     if (!ids.length) return;
     this.boardRound = -1;
+    this.orderedUnits(ids, true, queue);
     this.link.send({ t: 'attack', ids, k, id, ...(queue ? { queue: true } : {}) });
     this.marker(x, y, '#ff4a3a');
   }
@@ -1298,6 +1625,7 @@ export class GameClient {
     const ids = [...this.selection];
     if (!ids.length) return;
     this.boardRound = -1;
+    this.orderedUnits(ids, false);
     this.link.send({ t: 'stop', ids });
   }
 
@@ -1306,6 +1634,7 @@ export class GameClient {
     const ids = [...this.selection].filter((id) => this.unitById.get(id)?.owner === this.you);
     if (!ids.length) return;
     this.boardRound = -1;
+    this.orderedUnits(ids, false);
     this.link.send({ t: 'hold', ids });
     this.hud.feed(`${ids.length} unit${ids.length === 1 ? ' holds' : 's hold'} position`);
   }
@@ -1388,6 +1717,7 @@ export class GameClient {
     }
     const keep = this.boardRound === this.selectionVersion;
     this.boardRound = this.selectionVersion;
+    this.orderedUnits(ids, false);
     this.link.send({ t: 'board', ship: ship.id, ids, keep });
     this.marker(ship.x, ship.y, '#7fd8ff');
   }
@@ -1400,6 +1730,7 @@ export class GameClient {
     const land = this.selectedLandUnits(), ships = land.length ? [] : this.selectedTransports();
     if ((!ships.length && !land.length) || !this.hasSeafaring(true)) return;
     this.boardRound = -1;
+    this.orderedUnits(land, false);
     this.link.send({ t: 'autoload', ids: land.length ? land : ships });
     for (const id of ships) {
       const u = this.unitById.get(id);

@@ -14,8 +14,8 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-test('defaults: 120 cities, countdown from the start, turn 10 for "from turn", fallen players become liberators', () => {
-  const defaults = { countdown: 'start', countdownTurn: 10, winCities: 120, death: 'liberator', startGold: ECONOMY.startGold };
+test('defaults: 140 cities, countdown after turn 10, fallen players become liberators', () => {
+  const defaults = { countdown: 'turn', countdownTurn: 10, winCities: 140, death: 'liberator', startGold: ECONOMY.startGold };
   assert.deepEqual({ ...DEFAULT_OPTIONS }, defaults);
   assert.deepEqual(sanitizeOptions(undefined, 208), defaults);
   assert.deepEqual(new Game({ id: '1', title: 't', map, nav }).options, { ...DEFAULT_OPTIONS });
@@ -198,7 +198,7 @@ test('only the host sets the options in the waiting room; everyone sees them and
   assert.deepEqual(room.options, { ...DEFAULT_OPTIONS }, 'a new game has the defaults');
 
   host.send({ t: 'setOptions', options: { countdown: 'turn', countdownTurn: 15, winCities: 999, death: 'liberator', startGold: 500 } });
-  const changed = await guest.waitFor('room', (m) => m.options.countdown === 'turn');
+  const changed = await guest.waitFor('room', (m) => m.options.countdownTurn === 15);
   const expected = { countdown: 'turn', countdownTurn: 15, winCities: map.cities.length, death: 'liberator', startGold: 500 };
   assert.deepEqual(changed.options, expected, 'clamped');
 

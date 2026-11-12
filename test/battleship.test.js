@@ -1,5 +1,6 @@
-// Battleships and the Gunnery technology: warships that shell ships, troops ashore and cities, one shot
-// every `reload` seconds, reloading while they sail (shoot, move, shoot). Run with: npm test
+// Battleships and the Warships technology: warships whose ballistas shoot ships, troops ashore and cities, one
+// shot every `reload` seconds, reloading while they sail (shoot, move, shoot). Their shots fly and do their
+// damage when they land; with Gunnery, cannon shells that burst. Run with: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setup as setupGame, nav, map, DT } from './helpers.js';
@@ -15,7 +16,7 @@ const B = UNITS.battleship;
 
 // The two-player game of helpers.js. `techs`: what both players have researched. `grid`: a land grid of
 // the test's own.
-function setup(techs = { seafaring: 1, gunnery: 1 }, grid = nav) {
+function setup(techs = { seafaring: 1, warships: 1 }, grid = nav) {
   const ctx = setupGame(grid);
   for (const p of [ctx.a, ctx.b]) p.tech = { ...p.tech, ...techs };
   ctx.order = (p, msg) => { p.commandTokens = 20; ctx.game.handleCommand(p, msg); };
@@ -59,43 +60,57 @@ function hitTimes(ctx, u, seconds) {
   return out;
 }
 
-test('Gunnery needs Seafaring first: refused before, queued after it, cancelled with it', () => {
+// Times (game seconds, rounded) at which `ship` fired while `seconds` run: each shot reloads it.
+function fireTimes(ctx, ship, seconds) {
+  const out = [];
+  for (let t = 0; t < seconds - 1e-9; t += DT) {
+    const ready = ship.readyAt;
+    ctx.game.tick(DT);
+    if (ship.readyAt !== ready) out.push(Math.round(ctx.game.time * 100) / 100);
+  }
+  return out;
+}
+
+// Seconds a shot from `from` to `to` (anything with x, y) flies at `speed` km/s.
+const flight = (from, to, speed) => Math.hypot(to.x - from.x, to.y - from.y) / speed;
+
+test('Warships needs Seafaring first: refused before, queued after it, cancelled with it', () => {
   const { a, order } = setup({});
   a.gold = 1000;
-  order(a, { t: 'research', tech: 'gunnery' });
+  order(a, { t: 'research', tech: 'warships' });
   assert.equal(a.research, null, 'refused without Seafaring');
   assert.equal(a.gold, 1000);
 
   order(a, { t: 'research', tech: 'seafaring' });
-  order(a, { t: 'research', tech: 'gunnery' });
+  order(a, { t: 'research', tech: 'warships' });
   assert.equal(a.research.tech, 'seafaring');
-  assert.deepEqual(a.researchQueue.map((e) => e.tech), ['gunnery'], 'Seafaring on its way is enough to queue it');
-  assert.equal(a.gold, 1000 - TECHS.seafaring.levels[0].cost - TECHS.gunnery.levels[0].cost);
+  assert.deepEqual(a.researchQueue.map((e) => e.tech), ['warships'], 'Seafaring on its way is enough to queue it');
+  assert.equal(a.gold, 1000 - TECHS.seafaring.levels[0].cost - TECHS.warships.levels[0].cost);
 
   order(a, { t: 'cancelResearch', tech: 'seafaring', level: 1 });
-  assert.equal(a.research, null, 'Gunnery does not start: it needed Seafaring');
+  assert.equal(a.research, null, 'Warships does not start: it needed Seafaring');
   assert.deepEqual(a.researchQueue, []);
   assert.equal(a.gold, 1000, 'both refunded');
 });
 
-test('cancelling a researched Seafaring does nothing to Gunnery', () => {
+test('cancelling a researched Seafaring does nothing to Warships', () => {
   const { a, order } = setup({ seafaring: 1 });
   a.gold = 1000;
-  order(a, { t: 'research', tech: 'gunnery' });
-  assert.equal(a.research?.tech, 'gunnery');
+  order(a, { t: 'research', tech: 'warships' });
+  assert.equal(a.research?.tech, 'warships');
   order(a, { t: 'cancelResearch', tech: 'seafaring', level: 1 });
-  assert.equal(a.research?.tech, 'gunnery', 'still running');
-  assert.equal(a.gold, 1000 - TECHS.gunnery.levels[0].cost);
+  assert.equal(a.research?.tech, 'warships', 'still running');
+  assert.equal(a.gold, 1000 - TECHS.warships.levels[0].cost);
 });
 
-test('battleships need Gunnery and a coastal city; Seafaring alone builds only transports', () => {
+test('battleships need Warships and a coastal city; Seafaring alone builds only transports', () => {
   assert.ok(canTrain('transport', { seafaring: 1 }) && !canTrain('battleship', { seafaring: 1 }));
-  assert.ok(canTrain('battleship', { seafaring: 1, gunnery: 1 }) && canTrain('infantry', {}));
+  assert.ok(canTrain('battleship', { seafaring: 1, warships: 1 }) && canTrain('infantry', {}));
 
   const s1 = setup({ seafaring: 1 });
   s1.a.gold = 1000;
   s1.order(s1.a, { t: 'build', cities: [s1.city('Lisbon').id], item: 'battleship' });
-  assert.deepEqual(s1.city('Lisbon').queue, [], 'no Gunnery: refused');
+  assert.deepEqual(s1.city('Lisbon').queue, [], 'no Warships: refused');
   assert.equal(s1.a.gold, 1000);
 
   const { game, a, city, order, run } = setup();
@@ -138,23 +153,24 @@ test('shoot, move, shoot: the guns reload while it sails, and it fires at once w
   const attack = () => order(a, { t: 'attack', ids: [ship.id], k: 'u', id: target.id });
 
   attack();
-  assert.equal(hitTimes(ctx, target, DT).length, 1, 'the first shot at once');
+  assert.equal(fireTimes(ctx, ship, DT).length, 1, 'the first shot at once');
   // Sail away and back, the target in reach all the time: a move order doesn't shoot.
   order(a, { t: 'move', ids: [ship.id], x, y: y - 120 });
-  assert.equal(hitTimes(ctx, target, 1).length, 0);
+  assert.equal(fireTimes(ctx, ship, 1).length, 0);
+  assert.ok(target.hp < 1000, 'the shot fired before it sailed off still landed');
   order(a, { t: 'move', ids: [ship.id], x, y: y + 120 });
-  assert.equal(hitTimes(ctx, target, 1).length, 0, 'no shots while sailing');
+  assert.equal(fireTimes(ctx, ship, 1).length, 0, 'no shots while sailing');
   assert.ok(ship.dist(target) <= ship.reach(target), 'still in reach');
   // Reloaded on the way: the next attack fires on its first tick.
   attack();
-  assert.equal(hitTimes(ctx, target, DT).length, 1, 'fires at once');
+  assert.equal(fireTimes(ctx, ship, DT).length, 1, 'fires at once');
 
   // An attack ordered again halfway through the reload does not start it over.
   const shot = ctx.game.time;
   order(a, { t: 'move', ids: [ship.id], x, y: y - 120 });
   ctx.run(0.5);
   attack();
-  const next = hitTimes(ctx, target, 1.5);
+  const next = fireTimes(ctx, ship, 1.5);
   assert.equal(next.length, 1);
   assert.ok(Math.abs(next[0] - (shot + B.reload)) < DT / 2, `reloaded ${B.reload} s after the last shot: ${next[0]} vs ${shot}`);
 });
@@ -254,7 +270,7 @@ test(`Navigation: its owner's ships sail ${NAV.speedPercent}% faster, those at s
 });
 
 test(`Navigation: a battleship still gathers speed for ${B.accelTime} s, up to a higher full speed`, () => {
-  const ctx = setup({ seafaring: 1, gunnery: 1, navigation: 1 });
+  const ctx = setup({ seafaring: 1, warships: 1, navigation: 1 });
   const [x, y] = openSea(ctx);
   const ship = ctx.spawn(ctx.a.id, 'battleship', x, y);
   const fast = { ...B, moveSpeed: B.moveSpeed * (1 + NAV.speedPercent / 100) };
@@ -303,6 +319,42 @@ test(`in harbour a battleship repairs ${B.harbourFactor} times its regeneration;
   assert.ok(Math.abs(far.hp - (100 + 2 * B.hpRegen)) < 1e-6, 'at sea: its own regeneration');
 });
 
+test(`harbour: within ${NAVAL.harbourRange} km of the pier; snapshots flag a ship under repair there (16), not at sea`, () => {
+  const ctx = setup();
+  const { game, a } = ctx;
+  const port = ctx.city('Lisbon').port;                  // A's city
+  const sea = (x, y) => nav.seaAt(x, y) === port.sea;
+  // Water a little inside the harbour's edge and a little outside it, on the same line out from the pier.
+  let inside = null, outside = null;
+  for (let k = 0; k < 16 && !(inside && outside); k++) {
+    const ang = (k / 16) * Math.PI * 2, c = Math.cos(ang), s = Math.sin(ang);
+    const i = [port.x + c * (NAVAL.harbourRange - 5), port.y + s * (NAVAL.harbourRange - 5)];
+    const o = [port.x + c * (NAVAL.harbourRange + 5), port.y + s * (NAVAL.harbourRange + 5)];
+    if (sea(...i) && sea(...o)) { inside = i; outside = o; }
+  }
+  assert.ok(inside, 'open water round the pier');
+  const near = ctx.spawn(a.id, 'transport', ...inside);
+  const away = ctx.spawn(a.id, 'transport', ...outside);
+  const full = ctx.spawn(a.id, 'transport', inside[0], inside[1] + 0.1);
+  near.hp = away.hp = 50;
+  ctx.run(1);
+  assert.ok(Math.abs(near.hp - (50 + NAVAL.harbourRegen)) < 1e-6, `in harbour: ${near.hp}`);
+  assert.ok(Math.abs(away.hp - (50 + UNITS.transport.hpRegen)) < 1e-6, `outside: ${away.hp}`);
+
+  const snaps = [];
+  a.client = { send: (m) => { if (m.t === 'snap') snaps.push(m); } };
+  a.view = { x0: port.x - 200, y0: port.y - 200, x1: port.x + 200, y1: port.y + 200 };
+  const flagsOf = (u) => { const s = snaps.at(-1), i = s.u.indexOf(u.id); return s.u[i + 6]; };
+  game.sendSnapshots();
+  assert.equal(flagsOf(near) & 16, 16, 'repairing in harbour');
+  assert.equal(flagsOf(away) & 16, 0, 'mending at sea, slowly: not shown');
+  assert.equal(flagsOf(full) & 16, 0, 'nothing to repair');
+  near.receiveDamage(1, { id: 0, owner: ctx.b.id, isCity: false });
+  game.tick(DT);
+  game.sendSnapshots();
+  assert.equal(flagsOf(near) & 16, 0, 'just hit: no repairs');
+});
+
 test('attack-move: battleships fight what they meet on the way; transports just sail', () => {
   const ctx = setup();
   const { a, order } = ctx;
@@ -314,8 +366,9 @@ test('attack-move: battleships fight what they meet on the way; transports just 
   assert.equal(ship.order.kind, 'amove');
   assert.equal(transport.order.kind, 'move');
   ctx.run(0.2);
-  assert.ok(enemy.hp < UNITS.transport.hp, 'shot on the way');
-  assert.ok(ship.attacking);
+  assert.ok(ship.attacking, 'firing on the way');
+  ctx.run(0.6);
+  assert.ok(enemy.hp < UNITS.transport.hp, 'hit once its bolt landed');
 
   order(a, { t: 'attack', ids: [transport.id], k: 'u', id: enemy.id });
   assert.notEqual(transport.order.kind, 'attack', 'a transport has no guns');
@@ -442,8 +495,9 @@ test('a battleship takes a coastal city with its shots, from the water within ra
   ctx.order(ctx.a, { t: 'attack', ids: [ship.id], k: 'c', id: lisbon.id });
   let shots = 0;
   for (let t = 0; t < 30 && lisbon.owner !== ctx.a.id; t += DT) {
+    const ready = ship.readyAt;
     ctx.game.tick(DT);
-    if (ship.shotAt === ctx.game.time) shots++;
+    if (ship.readyAt !== ready) shots++;
   }
   assert.equal(lisbon.owner, ctx.a.id, 'captured by the ship');
   assert.ok(lisbon.hp >= CITY.captureHp && lisbon.hp < CITY.captureHp + 1, 'with the HP of a city just taken');
@@ -461,8 +515,10 @@ test('a city does not regenerate between a battleship\'s shots, and does again o
   ship.x = lisbon.port.x - 50;               // in reach of the city from the start
   ctx.order(ctx.a, { t: 'attack', ids: [ship.id], k: 'c', id: lisbon.id });
   ctx.game.tick(DT);
+  assert.equal(ctx.game.projectiles.list.length, 1, 'fired');
+  while (ctx.game.projectiles.list.length) ctx.game.tick(DT);
   const hit = lisbon.hp;
-  assert.equal(hit, CITY.hp - B.damage, 'one shot');
+  assert.equal(hit, CITY.hp - B.damage, 'one shot, landed');
   ctx.order(ctx.a, { t: 'move', ids: [ship.id], x: ship.x - 200, y: ship.y });   // off it goes, not shooting
   ctx.run(B.reload - 0.1);
   assert.equal(lisbon.hp, hit, 'no regeneration while the guns could still be reloading');
@@ -485,7 +541,7 @@ test('a city still regenerates under attack by units that hit every second', () 
   assert.ok(Math.abs(lisbon.hp - expected) < 1, `regeneration offsets the damage: ${lisbon.hp} vs ${expected}`);
 });
 
-test('snapshots flag a shot (16) once, in the snapshot after it', () => {
+test('snapshots carry each shot once, in the snapshot after it was fired: kind, owner, from, to, target, times', () => {
   const ctx = setup();
   const { game, a } = ctx;
   const [x, y] = openSea(ctx);
@@ -501,10 +557,215 @@ test('snapshots flag a shot (16) once, in the snapshot after it', () => {
   game.sendSnapshots();
   game.tick(DT);
   game.sendSnapshots();
-  assert.equal(flagsOf(snaps[0]) & 16, 0);
-  assert.equal(flagsOf(snaps[1]) & 16, 16, 'fired');
-  assert.equal(flagsOf(snaps[2]) & 16, 0, 'reloading');
+  assert.equal(snaps[0].f, undefined, 'nothing fired yet');
+  const f = snaps[1].f;
+  assert.equal(f.length, 9, 'one shot');
+  const [kind, owner, x0, y0, x1, y1, tgt, firedAt, landsAt] = f;
+  assert.equal(kind, 2, 'a ballista bolt (not 1, a shell) that follows its target (2): a ship');
+  assert.equal(owner, a.id);
+  assert.ok(Math.abs(x0 - x) < 0.1 && Math.abs(y0 - y) < 0.1, 'from the ship');
+  assert.ok(Math.abs(x1 - target.x) < 0.1 && Math.abs(y1 - target.y) < 0.1, 'at the target');
+  assert.equal(tgt, target.id);
+  assert.ok(Math.abs(firedAt - DT) < 1e-6);
+  assert.ok(Math.abs(landsAt - firedAt - 40 / B.boltSpeed) < 0.002, `lands ${landsAt - firedAt} s later`);
+  assert.equal(snaps[2].f, undefined, 'not again');
   assert.equal(flagsOf(snaps[1]) & 1, 1, 'attacking');
+});
+
+test(`a bolt does its damage when it lands, ${B.boltSpeed} km a second after it was fired`, () => {
+  const ctx = setup();
+  const [x, y] = openSea(ctx);
+  const ship = ctx.spawn(ctx.a.id, 'battleship', x, y);
+  const target = ctx.spawn(ctx.b.id, 'transport', x - 40, y);
+  target.hp = 1000;
+  ctx.order(ctx.a, { t: 'attack', ids: [ship.id], k: 'u', id: target.id });
+  const [fired] = fireTimes(ctx, ship, DT);
+  assert.equal(target.hp, 1000, 'not when it is fired');
+  const [hit] = hitTimes(ctx, target, 1);
+  const takes = flight(ship, target, B.boltSpeed);
+  assert.ok(hit - fired >= takes - 1e-6 && hit - fired < takes + DT, `landed ${hit - fired} s later, flies ${takes} s`);
+  assert.equal(target.hp, 1000 - B.damage);
+});
+
+test('a bolt at a ship follows it: sailing off does not dodge it', () => {
+  const ctx = setup();
+  const [x, y] = openSea(ctx);
+  const ship = ctx.spawn(ctx.a.id, 'battleship', x, y);
+  const target = ctx.spawn(ctx.b.id, 'transport', x - 60, y);
+  ctx.order(ctx.a, { t: 'attack', ids: [ship.id], k: 'u', id: target.id });
+  assert.equal(fireTimes(ctx, ship, DT).length, 1);
+  assert.ok(nav.seaAt(x - 60, y - 200) === nav.seaAt(x, y), 'open sea to the north');
+  ctx.order(ctx.b, { t: 'move', ids: [target.id], x: x - 60, y: y - 200 });
+  ctx.run(1);
+  assert.ok(target.dist({ x: x - 60, y }) > 20, 'it sailed off');
+  assert.equal(target.hp, UNITS.transport.hp - B.damage, 'hit all the same');
+});
+
+test('a bolt at troops on land follows them too: running off does not dodge it, and nobody else is hit', () => {
+  const ctx = setup();
+  const [lx, ly, sx, sy] = quietShore(ctx, 45);
+  const ship = ctx.spawn(ctx.a.id, 'battleship', sx, sy);
+  const runner = ctx.spawn(ctx.b.id, 'cavalry', lx + 10, ly);
+  ctx.order(ctx.a, { t: 'attack', ids: [ship.id], k: 'u', id: runner.id });
+  assert.equal(fireTimes(ctx, ship, DT).length, 1);
+  const [shot] = ctx.game.projectiles.list;
+  assert.ok(shot.homing && !shot.shell, 'a bolt that follows it');
+  const [ax, ay] = [shot.x, shot.y];
+  runner.orderMove(lx + 120, ly, false);
+  ctx.run(DT);
+  // Another unit of B steps onto the spot the bolt was fired at.
+  const other = ctx.spawn(ctx.b.id, 'infantry', ax, ay);
+  other.orderHold();
+  while (ctx.game.projectiles.list.includes(shot)) ctx.game.tick(DT);
+  assert.ok(runner.dist({ x: ax, y: ay }) > 2 * runner.r, 'it ran off');
+  assert.equal(runner.hp, UNITS.cavalry.hp - B.damage, 'hit all the same');
+  assert.equal(other.hp, UNITS.infantry.hp, 'not the one standing where it was');
+});
+
+test('a bolt whose target died before it landed hits nobody', () => {
+  const ctx = setup();
+  const [lx, ly, sx, sy] = quietShore(ctx, 45);
+  const ship = ctx.spawn(ctx.a.id, 'battleship', sx, sy);
+  const foot = ctx.spawn(ctx.b.id, 'infantry', lx + 10, ly);
+  const next = ctx.spawn(ctx.b.id, 'infantry', lx + 10, ly + 13);
+  for (const u of [foot, next]) u.orderHold();
+  ctx.order(ctx.a, { t: 'attack', ids: [ship.id], k: 'u', id: foot.id });
+  assert.equal(fireTimes(ctx, ship, DT).length, 1);
+  const [shot] = ctx.game.projectiles.list;
+  foot.hp = 0;
+  while (ctx.game.projectiles.list.includes(shot)) ctx.game.tick(DT);
+  assert.ok(!ctx.game.units.has(foot.id));
+  assert.equal(next.hp, UNITS.infantry.hp, 'lost');
+});
+
+test('a shot still lands after its ship sank, and the kill is its owner\'s', () => {
+  const ctx = setup();
+  const [x, y] = openSea(ctx);
+  const ship = ctx.spawn(ctx.a.id, 'battleship', x, y);
+  const target = ctx.spawn(ctx.b.id, 'transport', x - 50, y);
+  target.hp = 1;
+  ctx.order(ctx.a, { t: 'attack', ids: [ship.id], k: 'u', id: target.id });
+  assert.equal(fireTimes(ctx, ship, DT).length, 1);
+  ship.hp = 0;
+  ctx.game.tick(DT);
+  assert.ok(!ctx.game.units.has(ship.id), 'sunk');
+  const kills = ctx.a.kills;
+  ctx.run(1);
+  assert.ok(!ctx.game.units.has(target.id), 'its bolt sank the transport');
+  assert.equal(ctx.a.kills, kills + UNITS.transport.cost);
+});
+
+const G = TECHS.gunnery;
+
+test('Gunnery needs Warships first; cancelling Seafaring cancels both', () => {
+  const { a, order } = setup({});
+  a.gold = 1000;
+  order(a, { t: 'research', tech: 'seafaring' });
+  order(a, { t: 'research', tech: 'gunnery' });
+  assert.deepEqual(a.researchQueue, [], 'Seafaring is not enough');
+  order(a, { t: 'research', tech: 'warships' });
+  order(a, { t: 'research', tech: 'gunnery' });
+  assert.deepEqual(a.researchQueue.map((e) => e.tech), ['warships', 'gunnery'], 'queued after Warships');
+  order(a, { t: 'cancelResearch', tech: 'seafaring', level: 1 });
+  assert.equal(a.research, null);
+  assert.deepEqual(a.researchQueue, []);
+  assert.equal(a.gold, 1000, 'all refunded');
+});
+
+// Damage `u` takes from ships from now on (other units and cities fighting it don't count).
+function shipDamage(u) {
+  const took = { hp: 0 };
+  const take = u.receiveDamage.bind(u);
+  u.receiveDamage = (amount, from) => { if (from.naval) took.hp += amount; take(amount, from); };
+  return took;
+}
+
+test(`Gunnery: a shell does ${B.damage} to the unit it hits and ${Math.round(G.splashShare * 100)}% to the enemies within ` +
+  `${G.splashRadius} km, never to your own`, () => {
+  const ctx = setup({ seafaring: 1, warships: 1, gunnery: 1 });
+  const { a, b } = ctx;
+  const [lx, ly, sx, sy] = quietShore(ctx, 45);
+  const ship = ctx.spawn(a.id, 'battleship', sx, sy);
+  const at = (dx, dy) => { assert.ok(nav.walkable(lx + dx, ly + dy), `land at ${dx}, ${dy}`); return [lx + dx, ly + dy]; };
+  const ownY = nav.walkable(lx + 19, ly - 12) ? -12 : 12;
+  const aimed = ctx.spawn(b.id, 'infantry', ...at(12, 0));
+  const near = ctx.spawn(b.id, 'infantry', ...at(26, 0));      // 14 km off: its edge within the burst
+  const far = ctx.spawn(b.id, 'infantry', ...at(46, 0));       // 34 km off: out of it
+  const own = ctx.spawn(a.id, 'infantry', ...at(19, ownY));    // A's own, in the burst
+  const took = new Map();
+  for (const u of [aimed, near, far, own]) { u.orderHold(); u.hp = 1000; took.set(u, shipDamage(u)); }
+  ctx.order(a, { t: 'attack', ids: [ship.id], k: 'u', id: aimed.id });
+  assert.equal(fireTimes(ctx, ship, DT).length, 1);
+  const [shot] = ctx.game.projectiles.list;
+  assert.ok(shot.shell && shot.homing, 'a shell that follows its target');
+  assert.ok(Math.abs(shot.landsAt - shot.firedAt - flight(ship, aimed, G.shellSpeed)) < 1e-6, `${G.shellSpeed} km a second`);
+  while (ctx.game.projectiles.list.length) ctx.game.tick(DT);
+  assert.equal(took.get(aimed).hp, B.damage, 'the whole damage');
+  assert.ok(Math.abs(took.get(near).hp - B.damage * G.splashShare) < 1e-9, `splash: ${took.get(near).hp}`);
+  assert.equal(took.get(far).hp, 0, 'out of the burst');
+  assert.equal(took.get(own).hp, 0, 'never your own');
+});
+
+test('Gunnery: a shell follows troops on the move and bursts on them, not where they stood', () => {
+  const ctx = setup({ seafaring: 1, warships: 1, gunnery: 1 });
+  const { a, b } = ctx;
+  const [lx, ly, sx, sy] = quietShore(ctx, 45);
+  const ship = ctx.spawn(a.id, 'battleship', sx, sy);
+  const runner = ctx.spawn(b.id, 'cavalry', lx + 10, ly);
+  ctx.order(a, { t: 'attack', ids: [ship.id], k: 'u', id: runner.id });
+  assert.equal(fireTimes(ctx, ship, DT).length, 1);
+  const [shot] = ctx.game.projectiles.list;
+  const [ax, ay] = [shot.x, shot.y];
+  runner.orderMove(lx + 120, ly, false);
+  ctx.run(DT);
+  const left = ctx.spawn(b.id, 'infantry', ax, ay);      // on the spot it was fired at
+  left.orderHold();
+  const took = shipDamage(runner), tookLeft = shipDamage(left);
+  while (ctx.game.projectiles.list.includes(shot)) ctx.game.tick(DT);
+  assert.ok(left.dist(runner) - left.r > G.splashRadius, 'it ran farther than the burst reaches');
+  assert.equal(took.hp, B.damage, 'the whole damage');
+  assert.equal(tookLeft.hp, 0, 'nothing where it stood');
+});
+
+test('Gunnery: a shell whose target died before it landed bursts where it last stood', () => {
+  const ctx = setup({ seafaring: 1, warships: 1, gunnery: 1 });
+  const { a, b } = ctx;
+  const [lx, ly, sx, sy] = quietShore(ctx, 45);
+  const ship = ctx.spawn(a.id, 'battleship', sx, sy);
+  const foot = ctx.spawn(b.id, 'infantry', lx + 10, ly);
+  const next = ctx.spawn(b.id, 'infantry', lx + 24, ly);     // 14 km off: its edge within the burst
+  for (const u of [foot, next]) u.orderHold();
+  const took = shipDamage(next);
+  ctx.order(a, { t: 'attack', ids: [ship.id], k: 'u', id: foot.id });
+  assert.equal(fireTimes(ctx, ship, DT).length, 1);
+  const [shot] = ctx.game.projectiles.list;
+  ctx.game.tick(DT);
+  foot.hp = 0;
+  while (ctx.game.projectiles.list.includes(shot)) ctx.game.tick(DT);
+  assert.ok(!ctx.game.units.has(foot.id));
+  assert.ok(Math.abs(took.hp - B.damage * G.splashShare) < 1e-9, `the splash all the same: ${took.hp}`);
+});
+
+test('Gunnery: battleships still fire bolts at ships; a shell at a city does no harm to the units around it', () => {
+  const ctx = setup({ seafaring: 1, warships: 1, gunnery: 1 });
+  const [x, y] = openSea(ctx);
+  const ship = ctx.spawn(ctx.a.id, 'battleship', x, y);
+  const boat = ctx.spawn(ctx.b.id, 'transport', x - 40, y);
+  ctx.order(ctx.a, { t: 'attack', ids: [ship.id], k: 'u', id: boat.id });
+  ctx.game.tick(DT);
+  const [bolt] = ctx.game.projectiles.list;
+  assert.ok(!bolt.shell && bolt.homing, 'a bolt that follows the ship');
+
+  const siege2 = setup({ seafaring: 1, warships: 1, gunnery: 1 });
+  const { lisbon, ship: gunship } = siege(siege2);
+  const guard = siege2.spawn(siege2.b.id, 'infantry', ...lisbon.spawnPoint(UNITS.infantry.size));
+  guard.orderHold();
+  const took = shipDamage(guard);
+  assert.ok(Math.hypot(guard.x - lisbon.x, guard.y - lisbon.y) - guard.r <= G.splashRadius, 'within a burst at the city');
+  siege2.order(siege2.a, { t: 'attack', ids: [gunship.id], k: 'c', id: lisbon.id });
+  for (let t = 0; t < 20 && lisbon.hp >= CITY.hp; t += DT) siege2.game.tick(DT);
+  assert.ok(lisbon.hp < CITY.hp, 'the city is hit');
+  assert.equal(took.hp, 0, 'no splash at a city');
 });
 
 test('a battleship and its reload survive a host handover (save)', () => {
@@ -520,4 +781,18 @@ test('a battleship and its reload survive a host handover (save)', () => {
   assert.ok(s.armed);
   assert.equal(s.readyAt, ship.readyAt, 'still reloading');
   assert.deepEqual(s.order, ship.order);
+});
+
+test('a shot in flight survives a host handover and lands', () => {
+  const ctx = setup();
+  const [x, y] = openSea(ctx);
+  const ship = ctx.spawn(ctx.a.id, 'battleship', x, y);
+  const target = ctx.spawn(ctx.b.id, 'transport', x - 50, y);
+  ctx.order(ctx.a, { t: 'attack', ids: [ship.id], k: 'u', id: target.id });
+  ctx.game.tick(DT);
+  assert.equal(ctx.game.projectiles.list.length, 1, 'in flight');
+  const copy = restoreGame(JSON.parse(JSON.stringify(saveGame(ctx.game))), { map, nav, hostId: 0 });
+  assert.deepEqual(copy.projectiles.list, ctx.game.projectiles.list);
+  for (let t = 0; t < 1; t += DT) copy.tick(DT);
+  assert.equal(copy.units.get(target.id).hp, UNITS.transport.hp - B.damage, 'landed in the new host\'s game');
 });

@@ -37,7 +37,8 @@ test('text files go gzipped, and come back the same', async () => {
 });
 
 test('a file the browser has already: 304, nothing sent', async () => {
-  for (const urlPath of ['/js/client.js', '/map.json', '/navgrid.json', '/sim/game.js', '/shared/config.js', '/sounds/tick.wav']) {
+  for (const urlPath of ['/', '/js/client.js', '/map.json', '/navgrid.json', '/sim/game.js', '/shared/config.js',
+    '/sounds/tick.wav', '/robots.txt', '/sitemap.xml', '/favicon.svg', '/og-image.jpg']) {
     const first = await get(urlPath, { 'Accept-Encoding': 'gzip' });
     assert.equal(first.status, 200, urlPath);
     assert.equal(first.headers['cache-control'], 'no-cache', `${urlPath}: always asks, so changes show at once`);
@@ -52,4 +53,35 @@ test('a file the browser has already: 304, nothing sent', async () => {
   assert.equal((await get('/nope.js')).status, 404);
   assert.equal((await get('/js')).status, 404, 'a folder is not a file');
   assert.equal((await get('/sim/data/navgrid.json')).status, 404, 'no data under /sim/');
+});
+
+test('search engines: the page names its address, robots.txt points to the sitemap', async () => {
+  const site = `http://localhost:${port}`;
+  for (const urlPath of ['/', '/index.html']) {
+    const page = await get(urlPath);
+    assert.equal(page.status, 200, urlPath);
+    assert.match(page.headers['content-type'], /^text\/html/);
+    const html = page.body.toString();
+    assert.ok(!html.includes('%SITE_URL%'), `${urlPath}: every address filled in`);
+    assert.ok(html.includes(`<link rel="canonical" href="${site}/">`), `${urlPath}: canonical link`);
+    assert.ok(html.includes(`<meta property="og:image" content="${site}/og-image.jpg">`), `${urlPath}: preview image`);
+    assert.match(html, /<meta name="description" content="[^"]{50,160}">/);
+    const data = JSON.parse(html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/)[1]);
+    assert.equal(data['@graph'][0].url, `${site}/`, 'structured data is valid JSON with the address');
+  }
+
+  const robots = await get('/robots.txt');
+  assert.match(robots.headers['content-type'], /^text\/plain/);
+  assert.ok(robots.body.toString().includes(`Sitemap: ${site}/sitemap.xml`));
+  // Behind a proxy that serves https, the addresses are https.
+  const proxied = await get('/robots.txt', { 'X-Forwarded-Proto': 'https', Host: 'conquest.example.com' });
+  assert.ok(proxied.body.toString().includes('Sitemap: https://conquest.example.com/sitemap.xml'));
+  // A Host header that is not a host name is not copied into the page.
+  const odd = await get('/', { Host: 'x"><script>' });
+  assert.ok(odd.body.toString().includes('<link rel="canonical" href="http://localhost/">'));
+
+  const sitemap = await get('/sitemap.xml');
+  assert.match(sitemap.headers['content-type'], /^application\/xml/);
+  assert.ok(sitemap.body.toString().includes(`<loc>${site}/</loc>`));
+  assert.match((await get('/favicon.svg')).headers['content-type'], /^image\/svg\+xml/);
 });
