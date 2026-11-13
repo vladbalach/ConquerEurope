@@ -19,6 +19,7 @@ import { AttackWatch, AlertLog, ALERT } from './alerts.js';
 import { Input } from './input.js';
 import { Hud, colorTag, el } from './hud.js';
 import { GameChat } from './chat.js';
+import { Standings } from './standings.js';
 import { playSound } from './sound.js';
 
 const INTERP_DELAY = 0.13;   // seconds behind the newest snapshot
@@ -148,6 +149,8 @@ export class GameClient {
     this.hud = new Hud(this);
     // Over the minimap; Enter opens it (input.js). `chat`: the game's messages so far (main.js).
     this.chat = new GameChat(this, chat);
+    // Top right: every player's cities, kills and deaths (standings.js).
+    this.standings = new Standings(this);
     this.input = new Input(this);
     this.input.clampCamera();
 
@@ -194,6 +197,7 @@ export class GameClient {
     cancelAnimationFrame(this.raf);
     this.input.destroy();
     this.chat.destroy();
+    this.standings.destroy();
     this.hud.destroy();
   }
 
@@ -662,6 +666,7 @@ export class GameClient {
     this.renderer.draw(now);
     const t2 = performance.now();
     this.hud.update(now);
+    this.standings.update(now);
     this.turnCountdown(now);
     if (this.viewDirty && now - this.viewSentAt > 150) this.sendView(now);
     if (this.debug) {

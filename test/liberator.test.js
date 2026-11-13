@@ -4,11 +4,11 @@ import assert from 'node:assert/strict';
 import { LIBERATOR, CITY, UNITS } from '../shared/config.js';
 import { setup } from './helpers.js';
 
-// Two players (A west, B east, 104 cities each) with the given death option. No one can win by
-// cities here (120), so only falling matters.
+// Two players (A west, B east, half the cities each) with the given death option. No one can win by
+// cities here (the target is every city on the map), so only falling matters.
 function game2(death) {
   const s = setup();
-  s.game.options = { ...s.game.options, countdown: 'none', winCities: 120, death };
+  s.game.options = { ...s.game.options, countdown: 'none', winCities: s.game.cities.length, death };
   const events = { a: [], b: [] };
   s.a.client = { send: (m) => events.a.push(m) };
   s.b.client = { send: (m) => events.b.push(m) };

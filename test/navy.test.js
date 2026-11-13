@@ -287,6 +287,8 @@ test('a sunk transport takes everyone on board down with it', () => {
   assert.equal(b.kills, lost, 'and count as kills for whoever sank it');
   assert.equal(b.gold - goldB, lost * ECONOMY.killGoldShare, 'each of them pays the kill gold');
   assert.equal(b.honor, lost * HONOR.killShare, 'and honor: the ship and its three passengers');
+  assert.equal(a.deathCount, 4, 'four units fell, by count');
+  assert.equal(b.killCount, 4, 'four kills');
   assert.equal(a.unitCount, 0);
 });
 

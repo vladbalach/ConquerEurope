@@ -70,9 +70,9 @@ export function restoreGame(save, { map, nav, hostId }) {
   game.nextUnitId += ID_GAP;
   game.hostId = hostId;
   // Technologies added since the save was made: not researched (0), not missing. A save from before
-  // gold percentages: 100%.
+  // gold percentages: 100%; from before kills and deaths were counted by unit: none yet.
   for (const p of save.players) {
-    game.players.set(p.id, { ...p, tech: { ...noTech(), ...p.tech }, goldPercent: sanitizeGoldPercent(p.goldPercent), client: null });
+    game.players.set(p.id, { killCount: 0, deathCount: 0, ...p, tech: { ...noTech(), ...p.tech }, goldPercent: sanitizeGoldPercent(p.goldPercent), client: null });
   }
   save.cities.forEach((s, i) => {
     const c = game.cities[i];

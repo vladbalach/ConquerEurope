@@ -68,6 +68,8 @@ function newPlayer(id, client) {
     tech: noTech(), research: null, researchQueue: [],
     commandTokens: COMMANDS_PER_SECOND,
     kills: 0, losses: 0,         // gold value of enemy units destroyed / own units lost
+    // The same by count: enemy units destroyed, own units fallen (a disbanded one only when it is an enemy's kill).
+    killCount: 0, deathCount: 0,
     honor: 0,                    // earned by kills (HONOR.killShare of each unit's cost); private, shown in the top bar
     // Traditions (Honor window): the ones learned, the one being learned { tradition, time, progress, cost },
     // and the ones queued after it [{ tradition, cost }], each paid when queued.
@@ -591,6 +593,7 @@ export class Game {
     return [...this.players.values()].map((p) => ({
       id: p.id, ...(secret ? {} : { name: p.name, goldPercent: p.goldPercent }), color: p.color, connected: p.connected,
       eliminated: p.eliminated, surrendered: p.surrendered, cities: p.cityCount, units: p.unitCount, kills: p.kills, losses: p.losses,
+      killCount: p.killCount, deathCount: p.deathCount,
       liberator: p.liberator, liberateAt: p.liberateAt, influence: p.influence, influenceAt: p.influenceAt,
       smuggle: p.smuggle, tech: p.tech,
       // Traditions are public; so is an ultimate one being learned: which (null: none) and the seconds left.
@@ -1927,6 +1930,8 @@ export class Game {
   // Honored Dead (tradition): a unit that fell gives its owner TRADITIONS.honoredDead.lossShare of its
   // value in honor. It fell unless it was disbanded; a disbanded one still fell when it counts as an
   // enemy's kill (hit by another player in its last seconds).
+  // Kills and deaths are also counted by unit (killCount, deathCount: the standings at the top right): a kill
+  // as above, a death for every unit that fell.
   recordDeath(u) {
     const value = u.value ?? UNITS[u.type].cost;
     const loser = this.players.get(u.owner);
@@ -1938,6 +1943,7 @@ export class Game {
     }
     const killer = killerId !== u.owner ? this.players.get(killerId) : null;
     const fell = !u.disbanding || !!killer;
+    if (loser && fell) loser.deathCount++;
     if (loser && fell && loser.traditions.includes('honoredDead')) {
       loser.honor += value * TRADITIONS.honoredDead.lossShare;
       this.history.honoredDead(loser.id, value * TRADITIONS.honoredDead.lossShare);
@@ -1946,6 +1952,7 @@ export class Game {
     this.history.died(u.owner, u.type, killer ? killer.id : -1, gold, value * HONOR.killShare);
     if (!killer) return;
     killer.kills += value;
+    killer.killCount++;
     killer.gold += gold;
     killer.honor += value * HONOR.killShare;
   }

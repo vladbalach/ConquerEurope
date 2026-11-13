@@ -278,7 +278,9 @@ const PAGES = [
             li(b('Above the minimap: the chat.'), ' New messages show there for a few seconds, each player by colour. ', k('Enter'),
               ' opens it to write and to read back; ', k('Enter'), ' sends, ', k('Esc'), ' closes it. Spectators talk among themselves until the game is over.'),
             li(b('Top left: the feed.'), ' What just happened: captures, kills, research done, alerts.'),
-            li(b('Top centre: the race.'), ' Players close to winning, and big news such as a tradition someone learned.'))),
+            li(b('Top centre: the race.'), ' Players close to winning, and big news such as a tradition someone learned.'),
+            li(b('Top right: the standings.'), ' Every player\'s cities, kills and deaths, counted in units, the most cities first. ',
+              'Hover a number for the gold it was worth. Click its head to fold it away, and again to bring it back.'))),
         h.card({ title: 'Reading the map' },
           ul(
             li(b('Your colour'), ' tints the land of your cities. Grey castles are ', b('neutral'), ': nobody\'s, and they shoot at everyone who comes near.'),

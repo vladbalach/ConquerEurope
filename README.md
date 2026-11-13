@@ -1,7 +1,7 @@
 # Conquest of Europa
 
 A multiplayer, top-down real-time strategy game played in the browser on a map of Europe.
-Up to 20 players each start with 10 random cities and race to hold **140 of the 223 cities** (the host can
+Up to 20 players each start with 10 random cities and race to hold **140 of the 248 cities** (the host can
 change the number, and by default it counts down every turn).
 
 Core design rules, such as anonymous players, are in [GAME_DESIGN.md](GAME_DESIGN.md).
@@ -65,7 +65,7 @@ from a game:
   can press **Watch instead** (not the only player: a game needs one, and a host who watches instead hands the room
   to the next player).
 - **In the game** a spectator sees the map as a player who owns nothing does: every empire by colour, battles,
-  the Players list (Tab), the feed. The top bar has no gold, honor, cities, units or Tech, and nothing they do gives
+  the Players list (Tab), the standings, the feed. The top bar has no gold, honor, cities, units or Tech, and nothing they do gives
   an order. The title says "spectating". Nobody in the game is told when a spectator comes or goes.
 - The game reaches spectators like a player: from the host's browser (see below), which sends each of them as much
   as it sends a player. A refreshed tab keeps watching. When the host leaves, spectators follow the game to the next
@@ -221,7 +221,7 @@ it sooner and rank it higher.
   has a clear shot; a city doesn't fire at units behind them. Melee units are not affected.
 - **Navy:** ships sail only on the sea. Building transports, and taking units on board or landing them, needs the
   **Seafaring** technology (Tech, Sea tab: 100 gold, 30 s); battleships need **Warships** as well (150 gold, 60 s).
-  **Navigation** (120 gold, 45 s) makes all your ships 20% faster, and **Gunnery** (200 gold, 60 s, after Warships)
+  **Navigation** (150 gold, 45 s) makes all your ships 25% faster, and **Gunnery** (250 gold, 60 s, after Warships)
   gives battleships cannons.
   - **Coastal cities:** a city with the sea within 30 km is coastal (admins can change it in Edit map). It is marked with an anchor (next to the castle, or
     next to the dot when zoomed out), has a timber pier where its ships are launched, and its panel says Port. Only
@@ -256,7 +256,7 @@ it sooner and rank it higher.
     still lands, and counts for its owner, if its ship sinks meanwhile.
     **Gunnery** gives battleships **cannons**: at troops ashore and at cities they fire **shells** instead of bolts
     (at ships, still bolts). A shell (90 km a second) follows its target like a bolt and bursts there: the target takes
-    the whole 30, and **every other enemy unit within 14 km of it takes 20%** (`TECHS.gunnery`: `splashRadius`,
+    the whole 30, and **every other enemy unit within 14 km of it takes 30%** (`TECHS.gunnery`: `splashRadius`,
     `splashShare`); if the target dies first, the shell still bursts where it last stood. A shell at a city bursts on its walls: no splash. Battleships
     of a player with Gunnery carry crossed cannons on their sail and a row of gun ports, so everyone can tell.
     So you can **shoot, move, shoot**: So you can **shoot, move, shoot**: let it fire, sail it
@@ -450,6 +450,12 @@ it sooner and rank it higher.
     the time left in the turn and how many cities they can still lose ("Maroon wins when the turn ends (0:23) unless
     they lose 6 cities"). Up to 4 players are listed, closest first. The distance is `closeToWinCities` in `GAME` in
     [shared/config.js](shared/config.js).
+  - **The standings** (top right, [public/js/standings.js](public/js/standings.js)): every player's cities, kills
+    and deaths, by colour, the most cities first; players who are out are greyed at the bottom. Kills and deaths
+    count units (`killCount`, `deathCount` in the scores): an enemy unit destroyed is a kill exactly as in the
+    Players list, and a death is a unit that fell, so a disbanded one only when it is an enemy's kill. Hovering a
+    number shows the gold it was worth (the Kills and Losses of the Players list). Its head folds it away; the
+    browser remembers that. It never reaches below the build column, and scrolls when there are many players.
   - The target checked is the one shown during that turn; a countdown lowers it only after the check.
   - When several players hold the target at the end of a turn, the one with the most cities wins. If they hold exactly
     as many, the game goes on to the next turn.
@@ -485,10 +491,10 @@ it sooner and rank it higher.
   - **Warships** (150 gold, 60 s): coastal cities build battleships, armed with ballistas (see Navy). It needs
     Seafaring: its card stays locked until Seafaring is researched or ordered, and taking Seafaring out of the queue
     takes Warships out too (gold back for both).
-  - **Navigation** (120 gold, 45 s): all your ships sail 20% faster, transports and battleships, the ones already at
+  - **Navigation** (150 gold, 45 s): all your ships sail 25% faster, transports and battleships, the ones already at
     sea too (a battleship still takes its 1.5 s to gather speed after a stop). It needs Seafaring, like Warships.
     The panel of a selected ship shows its speed with Navigation.
-  - **Gunnery** (200 gold, 60 s): your battleships get cannons, the ones already at sea too: shells with splash at
+  - **Gunnery** (250 gold, 60 s): your battleships get cannons, the ones already at sea too: shells with splash at
     troops ashore and at cities (see Navy). It needs Warships; taking Seafaring or Warships out of the queue takes it
     out too.
 
@@ -747,6 +753,7 @@ public/                 Browser client (vanilla JS modules, Canvas 2D, no build 
   js/delta.js           Snapshots and scores as changes to the last one sent (lossless), rebuilt on the player's page
   js/host-worker.js     Web Worker that runs the game in the host's browser
   js/client.js          Snapshot interpolation, selection, commands, effects
+  js/standings.js       The standings at the top right: every player's cities, kills and deaths
   js/alerts.js          Attack alerts: your units and cities under attack off screen, one alert per battle
   js/render.js          Map, territories, cities, cone units, minimap
   js/mountains.js       Draws the mountains from their cells: rocky land, and close up rows of hill signs
@@ -766,7 +773,7 @@ public/                 Browser client (vanilla JS modules, Canvas 2D, no build 
   sounds/               Sound effects made by tools/gen-sfx.js (committed)
   favicon.svg           The tab icon (and the one Google shows next to the site)
   og-image.jpg          The picture shown when someone shares a link to the game
-tools/cities.js         The 64 regions and 223 cities (lat/lon)
+tools/cities.js         The 71 regions and 248 cities (lat/lon)
 tools/mountains.js      The mountain ranges: chains along their crests (lat/lon, width), passes between the chains
 tools/build-map.js      Builds public/map.json and server/data/navgrid.json from Natural Earth data
 tools/gen-sfx.js        Makes the sound effects in public/sounds/ with ElevenLabs

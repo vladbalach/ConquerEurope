@@ -45,8 +45,8 @@ export const COUNTRIES = [
   { name: 'Malta', cities: [['Valletta', 35.90, 14.51]] },
 
   { name: 'Denmark', cities: [['Copenhagen', 55.68, 12.57], ['Aarhus', 56.16, 10.20], ['Aalborg', 57.05, 9.92]] },
-  { name: 'Norway', cities: [['Oslo', 59.91, 10.75], ['Bergen', 60.39, 5.32], ['Trondheim', 63.43, 10.40], ['Bodø', 67.28, 14.40], ['Tromsø', 69.65, 18.96], ['Karasjok', 69.47, 25.51], ['Otta', 61.77, 9.54], ['Olonkinbyen', 70.92, -8.72], ['Beerenberg', 71.08, -8.17]] },
-  { name: 'Sweden', cities: [['Stockholm', 59.33, 18.07], ['Gothenburg', 57.71, 11.97], ['Kalmar', 56.66, 16.36], ['Sundsvall', 62.39, 17.31], ['Luleå', 65.58, 22.15], ['Kiruna', 67.86, 20.23], ['Vilhelmina', 64.62, 16.65]] },
+  { name: 'Norway', cities: [['Oslo', 59.91, 10.75], ['Bergen', 60.39, 5.32], ['Trondheim', 63.43, 10.40], ['Bodø', 67.28, 14.40], ['Tromsø', 69.65, 18.96], ['Karasjok', 69.47, 25.51], ['Otta', 61.77, 9.54], ['Olonkinbyen', 70.92, -8.72], ['Beerenberg', 71.08, -8.17], ['Brønnøysund', 65.47, 12.21]] },
+  { name: 'Sweden', cities: [['Stockholm', 59.33, 18.07], ['Gothenburg', 57.71, 11.97], ['Kalmar', 56.66, 16.36], ['Sundsvall', 62.39, 17.31], ['Luleå', 65.58, 22.15], ['Kiruna', 67.86, 20.23], ['Vilhelmina', 64.62, 16.65], ['Mora', 61.00, 14.54]] },
   { name: 'Finland', cities: [['Helsinki', 60.17, 24.94], ['Turku', 60.45, 22.27], ['Kuopio', 62.89, 27.68], ['Oulu', 65.01, 25.47]] },
 
   { name: 'Livonia', cities: [['Tallinn', 59.44, 24.75], ['Tartu', 58.38, 26.72], ['Riga', 56.95, 24.11], ['Daugavpils', 55.87, 26.54]] },
@@ -68,16 +68,24 @@ export const COUNTRIES = [
 
   { name: 'Ruthenia', cities: [['Lviv', 49.84, 24.03], ['Vinnytsia', 49.23, 28.47], ['Kyiv', 50.45, 30.52], ['Chernihiv', 51.49, 31.29]] },
   { name: 'Zaporozhia', cities: [['Poltava', 49.59, 34.55], ['Kharkiv', 49.99, 36.23], ['Dnipro', 48.46, 35.05], ['Odesa', 46.48, 30.72], ['Simferopol', 44.95, 34.10]] },
-  { name: 'Muscovy', cities: [['Moscow', 55.76, 37.62], ['Smolensk', 54.78, 32.05], ['Tula', 54.19, 37.62], ['Yaroslavl', 57.63, 39.87], ['Nizhny Novgorod', 56.33, 44.00], ['Voronezh', 51.66, 39.20], ['Veliky Ustyug', 60.76, 46.30]] },
+  { name: 'Muscovy', cities: [['Moscow', 55.76, 37.62], ['Smolensk', 54.78, 32.05], ['Tula', 54.19, 37.62], ['Yaroslavl', 57.63, 39.87], ['Nizhny Novgorod', 56.33, 44.00], ['Voronezh', 51.66, 39.20], ['Nikolsk', 59.53, 45.46]] },
   { name: 'Novgorod', cities: [['Saint Petersburg', 59.94, 30.31], ['Novgorod', 58.52, 31.27], ['Petrozavodsk', 61.79, 34.35]] },
-  { name: 'Pomorye', cities: [['Arkhangelsk', 64.54, 40.54], ['Murmansk', 68.97, 33.07], ['Kem', 64.95, 34.58]] },
+  { name: 'Pomorye', cities: [['Arkhangelsk', 64.54, 40.54], ['Murmansk', 68.97, 33.07], ['Kem', 64.95, 34.58], ['Krasnoshchelye', 67.35, 37.05], ['Verkhnyaya Toyma', 62.24, 44.99]] },
   { name: 'Yugra', cities: [['Ukhta', 63.56, 53.68], ['Ivdel', 60.69, 60.43], ['Pustozersk', 67.55, 52.65], ['Khanty-Mansiysk', 61.00, 69.00]] },
   { name: 'Kazan Khanate', cities: [['Kazan', 55.79, 49.11], ['Samara', 53.20, 50.15], ['Kungur', 57.43, 56.95], ['Ufa', 54.73, 55.97]] },
   { name: 'Golden Horde', cities: [['Saratov', 51.53, 46.03], ['Volgograd', 48.71, 44.51], ['Astrakhan', 46.35, 48.04], ['Rostov', 47.24, 39.72], ['Tuapse', 44.10, 39.07], ['Grozny', 43.32, 45.69]] },
+  { name: 'Nogai Horde', cities: [['Chapaev', 50.20, 51.17], ['Inder', 48.55, 51.75], ['Saraichik', 47.51, 51.74]] },
 
   { name: 'Ottomans', cities: [['Istanbul', 41.01, 28.98], ['Izmir', 38.42, 27.14], ['Ankara', 39.93, 32.86]] },
   { name: 'Anatolia', cities: [['Konya', 37.87, 32.48], ['Antalya', 36.90, 30.70], ['Trabzon', 41.00, 39.72], ['Erzurum', 39.90, 41.27], ['Adana', 37.00, 35.32], ['Sivas', 39.75, 37.02], ['Van', 38.50, 43.38], ['Urfa', 37.17, 38.79]] },
   { name: 'Cyprus', cities: [['Nicosia', 35.17, 33.36]] },
+
+  { name: 'Georgia', cities: [['Sukhumi', 43.00, 41.02], ['Tbilisi', 41.72, 44.79]] },
+  { name: 'Persia', cities: [['Yerevan', 40.18, 44.51], ['Ganja', 40.68, 46.36], ['Urmia', 37.55, 45.08]] },
+  { name: 'Syria', cities: [['Aleppo', 36.20, 37.16], ['Damascus', 33.51, 36.29], ['Palmyra', 34.56, 38.27]] },
+  { name: 'Mesopotamia', cities: [['Raqqa', 35.95, 39.01], ['Mosul', 36.34, 43.13], ['Tikrit', 34.60, 43.68], ['Haditha', 34.14, 42.38], ['Rutba', 33.04, 40.28]] },
+  { name: 'Levant', cities: [['Acre', 32.93, 35.08], ['Jerusalem', 31.77, 35.21], ['Azraq', 31.83, 36.82]] },
+  { name: 'Arabia', cities: [['Turaif', 31.67, 38.65], ['Arar', 30.98, 41.04]] },
 
   { name: 'Morocco', cities: [['Tangier', 35.77, -5.80], ['Rabat', 34.02, -6.84], ['Marrakesh', 31.63, -8.00], ['Talsint', 32.53, -3.44]] },
   { name: 'Tlemcen', cities: [['Naâma', 33.27, -0.31], ['Relizane', 35.74, 0.56], ['Laghouat', 33.80, 2.88]] },

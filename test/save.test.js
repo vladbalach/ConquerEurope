@@ -89,6 +89,17 @@ test('a restored game plays on: units keep marching, research and production fin
   assert.ok([...copy.units.values()].some((u) => u.id >= game.nextUnitId + 1000), 'new units get new ids');
 });
 
+test('a save from before kills and deaths were counted by unit: none yet', () => {
+  const { game } = busyGame();
+  const save = JSON.parse(JSON.stringify(saveGame(game)));
+  for (const p of save.players) { delete p.killCount; delete p.deathCount; }
+  const copy = restoreGame(save, { map, nav, hostId: 1 });
+  for (const p of copy.players.values()) {
+    assert.equal(p.killCount, 0);
+    assert.equal(p.deathCount, 0);
+  }
+});
+
 test('a save packs to a few kilobytes and back', async () => {
   const { game } = busyGame();
   const save = saveGame(game);
