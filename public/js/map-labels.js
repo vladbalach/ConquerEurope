@@ -148,7 +148,13 @@ export function regionOutlines(map, index) {
   // The coast belongs to the region of the city whose territory it bounds. A landmass with several
   // cities is split between them by distance (map.polys[].cells are those Voronoi cells), so a
   // stretch of coast that crosses from one cell into the next is cut where they meet.
+  // Where the map's edge cuts a landmass off, its ring runs along the edge; a ragged country cut there
+  // (Kazakhstan by the north Caspian) gets stretches of it that run over the sea and back. So an edge on the
+  // map's edge is cut where the ring meets that edge line, and only the pieces with the landmass's own land
+  // beside them are outline.
   const land = landEdges(map);
+  const b = map.bounds;
+  const onEdge = (ax, ay, bx, by) => (ax === bx && (ax === b.x0 || ax === b.x1)) || (ay === by && (ay === b.y0 || ay === b.y1));
   for (const p of map.polys) {
     if (!p.c.length) continue;
     const owners = p.c.map((ci) => map.cities[ci]);
@@ -160,31 +166,55 @@ export function regionOutlines(map, index) {
       }
       return best;
     };
+    const coast = (ax, ay, bx, by) => {
+      const ca = nearest(ax, ay);
+      if (owners.length === 1 || ca === nearest(bx, by)) { add(ca.c, ax, ay, bx, by); return; }
+      // Where along the edge (0..1) a point is as far from two of the cities.
+      const dx = bx - ax, dy = by - ay, ts = [0, 1];
+      for (let k = 0; k < owners.length; k++) {
+        for (let m = k + 1; m < owners.length; m++) {
+          const u = owners[k], v = owners[m];
+          const ex = v.x - u.x, ey = v.y - u.y, slope = 2 * (dx * ex + dy * ey);
+          if (!slope) continue;
+          const t = -(2 * (ax * ex + ay * ey) + u.x * u.x + u.y * u.y - v.x * v.x - v.y * v.y) / slope;
+          if (t > 0 && t < 1) ts.push(t);
+        }
+      }
+      ts.sort((a, c) => a - c);
+      for (let k = 0; k + 1 < ts.length; k++) {
+        const t0 = ts[k], t1 = ts[k + 1];
+        if (t1 - t0 < 1e-9) continue;
+        const tm = (t0 + t1) / 2;
+        add(nearest(ax + dx * tm, ay + dy * tm).c, ax + dx * t0, ay + dy * t0, ax + dx * t1, ay + dy * t1);
+      }
+    };
     for (const r of p.r) {
       const n = r.length / 2;
+      const ends = (e) => { const i = 2 * e, j = (2 * e + 2) % r.length; return [r[i], r[i + 1], r[j], r[j + 1]]; };
+      // Where the ring meets each line of the map's edge ("x2924.9": the y of those points).
+      const cuts = new Map();
+      for (let e = 0; e < n; e++) {
+        const [ax, ay, bx, by] = ends(e);
+        if (!onEdge(ax, ay, bx, by)) continue;
+        const key = ax === bx ? `x${ax}` : `y${ay}`;
+        if (!cuts.has(key)) cuts.set(key, []);
+        cuts.get(key).push(...(ax === bx ? [ay, by] : [ax, bx]));
+      }
       for (let e = 0; e < n; e++) {
         if (land(r, e)) continue;
-        const i = 2 * e, j = (2 * e + 2) % r.length;
-        const ax = r[i], ay = r[i + 1], bx = r[j], by = r[j + 1];
-        const ca = nearest(ax, ay);
-        if (owners.length === 1 || ca === nearest(bx, by)) { add(ca.c, ax, ay, bx, by); continue; }
-        // Where along the edge (0..1) a point is as far from two of the cities.
-        const dx = bx - ax, dy = by - ay, ts = [0, 1];
-        for (let k = 0; k < owners.length; k++) {
-          for (let m = k + 1; m < owners.length; m++) {
-            const u = owners[k], v = owners[m];
-            const ex = v.x - u.x, ey = v.y - u.y, slope = 2 * (dx * ex + dy * ey);
-            if (!slope) continue;
-            const t = -(2 * (ax * ex + ay * ey) + u.x * u.x + u.y * u.y - v.x * v.x - v.y * v.y) / slope;
-            if (t > 0 && t < 1) ts.push(t);
-          }
-        }
-        ts.sort((a, b) => a - b);
-        for (let k = 0; k + 1 < ts.length; k++) {
-          const t0 = ts[k], t1 = ts[k + 1];
-          if (t1 - t0 < 1e-9) continue;
-          const tm = (t0 + t1) / 2;
-          add(nearest(ax + dx * tm, ay + dy * tm).c, ax + dx * t0, ay + dy * t0, ax + dx * t1, ay + dy * t1);
+        const [ax, ay, bx, by] = ends(e);
+        if (!onEdge(ax, ay, bx, by)) { coast(ax, ay, bx, by); continue; }
+        const vertical = ax === bx, key = vertical ? `x${ax}` : `y${ay}`;
+        const lo = vertical ? Math.min(ay, by) : Math.min(ax, bx), hi = vertical ? Math.max(ay, by) : Math.max(ax, bx);
+        const at = [lo, hi, ...cuts.get(key).filter((v) => v > lo && v < hi)].sort((u, v) => u - v);
+        for (let k = 0; k + 1 < at.length; k++) {
+          if (at[k + 1] - at[k] < 1e-9) continue;
+          const mid = (at[k] + at[k + 1]) / 2;
+          // Half a unit inside the map from the middle of the piece: the landmass's own land there?
+          const ix = vertical ? ax + (ax === b.x0 ? 0.5 : -0.5) : mid, iy = vertical ? mid : ay + (ay === b.y0 ? 0.5 : -0.5);
+          if (index.at(ix, iy) !== nearest(ix, iy).c) continue;
+          if (vertical) coast(ax, at[k], ax, at[k + 1]);
+          else coast(at[k], ay, at[k + 1], ay);
         }
       }
     }

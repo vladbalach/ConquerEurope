@@ -1,5 +1,30 @@
 # Patch notes
 
+## 13 November 2026: Standings
+
+- **The standings, at the top right of the game:** every player's cities, kills and deaths, by colour, the most
+  cities first. Kills and deaths count units; hover a number for the gold it was worth. Disbanding a unit is no
+  death, unless an enemy hit it just before. Click **Standings** to fold it away, and again to bring it back: your
+  browser remembers it.
+
+## 13 November 2026: Balance
+
+| | Before | Now |
+| --- | --- | --- |
+| Navigation | 120 gold, ships 20% faster | 150 gold, ships 25% faster |
+| Gunnery | 200 gold, 20% splash | 250 gold, 30% splash |
+| Battleship cost | 400 gold | 240 gold |
+| Battleship damage | 30 per shot | 40 per shot |
+| Battleship reload | 1.3 s | 1.2 s |
+| Battleship range | 65 | 68 |
+| Battleship speed | 35 | 38 |
+| Battleship time to full speed | 0.75 s | 0.65 s |
+| Transport speed | 40 | 43 |
+| Wall II | +400 HP | +300 HP |
+| Castle damage | +30 | +20 |
+
+Cities still outrange battleships (72 km against 68).
+
 ## 12 November 2026: Chat
 
 - **The waiting room has a chat**, beside the game's card: everyone in the room, players and spectators, by
@@ -341,6 +366,13 @@ Cities still outrange battleships (72 km against 65).
 - **Wider straits:** the Bosporus and the Dardanelles are now 12 to 20 km of open water instead of a thin crack,
   easy to see and to sail. Istanbul stands a little farther west, on its shore.
 - **No more Cyclades:** the small islands of the central Aegean, and those north-east of Euboea, are gone.
+- **The Middle East and the steppe join the war:** no more grey land in the south-east. Seven new regions:
+  **Georgia** (Sukhumi, Tbilisi), **Persia** (Yerevan, Ganja, Urmia), **Syria** (Aleppo, Damascus,
+  Palmyra), **Mesopotamia** (Raqqa, Mosul, Tikrit, Haditha, Rutba), the **Levant** (Acre,
+  Jerusalem, Azraq), **Arabia** (Turaif, Arar) and the **Nogai Horde** on the Kazakh steppe (Chapaev, Inder,
+  Saraichik).
+- **The north filled in:** Krasnoshchelye on the Kola Peninsula and Verkhnyaya Toyma on the Dvina join Pomorye,
+  Nikolsk takes Veliky Ustyug's place in Muscovy, Brønnøysund joins Norway and Mora Sweden.
 - **Land without a city is shared out:** Slovenia, North Macedonia, Luxembourg, Kosovo and the microstates are split
   between the cities nearest to them, like the rest of the map, instead of going whole to one city (or staying
   neutral).
@@ -352,7 +384,7 @@ Cities still outrange battleships (72 km against 65).
   Kem. Novgorod keeps Saint Petersburg, Novgorod and Petrozavodsk.
 - **White Ruthenia:** a new region split off from Lithuania: Minsk, Brest-Litovsk, Gomel and Vitebsk. Lithuania
   keeps Vilnius and Klaipėda.
-- The map now has **223 cities in 64 regions** (the default target is still 120).
+- The map now has **248 cities in 71 regions**.
 - **All of the coast is beach:** transports take units on board and land them anywhere on the coast, every island's
   too. The cliffs are gone (admins can still paint some in Edit map).
 - **The view goes past the edges:** the camera can now be moved a little beyond every edge of the map, so the land

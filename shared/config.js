@@ -367,12 +367,12 @@ export const TECHS = {
     levels: levels(1, 150, 60),
   },
   navigation: {
-    tab: 'sea', name: 'Navigation', requires: 'seafaring', speedPercent: 20,
-    levels: levels(1, 120, 45),
+    tab: 'sea', name: 'Navigation', requires: 'seafaring', speedPercent: 25,
+    levels: levels(1, 150, 45),
   },
   gunnery: {
-    tab: 'sea', name: 'Gunnery', requires: 'warships', shellSpeed: 90, splashShare: 0.2, splashRadius: 14,
-    levels: levels(1, 200, 60),
+    tab: 'sea', name: 'Gunnery', requires: 'warships', shellSpeed: 90, splashShare: 0.3, splashRadius: 14,
+    levels: levels(1, 250, 60),
   },
   roads: {
     tab: 'land', name: 'Roads', speedPercent: 20,

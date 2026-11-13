@@ -108,3 +108,52 @@ test('your snapshot carries your honor and gold, nobody else\'s', () => {
   assert.equal(last(b.id).h, 0);
   assert.equal(last(b.id).g, ECONOMY.startGold);
 });
+
+// Kills and deaths by count, for the standings at the top right: the same kills as above, and a death for every
+// unit that fell (a disbanded one only when an enemy gets the kill).
+test('kills and deaths are counted by unit too, and reach the standings', () => {
+  const { game, a, b, city, spawn, run } = setup();
+  const paris = city('Paris');
+  const x = paris.x + 40, y = paris.y + 120;
+  spawn(a.id, 'knight', x, y);
+  runUntilDead(game, spawn(b.id, 'infantry', x + 20, y), run);
+  runUntilDead(game, spawn(b.id, 'archer', x + 20, y), run);
+  assert.equal(a.killCount, 2);
+  assert.equal(b.deathCount, 2);
+  assert.equal(a.deathCount, 0);
+  assert.equal(b.killCount, 0);
+  const sent = game.playerList();
+  assert.equal(sent.find((p) => p.id === a.id).killCount, 2, 'kills reach the standings');
+  assert.equal(sent.find((p) => p.id === b.id).deathCount, 2, 'deaths reach the standings');
+});
+
+test('a neutral city\'s kill is a death for the victim and nobody\'s kill', () => {
+  const { game, a, b, city, spawn, run } = setup();
+  const metz = city('Metz');
+  metz.owner = -1;
+  const scout = spawn(a.id, 'archer', metz.x - 40, metz.y);
+  scout.update = () => {};
+  runUntilDead(game, scout, run);
+  assert.equal(a.deathCount, 1);
+  assert.equal(a.killCount + b.killCount, 0);
+});
+
+test('a disbanded unit is no death, unless an enemy gets the kill', () => {
+  const { game, a, b, city, spawn, run } = setup();
+  const paris = city('Paris');
+  const x = paris.x + 40, y = paris.y + 120;
+  const quiet = spawn(a.id, 'infantry', x, y);
+  game.handleCommand(a, { t: 'disband', ids: [quiet.id] });
+  runUntilDead(game, quiet, run, 60);
+  assert.equal(a.losses, UNITS.infantry.cost, 'still a loss in gold');
+  assert.equal(a.deathCount, 0, 'but it did not fall');
+
+  const hit = spawn(a.id, 'infantry', x, y);
+  const raider = spawn(b.id, 'cavalry', x + 400, y);
+  hit.receiveDamage(UNITS.infantry.hp - 5, raider);
+  game.units.delete(raider.id);                      // one hit, then the raider is gone
+  game.handleCommand(a, { t: 'disband', ids: [hit.id] });
+  runUntilDead(game, hit, run);
+  assert.equal(a.deathCount, 1, 'disbanded right after an enemy hit it: it fell');
+  assert.equal(b.killCount, 1, 'and it is that enemy\'s kill');
+});

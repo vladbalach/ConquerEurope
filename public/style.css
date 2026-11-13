@@ -275,6 +275,26 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 .panel .head .sub { color: var(--muted); font-size: 12px; }
 .hpbar { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.1); overflow: hidden; margin: 4px 0 8px; }
 .hpbar > i { display: block; height: 100%; background: linear-gradient(90deg, #4caf50, #8bd36b); }
+/* Top right: the standings, every player's cities, kills and deaths (standings.js). Its head folds it to just the
+   head. As tall as there is room above the build column (standings.js sets max-height); scrolls past that. */
+.standings { top: 60px; right: 8px; padding: 2px 4px 4px; font-size: 13px; overflow-y: auto; overscroll-behavior: contain; }
+.standings table { border-collapse: collapse; }
+.standings th { position: sticky; top: 0; z-index: 1; background: #1b140d; color: var(--muted); font-weight: 500; font-size: 11px;
+  text-align: right; padding: 3px 6px; white-space: nowrap; border-bottom: 1px solid rgba(201, 162, 74, 0.25); }
+.standings th:first-child { text-align: left; padding: 0; }
+.standings td { padding: 2px 6px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.standings td.name { text-align: left; padding-left: 4px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+.standings td.kills { color: #8fdc8f; }
+.standings td.deaths { color: #f0a090; }
+.standings tr.me td { background: rgba(201, 162, 74, 0.14); }
+.standings tr.out td { opacity: 0.45; }
+.standings tr.out .who { text-decoration: line-through; }
+.standings-toggle, .standings-toggle:hover:not(:disabled) {
+  background: none; border: none; border-radius: 4px; padding: 2px 4px; color: var(--gold); font-family: var(--serif); font-size: 14px; white-space: nowrap;
+}
+.standings-toggle:hover:not(:disabled) { color: var(--paper); }
+.standings.folded tbody, .standings.folded th:not(:first-child) { display: none; }
+.standings.folded th { background: none; border-bottom: none; }
 /* Right-hand column for your selected cities: upgrades on top, units to train below. */
 .build-col { position: absolute; right: 8px; bottom: 8px; width: 252px; display: flex; flex-direction: column; gap: 8px; }
 .build-box {
@@ -829,6 +849,8 @@ figure.demo { margin: 0; width: 440px; }
   /* Above the minimap, which is smaller here by default (render.js miniDefaultWidth). */
   .panel { left: 8px; right: 226px; transform: none; min-width: 0; max-width: none; bottom: calc(var(--minimap-h, 142px) + 16px); }
   .build-col { top: 60px; bottom: auto; width: 210px; }
+  /* The build column takes the standings' corner here: they make way while it shows. */
+  .build-col:not([hidden]) ~ .standings { display: none; }
   .build-btn .eff { display: none; }
   .build-btn .cost { white-space: normal; }
 }

@@ -94,7 +94,7 @@ test('turn pay is scaled by the gold percentage, in whole gold, and so is what t
 
 test('a liberator\'s pay is scaled by their gold percentage', () => {
   const { game, b } = setup();
-  game.options = { ...game.options, countdown: 'none', winCities: 120, death: 'liberator' };
+  game.options = { ...game.options, countdown: 'none', winCities: game.cities.length, death: 'liberator' };
   b.goldPercent = 150;
   for (const c of game.cities) if (c.owner === b.id) c.owner = -1;
   game.recount();                                  // B falls: a liberator with no gold

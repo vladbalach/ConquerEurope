@@ -6,10 +6,10 @@ import { liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows } from 
 import { setup, map, nav } from './helpers.js';
 import { Game } from '../server/game.js';
 
-// Two players (A west, B east, 104 cities each), Death: Liberator, nobody wins by cities.
+// Two players (A west, B east, half the cities each), Death: Liberator, nobody wins by cities.
 function game2(death = 'liberator') {
   const s = setup();
-  s.game.options = { ...s.game.options, countdown: 'none', winCities: 120, death };
+  s.game.options = { ...s.game.options, countdown: 'none', winCities: s.game.cities.length, death };
   const events = { a: [], b: [] };
   s.a.client = { send: (m) => events.a.push(m) };
   s.b.client = { send: (m) => events.b.push(m) };
