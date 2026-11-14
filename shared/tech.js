@@ -9,18 +9,22 @@ export function noTech() {
 }
 
 // The next level of `key` for a player at `level`: { level, cost, time }, or null when maxed.
-// `liberator`: the player is one now, so Rebellion technologies cost less (techCost).
-export function nextLevel(key, level, liberator = false) {
+export function nextLevel(key, level) {
   const def = TECHS[key];
   const next = def && def.levels[level];
-  return next ? { level: level + 1, cost: techCost(key, level, liberator), time: next.time } : null;
+  return next ? { level: level + 1, cost: next.cost, time: next.time } : null;
 }
 
-// Gold level `i` (0: the first) of `key` costs: its price, or for a liberator a Rebellion technology
-// LIBERATOR.rebellionCost of it, rounded up.
-export function techCost(key, i, liberator = false) {
-  const def = TECHS[key], cost = def.levels[i].cost;
-  return liberator && def.tab === 'rebellion' ? Math.ceil(cost * LIBERATOR.rebellionCost) : cost;
+// May only a liberator research this technology? Those of a tab with `liberators` (Rebellion).
+export function liberatorsOnly(key) {
+  const def = TECHS[key];
+  return !!def && !!TECH_TABS.find((t) => t.id === def.tab)?.liberators;
+}
+
+// Every technology, tab by tab in TECH_TABS order (Rebellion last), for lists shown to players. TECH_TYPES
+// itself keeps the order of the ids sent on the network.
+export function techsInTabOrder() {
+  return TECH_TABS.flatMap((t) => TECH_TYPES.filter((k) => TECHS[k].tab === t.id));
 }
 
 // Is this technology's tab available with these game options?
@@ -69,6 +73,11 @@ export function liberatorIncome(tech) {
 // How many cities a liberator can influence before they are all liberated (1: taken at once).
 export function influenceLimit(tech) {
   return 1 + lvl(tech, 'influencer') * TECHS.influencer.citiesPerLevel;
+}
+
+// Seconds nobody can attack a city this liberator takes: LIBERATOR.safeSeconds, more with Sanctuary.
+export function safeSeconds(tech) {
+  return LIBERATOR.safeSeconds + lvl(tech, 'sanctuary') * TECHS.sanctuary.safeSecondsPerLevel;
 }
 
 // How many cities a liberator can smuggle from.

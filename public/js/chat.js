@@ -67,7 +67,7 @@ export class RoomChat {
 
 // ------------------------------------------------------------------ in the game
 // Over the minimap: a new message shows there for SHOW_MS, the sender in their colour (a dot and the colour's
-// name, "You" for your own). Enter opens the chat: a line to write in, and every message kept to read back.
+// name, "Red (you)" for your own). Enter opens the chat: a line to write in, and every message kept to read back.
 // Enter sends and closes it, Esc closes it, and so does a click elsewhere (what was typed stays for next time).
 export class GameChat {
   // `messages`: the game's chat so far (the lobby server's chatLog), there to read back but not shown as new.
@@ -176,19 +176,20 @@ export class GameChat {
   }
 
   // "● Red: text": a player in their colour, by the colour's name (their nickname once the game is over), your
-  // own as "You". A spectator in grey.
+  // own as "Red (you)". A spectator in grey.
   line(m) {
     const g = this.g, mine = m.from === g.you;
     const line = span('div', 'chat-line', '');
+    const you = (name) => (mine ? `${name} (you)` : name);
     if (m.spectator) {
-      const who = span('b', 'chat-spectator', mine ? 'You' : m.name || 'Spectator');
+      const who = span('b', 'chat-spectator', you(m.name || 'Spectator'));
       who.title = 'Spectator';
       line.append(who);
     } else {
       const color = m.color || NEUTRAL_COLOR;
       const dot = span('i', 'pdot', '');
       dot.style.background = color;
-      line.append(dot, colorTag(mine ? 'You' : m.name || PLAYER_COLOR_NAMES[color] || 'Someone', color));
+      line.append(dot, colorTag(you(m.name || PLAYER_COLOR_NAMES[color] || 'Someone'), color));
     }
     line.append(`: ${m.text}`);
     return line;

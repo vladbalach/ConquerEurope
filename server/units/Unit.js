@@ -477,6 +477,7 @@ export class Unit {
 
   // An enemy city to attack when no enemy unit is around. Units standing idle only hit a
   // city that is shooting them or already within reach; attack-move seeks cities in sight.
+  // Never one just liberated (City.isSafe), even while it shoots them.
   findEnemyCity(includeCities) {
     const g = this.game;
     if (this.lastAttacker && this.lastAttacker.k === 'c' && g.time - this.lastAttacker.time < 1) {
@@ -486,7 +487,7 @@ export class Unit {
     const cityRange = includeCities ? this.sightRange() : this.reach({ r: 0 });
     let best = null, bd = Infinity;
     g.cityGrid.forEachNear(this.x, this.y, cityRange + CITY.size, (c) => {
-      if (c.owner === this.owner) return;
+      if (c.owner === this.owner || c.isSafe) return;
       const d = this.dist(c) - c.r;
       if (d <= cityRange && d < bd && this.canEngage(c)) { bd = d; best = c; }
     });
@@ -505,7 +506,7 @@ export class Unit {
     });
     if (best) return best;
     g.cityGrid.forEachNear(this.x, this.y, extra + CITY.size, (c) => {
-      if (c.owner === this.owner) return;
+      if (c.owner === this.owner || c.isSafe) return;
       const d = this.dist(c) - c.r;
       if (d <= extra && d < bd && this.canHit(c)) { bd = d; best = c; }
     });

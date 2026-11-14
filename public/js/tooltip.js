@@ -1,6 +1,7 @@
 // Custom tooltips. Any element with a `title` shows it at once in a styled box, instead of the browser's
 // slow, plain native tooltip. On first hover the title moves to `data-tip`, so the native one never appears;
-// code can keep setting `title` as usual. Text may contain line breaks (\n).
+// code can keep setting `title` as usual. Text may contain line breaks (\n). An element with a `data-tip-bad`
+// attribute shows it in red (a warning: why a button can't be used).
 const GAP = 8;          // px between the element and the tooltip
 const EDGE = 6;         // px kept free at the window edges
 
@@ -33,6 +34,7 @@ function show(el) {
   if (!text) { hide(); return; }
   target = el;
   tip.textContent = text;
+  tip.classList.toggle('bad', el.hasAttribute('data-tip-bad'));
   tip.hidden = false;
   place();
   clearInterval(timer);
@@ -51,6 +53,7 @@ function watch() {
   const text = textOf(target);
   if (!text) { hide(); return; }
   if (text !== tip.textContent) tip.textContent = text;
+  tip.classList.toggle('bad', target.hasAttribute('data-tip-bad'));
   place();
 }
 

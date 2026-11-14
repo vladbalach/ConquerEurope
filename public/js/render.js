@@ -1115,9 +1115,11 @@ export class Renderer {
 
   // Liberators' marks (game option Death: Liberator), shown to everyone. A city marked for
   // liberation gets a turning dashed ring in the liberator's colour; a city smuggled from gets a
-  // gold coin rimmed in the smuggler's colour. One ring or coin per liberator.
+  // gold coin rimmed in the smuggler's colour with a red arrow down: it loses that gold (drawSmuggleMark).
+  // One ring or coin per liberator.
   drawCityMarks(ci, sx, sy, far, size, mr, top, now) {
     const g = this.g, m = g.marks, ctx = this.ctx;
+    this.drawSafeRing(ci, sx, sy, far, size, mr);
     if (!m) return;
     const influence = m.influence.get(ci), smuggle = m.smuggle.get(ci);
     if (influence) {
@@ -1137,16 +1139,57 @@ export class Renderer {
     if (smuggle) {
       const r = far ? 4 : Math.max(4, size * 0.09);
       smuggle.forEach((id, k) => {
-        const cx = (far ? sx + mr + 3 : sx + size * 0.36) + k * r * 2.2, cy = far ? sy - mr - 3 : top + size * 0.14;
-        ctx.fillStyle = '#e8c04a';
-        ctx.strokeStyle = g.colorOf(id);
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-        ctx.strokeStyle = 'rgba(110,80,10,0.8)';
-        ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2); ctx.stroke();
+        const cx = (far ? sx + mr + 3 : sx + size * 0.36) + k * r * 3.6, cy = far ? sy - mr - 3 : top + size * 0.14;
+        this.drawSmuggleMark(cx, cy, r, g.colorOf(id));
       });
     }
+  }
+
+  // A smuggling mark: a gold coin of radius r at (cx, cy), rimmed in the smuggler's colour, and right of it a red
+  // arrow pointing down: the city's owner loses that gold, it is not a bonus.
+  drawSmuggleMark(cx, cy, r, color) {
+    const ctx = this.ctx;
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(cx, cy, r + 1.4, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#e8c04a';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = 'rgba(110,80,10,0.8)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2); ctx.stroke();
+    // The arrow: a shaft and a head, from above the coin's centre to below its rim.
+    const x = cx + r * 1.75, w = Math.max(1.2, r * 0.26), hw = Math.max(2.6, r * 0.62);
+    const y0 = cy - r * 0.95, y1 = cy + r * 0.2, y2 = cy + r * 1.15;
+    ctx.beginPath();
+    ctx.moveTo(x - w, y0); ctx.lineTo(x + w, y0); ctx.lineTo(x + w, y1); ctx.lineTo(x + hw, y1);
+    ctx.lineTo(x, y2); ctx.lineTo(x - hw, y1); ctx.lineTo(x - w, y1); ctx.closePath();
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+    ctx.fillStyle = '#e8352b';
+    ctx.fill();
+  }
+
+  // A city just liberated, which nobody can attack yet (LIBERATOR.safeSeconds, more with Sanctuary): a pale gold
+  // ring round it, its bright part the share of that time left, running out clockwise from the top.
+  drawSafeRing(ci, sx, sy, far, size, mr) {
+    const k = this.g.citySafeShare(ci);
+    if (!k) return;
+    const ctx = this.ctx;
+    const rx = far ? mr + 6 : size * 0.7, ry = far ? mr + 6 : size * 0.27, cy = far ? sy : sy + size * 0.05;
+    const from = -Math.PI / 2;
+    ctx.lineWidth = 4.5;
+    ctx.strokeStyle = 'rgba(26,18,10,0.55)';                  // ink under it: reads on any ground and colour
+    ctx.beginPath(); ctx.ellipse(sx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(255,240,190,0.3)';
+    ctx.beginPath(); ctx.ellipse(sx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = '#f2cf6e';
+    ctx.beginPath(); ctx.ellipse(sx, cy, rx, ry, 0, from, from + k * Math.PI * 2); ctx.stroke();
   }
 
   // Close up: castles showing their upgrades, with names. Strategic view (far): small markers in

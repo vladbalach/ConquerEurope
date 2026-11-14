@@ -7,9 +7,10 @@
 // Everything comes from the game-over message: the players, and the game's history, recorded by the host
 // (server/history.js). Without a history (the host left) only the players' last numbers are shown.
 import {
-  UNITS, UNIT_TYPES, UPGRADE_TYPES, CITY_UPGRADES, TECHS, TECH_TYPES, TRADITIONS, TRADITION_TYPES,
+  UNITS, UNIT_TYPES, UPGRADE_TYPES, CITY_UPGRADES, TECHS, TRADITIONS, TRADITION_TYPES,
   PLAYER_COLOR_NAMES, NEUTRAL_COLOR,
 } from '/shared/config.js';
+import { techsInTabOrder } from '/shared/tech.js';
 import { unitIconURL, upgradeIconURL, techIconURL, traditionSmallIconURL } from './sprites.js';
 import { SEA } from './render.js';
 import { el } from './hud.js';
@@ -534,7 +535,7 @@ export class Results {
   // ---------------------------------------------------------------- Players tab
   techCell(p) {
     const td = el('td', { class: 'icons' });
-    for (const k of TECH_TYPES) {
+    for (const k of techsInTabOrder()) {        // as in the Tech window: Sea, Land, then Rebellion
       const level = p.tech[k] || 0;
       if (!level) continue;
       const def = TECHS[k], max = def.levels.length;
@@ -759,7 +760,7 @@ export class Results {
         text = `Learned ${TRADITIONS[what].name}`;
       } else {
         text = {
-          fell: 'Fell and became a liberator', back: 'Back in the game', out: 'Eliminated', surrendered: 'Surrendered',
+          fell: 'Fell and became a liberator', renounced: 'Renounced and became a liberator', back: 'Back in the game', out: 'Eliminated', surrendered: 'Surrendered',
           left: 'Left the game', won: 'Won the game',
         }[kind];
       }
@@ -1019,7 +1020,7 @@ class Timeline {
             ? ` researched ${TECHS[what].name}${TECHS[what].levels.length > 1 ? ` ${level}` : ''}`
             : kind === 'tradition' && TRADITIONS[what] ? ` learned ${TRADITIONS[what].name}`
               : {
-                fell: ' fell and became a liberator', back: ' is back in the game', out: ' was eliminated', surrendered: ' surrendered',
+                fell: ' fell and became a liberator', renounced: ' renounced and became a liberator', back: ' is back in the game', out: ' was eliminated', surrendered: ' surrendered',
                 left: ' left the game', won: ' won the game',
               }[kind];
           if (text) out.push(el('p', { class: `ev ${kind}` }, this.r.tagOf(p.id), text));

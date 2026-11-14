@@ -6,7 +6,7 @@ import {
 import { formationSlots, formationRole, SHIP_SPACING } from '/shared/formation.js';
 import {
   liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring, hasGunnery, canTrain, shipSpeedFactor,
-  roadSpeedFactor,
+  roadSpeedFactor, safeSeconds,
 } from '/shared/tech.js';
 import { sanitizeOptions, citiesToWin, describeOptions, sanitizeGoldPercent, scaleGoldWhole } from '/shared/options.js';
 import { regionCities, regionHolder, regionAtPoint } from '/shared/regions.js';
@@ -28,6 +28,8 @@ const TICK_SECONDS = 3;      // a clock tick sounds in each of the last seconds 
 const ATTACK_ORANGE = '#ffa53a';
 const LOST_RED = '#ff4a3a';
 const kbd = (key) => el('kbd', {}, key);
+// A duration in words: "2 minutes", "90 seconds".
+const minutes = (s) => (s % 60 ? `${s} seconds` : `${s / 60} minute${s === 60 ? '' : 's'}`);
 
 // The guide at the start of a game (startGuide) shows where to click in the first game of the tab's
 // session only: once seen, here, later games give the words alone. Storage can be blocked (private
@@ -77,6 +79,8 @@ export class GameClient {
     this.regionCities = regionCities(map);       // region -> its city ids
     this.cityHp = new Float32Array(n).fill(CITY.hp);
     this.cityUpgrades = new Uint8Array(n);     // built upgrades per city: bit per UPGRADE_TYPES entry
+    // Cities just liberated, which nobody can attack yet: city -> { until: game time that ends, of: seconds given }.
+    this.citySafe = new Map();
     this.upgradesVersion = 0;
     this.territoryVersion = 0;
 
@@ -285,12 +289,12 @@ export class GameClient {
   }
 
   // How a player is called during the game: by colour only, never by nickname
-  // (GAME_DESIGN.md, "Anonymous players"). Your own empire is "You".
+  // (GAME_DESIGN.md, "Anonymous players"). Your own empire is "Red (you)".
   nameOf(owner) {
     if (owner < 0) return 'neutral';
-    if (owner === this.you) return 'You';
     const color = this.players.get(owner)?.color;
-    return PLAYER_COLOR_NAMES[color] || 'Someone';
+    const name = PLAYER_COLOR_NAMES[color] || 'Someone';
+    return owner === this.you ? `${name} (you)` : name;
   }
 
   // The page's estimate of the game clock runs on this, not on performance.now(): real milliseconds
@@ -339,6 +343,9 @@ export class GameClient {
       }
     }
     if (changed) this.territoryVersion++;
+    this.citySafe.clear();
+    const sc = msg.sc || [];
+    for (let i = 0; i < sc.length; i += 3) this.citySafe.set(sc[i], { until: sc[i + 1], of: sc[i + 2] });
 
     this.cityShots = msg.s;
     this.gold = msg.g;
@@ -402,7 +409,7 @@ export class GameClient {
     this.updateGuide();
   }
 
-  // A player's name for the feed, "Red" or "You", written in their colour.
+  // A player's name for the feed, "Red" or "Red (you)", written in their colour.
   who(owner) {
     return colorTag(this.nameOf(owner), this.colorOf(owner));
   }
@@ -417,8 +424,10 @@ export class GameClient {
       // A liberator took it (Death: Liberator), or someone pressed "Own" on it (debug builds).
       const took = msg.debug ? 'took' : msg.liberated ? 'liberated' : 'captured';
       const how = msg.debug ? ' (developer: Own)' : '';
+      // A liberated city can't be attacked for a while (LIBERATOR.safeSeconds, more with Sanctuary).
+      const safe = msg.liberated ? ` Nobody can attack it for ${minutes(msg.safe || LIBERATOR.safeSeconds)}.` : '';
       if (msg.to === this.you) {
-        this.hud.feed([this.who(this.you), ` ${took} ${city.n}`, ...from, how], cls);
+        this.hud.feed([this.who(this.you), ` ${took} ${city.n}`, ...from, how, safe ? `.${safe}` : ''], cls);
         if (this.guideStep) this.guideDone(msg.city);
         // You took the city you were looking at: select it, so you can build there at once.
         if ((msg.liberated || msg.debug) && this.inspect?.k === 'c' && this.inspect.id === msg.city) this.selectCity(msg.city);
@@ -430,9 +439,9 @@ export class GameClient {
         // The first time, how to get there.
         const look = this.toldAlertKey ? '' : ' Shift + Space shows it.';
         this.toldAlertKey = true;
-        this.hud.feed([this.who(msg.to), ` ${took} your city ${city.n}!${refund}${how}${look}`], cls);
+        this.hud.feed([this.who(msg.to), ` ${took} your city ${city.n}!${refund}${how}${safe}${look}`], cls);
       }
-      else this.hud.feed([this.who(msg.to), ` ${took} ${city.n}`, ...from, how]);
+      else this.hud.feed([this.who(msg.to), ` ${took} ${city.n}`, ...from, how, safe ? `.${safe}` : '']);
       this.regionChanged(msg);
     } else if (msg.kind === 'turn') {
       const need = this.citiesToWin(msg.turn);
@@ -498,7 +507,8 @@ export class GameClient {
         : msg.tech === 'warships' ? `: coastal cities build battleships (${UNITS.battleship.hotkey})`
           : msg.tech === 'navigation' ? `: your ships sail ${TECHS.navigation.speedPercent}% faster`
             : msg.tech === 'gunnery' ? ': your battleships fire cannon shells at troops ashore and at cities'
-              : msg.tech === 'roads' ? `: your land units march ${TECHS.roads.speedPercent}% faster in the regions you hold whole` : '';
+              : msg.tech === 'roads' ? `: your land units march ${TECHS.roads.speedPercent}% faster in the regions you hold whole`
+                : msg.tech === 'sanctuary' ? `: nobody can attack a city you liberate for ${minutes(safeSeconds({ sanctuary: msg.level }))}` : '';
       this.hud.feed(`Research complete: ${def.name}${def.levels.length > 1 ? ` ${msg.level}` : ''}${what}`, 'good');
       playSound('tech-learned');
     } else if (msg.kind === 'liberator') {
@@ -515,6 +525,9 @@ export class GameClient {
       this.hud.feed([this.who(msg.player), ` set every player's gold to ${msg.gold.toLocaleString('en-US')} (developer console)`]);
     } else if (msg.kind === 'speedSet') {
       this.hud.feed([this.who(msg.player), ` set the game speed to ${msg.speed}× (developer console)`]);
+    } else if (msg.kind === 'citiesLost') {
+      const n = msg.count === 1 ? 'its 1 city' : `all ${msg.count} cities`;
+      this.hud.feed([this.who(msg.player), ` gave up ${n} to neutral (developer console)`], msg.player === this.you ? 'bad' : '');
     } else if (msg.kind === 'honorSet') {
       this.hud.feed([this.who(msg.player), ` set every player's honor to ${msg.honor.toLocaleString('en-US')} (developer console)`]);
     } else if (msg.kind === 'learned') {
@@ -529,10 +542,10 @@ export class GameClient {
     } else if (msg.kind === 'ultimate') {
       // Someone (maybe you) has learned an ultimate tradition: everyone is told. (Learning it only shows
       // as its countdown in the Players list.)
-      const def = TRADITIONS[msg.tradition], me = msg.player === this.you, their = me ? 'your' : 'their';
-      const what = ` ${me ? 'have' : 'has'} learned ${def.name}: ${their} cities train any unit with honor`;
-      this.hud.banner(`${me ? 'You' : this.nameOf(msg.player)}${what}`, 10000);
-      this.hud.feed([this.who(msg.player), what], 'ultimate');
+      const def = TRADITIONS[msg.tradition], me = msg.player === this.you;
+      const gives = `${def.name}: ${me ? 'your' : 'their'} cities train any unit with honor`;
+      this.hud.banner(`${me ? 'You have' : `${this.nameOf(msg.player)} has`} learned ${gives}`, 10000);
+      this.hud.feed([this.who(msg.player), ` has learned ${gives}`], 'ultimate');
     } else if (msg.kind === 'promoted') {
       const what = msg.to === 'healer' ? `a Healer: your units within ${HEALER.radius} km heal`
         : `${heroName(HERO.kinds[msg.from], true)}: your units within ${HERO.auraRadius} km deal ` +
@@ -541,6 +554,12 @@ export class GameClient {
     } else if (msg.kind === 'left') {
       // Sent before the updated player list, so the leaver's colour is still known here.
       this.hud.feed([this.who(msg.player), ' left — their cities are now neutral']);
+    } else if (msg.kind === 'renounced') {
+      // "their 3 cities are neutral now, " / "their city is neutral now, " / nothing, with none left.
+      const n = msg.cities, cities = (whose) => (n === 1 ? `${whose} city is neutral now, ` : n ? `${whose} ${n} cities are neutral now, ` : '');
+      if (msg.player === this.you) {
+        this.hud.feed(`You renounced: ${cities('your')}your units and your gold are gone. You are a liberator.`, 'bad');
+      } else this.hud.feed([this.who(msg.player), ` renounced: ${cities('their')}they are a liberator`]);
     } else if (msg.kind === 'surrendered') {
       if (msg.player === this.you) this.hud.feed('You surrendered — your cities are now neutral', 'bad');
       else this.hud.feed([this.who(msg.player), ' surrendered — their cities are now neutral']);
@@ -617,6 +636,18 @@ export class GameClient {
   // Straight to the host, also during the countdown (order() would hold it back then).
   surrender() {
     if (!this.ended && !this.isOut()) this.hostLink.send({ t: 'surrender' });
+  }
+
+  // May you renounce (the Renounce button on your city's panel)? With Death: Liberator, while you are in the game, not a liberator,
+  // and hold LIBERATOR.renounceCities cities or fewer. The host checks it again.
+  canRenounce() {
+    return !this.ended && !this.prestart && !this.isOut() && this.options.death === 'liberator' && !this.isLiberator() &&
+      this.cityCountOf(this.you) <= LIBERATOR.renounceCities;
+  }
+
+  // Give up your cities (they turn neutral) and your units, and become a liberator at once.
+  renounce() {
+    if (this.canRenounce()) this.link.send({ t: 'renounce' });
   }
 
   // Out of the game: eliminated, or surrendered, or a spectator who never was in it. They only watch.
@@ -981,6 +1012,24 @@ export class GameClient {
   cityMaxHp(ci) { return CITY.hp + this.cityBonus(ci, 'hp'); }
   cityDamage(ci) { return CITY.damage + this.cityBonus(ci, 'damage'); }
   cityRange(ci) { return CITY.attackRange * (1 + this.cityBonus(ci, 'rangePercent') / 100); }
+  // Seconds before anyone can attack this city (just liberated: LIBERATOR.safeSeconds, more with Sanctuary), on
+  // the map's clock; 0: now.
+  citySafeLeft(ci) {
+    const s = this.citySafe.get(ci);
+    return s ? Math.max(0, s.until - this.viewTime) : 0;
+  }
+  // How much of its safe time this city has left, 1 to 0 (the ring round it on the map).
+  citySafeShare(ci) {
+    const s = this.citySafe.get(ci);
+    return s && s.of > 0 ? Math.min(1, this.citySafeLeft(ci) / s.of) : 0;
+  }
+  // Can your units attack this city? Not your own, and not one just liberated.
+  canAttackCity(ci) { return ci >= 0 && this.cityOwner[ci] !== this.you && !this.citySafeLeft(ci); }
+  // A right-click on a city just liberated: why nothing happens.
+  tellCitySafe(ci) {
+    const s = Math.ceil(this.citySafeLeft(ci));
+    this.hud.feed(`${this.map.cities[ci].n} was just liberated: nobody can attack it for ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} more`, 'bad');
+  }
   cityIncome(ci) {
     return ECONOMY.goldPerCityPerTurn + this.cityBonus(ci, 'goldPerTurn') + (this.cityHasRegionBonus(ci) ? ECONOMY.regionBonusPerCity : 0);
   }
@@ -1324,6 +1373,16 @@ export class GameClient {
     let n = 0;
     for (const u of this.renderUnits) if (u.owner === this.you) n += 1 + (u.flags >> CARGO_SHIFT);
     return n;
+  }
+
+  // At the most units a player may have (ECONOMY.maxUnitsPerPlayer): no more can be trained. The host pauses
+  // units already queued (Game.step); here new ones can't be ordered. `count`: ownUnitCount(), when known.
+  atUnitLimit(count = this.ownUnitCount()) {
+    return count >= ECONOMY.maxUnitsPerPlayer;
+  }
+
+  unitLimitText() {
+    return `You have ${ECONOMY.maxUnitsPerPlayer} units, the most you can have: lose or disband some to train more`;
   }
 
   focusHome() {
@@ -1787,6 +1846,10 @@ export class GameClient {
     let cities = [...this.selectedCities].filter((ci) => this.cityOwner[ci] === this.you);
     if (!cities.length) return;
     if (honor && this.honorPrice(item) === null) return;
+    if (UNITS[item] && this.atUnitLimit()) {
+      this.hud.feed(this.unitLimitText(), 'bad red');
+      return;
+    }
     if (!this.canTrain(item, true)) return;
     if (UNITS[item]?.naval) {
       cities = cities.filter((ci) => this.isCoastal(ci));

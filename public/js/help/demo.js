@@ -96,6 +96,7 @@ function makeWorld(g, colors, cam) {
     cityOwner: new Int16Array(n).fill(NEUTRAL),
     cityHp: new Float32Array(n).fill(CITY.hp),
     cityUpgrades: new Uint8Array(n),
+    citySafe: new Map(),          // no city just liberated in a demo: no safe rings (render.js drawSafeRing)
     territoryVersion: 0, upgradesVersion: 0,
     renderUnits: [], unitById: new Map(), myQueues: new Map(), cargo: new Map(),
     selection: new Set(), selectedCities: new Set(), inspect: null,

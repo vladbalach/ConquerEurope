@@ -13,6 +13,7 @@
 //   navigation    a compass rose, its north point in the player's colour
 //   gunnery       two bronze cannons crossed over three cannonballs, a ring on each in the player's colour
 //   roads         a paved Roman road coming out of a triumphal arch, its inscription panel in the player's colour
+//   sanctuary     a gatehouse with its portcullis down, a small shield over the gate in the player's colour
 
 const INK = '#1a120a';
 const rgbOf = (hex) => { const n = parseInt(hex.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
@@ -402,11 +403,65 @@ function romanRoad() {
   };
 }
 
+// A gatehouse with its portcullis down (technology Sanctuary: a city just liberated is safe for a while).
+// Two silver towers with merlons, the curtain wall between them, a round-headed gate in a gold frame with the
+// gold portcullis lowered in it, and over the gate a small heater shield enamelled in the player's colour.
+function gatehouse() {
+  const wall = new Path2D();
+  wall.moveTo(-16, 46); wall.lineTo(-16, -22);
+  for (const x of [-13, -3, 7]) { wall.lineTo(x, -22); wall.lineTo(x, -28); wall.lineTo(x + 6, -28); wall.lineTo(x + 6, -22); }
+  wall.lineTo(16, -22); wall.lineTo(16, 46); wall.closePath();
+  const tower = (s) => {                   // s: -1 the left one, 1 the right one
+    const p = new Path2D(), o = s < 0 ? -40 : 16;
+    p.moveTo(o, 46); p.lineTo(o, -42);
+    for (const x of [0, 9, 18]) { p.lineTo(o + x, -42); p.lineTo(o + x + 6, -42); if (x < 18) { p.lineTo(o + x + 6, -36); p.lineTo(o + x + 9, -36); } }
+    p.lineTo(o + 24, 46); p.closePath();
+    return p;
+  };
+  const towers = [tower(-1), tower(1)];
+  const courses = new Path2D();            // masonry courses, and a band under the merlons
+  for (const y of [-34, -6, 20]) { courses.moveTo(-40, y); courses.lineTo(-16, y); courses.moveTo(16, y); courses.lineTo(40, y); }
+  const slits = new Path2D();
+  for (const x of [-29.5, 26.5]) { slits.rect(x, -27, 3, 13); slits.rect(x, 2, 3, 11); }
+  const CY = 13;                           // the centre of the gate's round head
+  const gate = new Path2D();
+  gate.moveTo(-11, 46); gate.lineTo(-11, CY); gate.arc(0, CY, 11, Math.PI, 0); gate.lineTo(11, 46); gate.closePath();
+  const frame = new Path2D();
+  frame.moveTo(-15, 46); frame.lineTo(-15, CY); frame.arc(0, CY, 15, Math.PI, 0); frame.lineTo(15, 46);
+  frame.lineTo(11, 46); frame.lineTo(11, CY); frame.arc(0, CY, 11, 0, Math.PI, true); frame.lineTo(-11, 46); frame.closePath();
+  const grate = new Path2D();              // the portcullis: bars up to the arch, a point at the foot of each
+  for (const x of [-7, -2.4, 2.4, 7]) {
+    const top = CY - Math.sqrt(121 - (Math.abs(x) + 1.2) ** 2);
+    grate.moveTo(x - 1.2, top); grate.lineTo(x + 1.2, top); grate.lineTo(x + 1.2, 42); grate.lineTo(x, 45.5); grate.lineTo(x - 1.2, 42); grate.closePath();
+  }
+  for (const y of [18, 27, 36]) grate.rect(-10.5, y - 1.2, 21, 2.4);
+  const shield = new Path2D();
+  shield.moveTo(-7.5, -21); shield.quadraticCurveTo(0, -19.5, 7.5, -21); shield.lineTo(7.5, -13);
+  shield.bezierCurveTo(7.5, -8, 4, -5.2, 0, -3.5); shield.bezierCurveTo(-4, -5.2, -7.5, -8, -7.5, -13); shield.closePath();
+  const shine = new Path2D();
+  shine.ellipse(-35, -12, 1.6, 12, 0, 0, Math.PI * 2);
+  return {
+    box: [-44, -46, 44, 48],
+    layers: [
+      { role: 'main', path: wall },
+      { role: 'main', path: towers[0] }, { role: 'main', path: towers[1] },
+      { role: 'line', path: courses, clip: towers[0], w: 0.9 }, { role: 'line', path: courses, clip: towers[1], w: 0.9 },
+      { role: 'shade', path: towers[1] },  // the right tower in the shade: light from the top left
+      { role: 'hole', path: slits },
+      { role: 'hole', path: gate },
+      { role: 'accent', path: grate },
+      { role: 'accent', path: frame },
+      { role: 'enamel', path: shield },
+      { role: 'shine', path: shine },
+    ],
+  };
+}
+
 const SUBJECTS = {
   heroes: helmet, mercy: hospitallerCross, brotherhood, honoredDead: () => brazier(), eternalGlory: () => laurel(),
 };
 // Technologies drawn in this style, without the shield (drawTechEmblem).
-const TECH_SUBJECTS = { navigation: compassRose, gunnery: crossedCannons, roads: romanRoad };
+const TECH_SUBJECTS = { navigation: compassRose, gunnery: crossedCannons, roads: romanRoad, sanctuary: gatehouse };
 
 // The subject in silver and gold, `size` px across, centred on (cx, cy). Roles of its own here: `enamel`, a
 // part in the player's colour; `shade`, the shaded half of a faceted part (laid flat over it).

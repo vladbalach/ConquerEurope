@@ -407,7 +407,7 @@ export class Input {
     else if (g.selection.size) {
       const u = this.pickUnit(x, y, false);
       const enemyUnit = u && u.owner !== g.you;
-      const enemyCity = !u && this.hoverCity >= 0 && g.cityOwner[this.hoverCity] !== g.you;
+      const enemyCity = !u && g.canAttackCity(this.hoverCity);
       if (enemyUnit || enemyCity) cursor = 'crosshair';
     } else if (this.hoverCity >= 0 || this.pickUnit(x, y, false)) {
       cursor = 'pointer';
@@ -594,6 +594,7 @@ export class Input {
       if (u && u.owner !== g.you) { g.commandAttack('u', u.id, u.x, u.y, shift); return; }
       const city = this.pickCity(sx, sy);
       if (city >= 0 && g.cityOwner[city] !== g.you) {
+        if (g.citySafeLeft(city)) { g.tellCitySafe(city); return; }     // just liberated: no attack yet
         const c = g.map.cities[city];
         if (this.attackKey) g.commandMove(c.x, c.y, true, shift);
         else g.commandAttack('c', city, c.x, c.y, shift);

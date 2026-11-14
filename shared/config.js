@@ -184,7 +184,9 @@ export const CITY = {
 // ------------------------------------------------------------------ city upgrades
 //  Built in a city like units: they cost gold, take build time and a place in its production
 //  queue. Each can be built once per city. When the city is captured its upgrades are destroyed.
-//  hp            extra city HP (and max HP)
+//  hp            extra city HP (and max HP). When it is built the city keeps the share of its HP it had
+//                (10% of the old maximum is 10% of the new one)...
+//  healPercent   ...and then heals this percent of its new maximum HP (never above it)
 //  rangePercent  extra city attack range, in percent of CITY.attackRange
 //  damage        extra city damage per second
 //  goldPerTurn   extra gold the city pays its owner every turn
@@ -197,8 +199,8 @@ export const CITY = {
 //                ordering an upgrade the city already has (or has queued) orders its next grade,
 //                so pressing A twice queues Wall I and then Wall II.
 export const CITY_UPGRADES = {
-  wall: { name: 'Wall I', cost: 6, buildTime: 4, hp: 100, hotkey: 'A' },
-  wall2: { name: 'Wall II', cost: 14, buildTime: 6, hp: 150, requires: 'wall' },
+  wall: { name: 'Wall I', cost: 6, buildTime: 4, hp: 100, healPercent: 10, hotkey: 'A' },
+  wall2: { name: 'Wall II', cost: 14, buildTime: 6, hp: 150, healPercent: 10, requires: 'wall' },
   tower: { name: 'Tower', cost: 20, buildTime: 10, rangePercent: 55, hotkey: 'S' },
   castle: { name: 'Castle', cost: 20, buildTime: 10, damage: 20, hotkey: 'D' },
   farm: { name: 'Farm', cost: 50, buildTime: 20, goldPerTurn: 5, hotkey: 'F' },
@@ -301,13 +303,15 @@ export const HEALER = {
 //  Game option "Death: Liberator" (shared/options.js). A player who loses every city and every unit
 //  loses all their gold and becomes a liberator: they get gold every turn, and may take any one city
 //  on the map (neutral or another player's), at most once every few turns. With a city they are
-//  back in the game; if they fall again, it starts over.
+//  back in the game; if they fall again, it starts over. A player down to renounceCities cities or
+//  fewer may renounce: their cities turn neutral, their units are gone, and they fall at once.
 export const LIBERATOR = {
   goldPerTurn: 20,            // paid to a liberator at the end of every turn
   cooldownTurns: 2,           // turns between two cities taken this way
   protectedCities: 5,         // a player holding this many cities or fewer can't have one taken this way
-  rebellionCost: 0.5,         // Rebellion technologies ordered while a liberator cost this share of their price
-                              // (rounded up); ordered before falling, the full price (and refunds give back what was paid)
+  renounceCities: 5,          // a player holding this many cities or fewer may renounce: become a liberator at once
+  safeSeconds: 120,           // game seconds a liberated city can't be attacked (cities its liberator captures later can);
+                              // longer with TECHS.sanctuary
 };
 
 // ------------------------------------------------------------------ technologies
@@ -315,9 +319,9 @@ export const LIBERATOR = {
 //  takes `time` seconds of game time. One research at a time; cancelling gives the gold back.
 //  levels: cost and research time of every level, in order (so the number of levels is the maximum).
 //
-//  Tab 'rebellion' exists only with the game option Death: Liberator. Its technologies can be
-//  researched at any time, but work only while the player is a liberator (see LIBERATOR). A liberator
-//  pays only LIBERATOR.rebellionCost of their price.
+//  Tab 'rebellion' exists only with the game option Death: Liberator. Its technologies can be researched
+//  only while the player is a liberator (see LIBERATOR), and work only while they are one. A level ordered
+//  as a liberator still finishes (and counts the next time they fall) if they come back meanwhile.
 //    supporters  +goldPerTurnPerLevel liberator gold per turn for every level
 //    influencer  a liberator marks ("influences") cities, one per turn, and liberates them all at once:
 //                when as many are marked as the limit, or earlier on request. The limit is 1 without
@@ -325,6 +329,8 @@ export const LIBERATOR = {
 //    smuggling   a liberator marks citiesPerLevel more cities per level; at the end of every turn
 //                `share` of each one's income goes from its owner to the liberator. These marks are
 //                separate from influence marks.
+//    sanctuary   a city the liberator takes can't be attacked for safeSecondsPerLevel more seconds per level
+//                (LIBERATOR.safeSeconds without it); the level when the city is liberated counts.
 //
 //  Tab 'sea' exists in every game; its technologies work as soon as they are researched.
 //    seafaring   coastal cities build transports, and units go on board them and land from them
@@ -348,15 +354,19 @@ const levels = (n, cost, time) => Array.from({ length: n }, (_, i) => ({ cost: A
 export const TECHS = {
   supporters: {
     tab: 'rebellion', name: 'Supporters', goldPerTurnPerLevel: 20,
-    levels: levels(3, 120, 120),
+    levels: levels(2, 60, 120),
   },
   influencer: {
     tab: 'rebellion', name: 'Influencer', citiesPerLevel: 1,
-    levels: levels(3, 100, 120),
+    levels: levels(3, 50, 120),
   },
   smuggling: {
     tab: 'rebellion', name: 'Smuggling', citiesPerLevel: 1, share: 1,
-    levels: levels(3, 30, 60),
+    levels: levels(3, 15, 20),
+  },
+  sanctuary: {
+    tab: 'rebellion', name: 'Sanctuary', safeSecondsPerLevel: 60,
+    levels: levels(2, 40, 90),
   },
   seafaring: {
     tab: 'sea', name: 'Seafaring',
@@ -380,13 +390,13 @@ export const TECHS = {
   },
 };
 // Order matters: it is the technology id used on the network (new ones go at the end).
-export const TECH_TYPES = ['supporters', 'influencer', 'smuggling', 'seafaring', 'warships', 'navigation', 'gunnery', 'roads'];
-// Tabs of the Tech window, in order (the window opens on the first). `death`: the tab exists only
-// with this game option.
+export const TECH_TYPES = ['supporters', 'influencer', 'smuggling', 'seafaring', 'warships', 'navigation', 'gunnery', 'roads', 'sanctuary'];
+// Tabs of the Tech window, in order (the window opens on the first; lists of technologies follow it too).
+// `death`: the tab exists only with this game option. `liberators`: only a liberator may research its technologies.
 export const TECH_TABS = [
   { id: 'sea', name: 'Sea' },
   { id: 'land', name: 'Land' },
-  { id: 'rebellion', name: 'Rebellion', death: 'liberator' },
+  { id: 'rebellion', name: 'Rebellion', death: 'liberator', liberators: true },
 ];
 
 // ------------------------------------------------------------------ game
@@ -413,6 +423,12 @@ export const GAME = {
 // Chat in the waiting room and in the game (server/index.js, "chat"; public/js/chat.js): the longest message in
 // characters, and how many of the last messages are kept, for those who come in (or back) and on screen.
 export const CHAT = { maxLength: 200, keep: 50 };
+
+// ------------------------------------------------------------------ community
+//  The game's Discord server: a "Join our Discord" button on the start screen and at the foot of the lobby
+//  (public/js/main.js). Use an invite link that never expires (Discord: Invite People → Edit invite link →
+//  Expire after: Never). Empty: no button.
+export const COMMUNITY = { discord: 'https://discord.gg/CvwtuGHP' };
 
 // ------------------------------------------------------------------ map editing
 //  Edit map (admins): a region's name can be dragged to a new place and resized with the mouse wheel.

@@ -63,10 +63,19 @@ button {
 }
 button:hover:not(:disabled) { background: rgba(201, 162, 74, 0.18); border-color: var(--gold); }
 button:disabled { opacity: 0.45; cursor: default; }
-button.primary { background: linear-gradient(180deg, #d8b25a, #a9822f); color: #1d140a; font-weight: 600; border-color: #e3c06e; }
-button.primary:hover:not(:disabled) { background: linear-gradient(180deg, #e6c26a, #b98f36); }
+button.primary, a.discord-btn { background: linear-gradient(180deg, #d8b25a, #a9822f); color: #1d140a; font-weight: 600; border-color: #e3c06e; }
+button.primary:hover:not(:disabled), a.discord-btn:hover { background: linear-gradient(180deg, #e6c26a, #b98f36); }
 button.link { background: none; border: none; padding: 0; color: var(--gold); text-decoration: underline; }
 #name-form button { margin-top: 14px; width: 100%; padding: 11px; }
+
+/* Join our Discord (start screen, foot of the lobby): a link dressed as the gold buttons, with the Discord logo. */
+a.discord-btn {
+  display: inline-flex; align-items: center; gap: 9px; padding: 8px 16px; border-radius: 6px;
+  border: 1px solid #e3c06e; text-decoration: none; white-space: nowrap; transition: background 0.15s;
+}
+a.discord-btn svg { width: 20px; height: 16px; flex: none; }
+.discord { margin-top: 18px; padding-top: 16px; border-top: 1px solid rgba(201, 162, 74, 0.25); text-align: center; }
+.lobby-discord { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; text-align: left; }
 
 .row { display: flex; gap: 10px; align-items: center; }
 .row.end { justify-content: flex-end; margin-top: 18px; }
@@ -162,12 +171,15 @@ button.link { background: none; border: none; padding: 0; color: var(--gold); te
 /* A spectator has no empire: no gold, honor, cities, units or technologies of their own. */
 #topbar.spectating #stat-gold, #topbar.spectating #stat-honor, #topbar.spectating #stat-cities,
 #topbar.spectating #stat-units, #topbar.spectating #btn-tech { display: none; }
+/* As many units as a player may have (ECONOMY.maxUnitsPerPlayer): the count in red. */
+#stat-units.full b, #stat-units.full small { color: #ff5a4a; }
 .coin, .castle, .army, .hourglass, .honor { width: 16px; height: 16px; display: inline-block; flex: none; }
 /* Honor: a five-pointed star, silver so it never reads as gold. */
 .honor { background: radial-gradient(circle at 40% 35%, #ffffff, #c9ccd6 55%, #7d8494); clip-path: polygon(50% 0, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%); }
-/* The honor stat opens the Honor window. */
-#stat-honor { cursor: pointer; padding: 3px 6px; margin: -3px -6px; border-radius: 6px; }
+/* The honor stat opens the Honor window, the gold stat the Technologies window. */
+#stat-honor, #stat-gold { cursor: pointer; padding: 3px 6px; margin: -3px -6px; border-radius: 6px; }
 #stat-honor:hover { background: rgba(201, 204, 214, 0.14); }
+#stat-gold:hover { background: rgba(201, 162, 74, 0.18); }
 .hourglass { background: var(--paper-2); clip-path: polygon(10% 0, 90% 0, 90% 8%, 58% 50%, 90% 92%, 90% 100%, 10% 100%, 10% 92%, 42% 50%, 10% 8%); }
 #hud-turn-next { font-variant-numeric: tabular-nums; min-width: 72px; }
 #stat-turn.soon #hud-turn-next { color: var(--gold); }
@@ -184,6 +196,7 @@ button.link { background: none; border: none; padding: 0; color: var(--gold); te
 .feed div { background: rgba(20, 15, 10, 0.78); border-left: 3px solid var(--gold); padding: 4px 10px; border-radius: 4px; font-size: 13px; transition: opacity 0.6s; }
 .feed div.good { border-left-color: var(--ok); }
 .feed div.bad { border-left-color: var(--danger); }
+.feed div.red { color: #ff8070; }
 /* Player and city names in a player's colour (hud.js colorTag). Colours too dark for the panel get a light backing. */
 .who { font-weight: 700; }
 .who.dark { background: rgba(240, 230, 205, 0.92); padding: 0 4px; border-radius: 3px; }
@@ -245,6 +258,16 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
   border: 1px solid var(--gold); border-radius: 8px; box-shadow: 0 0 12px rgba(201, 162, 74, 0.3), 0 6px 24px rgba(0, 0, 0, 0.4);
 }
 .chat-to { flex: none; color: var(--muted); font-size: 12px; white-space: nowrap; }
+/* Closed: how to open it, just above the minimap. The line to write in takes its place once open. */
+.chat-hint {
+  align-self: flex-start; padding: 2px 8px; border-radius: 4px; background: rgba(20, 15, 10, 0.62);
+  color: var(--paper-2); font-size: 11px; line-height: 1.5; white-space: nowrap;
+}
+.chat-hint kbd {
+  display: inline-block; padding: 0 4px; margin-right: 1px; border: 1px solid rgba(201, 162, 74, 0.7); border-radius: 3px;
+  font: 600 10px/1.35 var(--sans); color: var(--gold);
+}
+.game-chat.open .chat-hint { display: none; }
 .chat-bar input, .chat-bar input:focus { flex: 1; min-width: 0; padding: 6px 8px; font-size: 13px; border-color: transparent; box-shadow: none; background: rgba(0, 0, 0, 0.3); }
 
 /* Centred between the minimap (left) and the build column (right), clear of both. --minimap-w (the
@@ -289,6 +312,7 @@ body.resizing-minimap, body.resizing-minimap * { cursor: nesw-resize !important;
 .standings tr.me td { background: rgba(201, 162, 74, 0.14); }
 .standings tr.out td { opacity: 0.45; }
 .standings tr.out .who { text-decoration: line-through; }
+.standings tr.gone .who { opacity: 0.5; }   /* disconnected: their colour half faded */
 .standings-toggle, .standings-toggle:hover:not(:disabled) {
   background: none; border: none; border-radius: 4px; padding: 2px 4px; color: var(--gold); font-family: var(--serif); font-size: 14px; white-space: nowrap;
 }
@@ -507,6 +531,11 @@ figure.demo { margin: 0; width: 440px; }
 @media (max-width: 480px) { .leave-option { grid-template-columns: 1fr; gap: 6px; } }
 /* Technologies window (T): tabs like the help, one card per technology. */
 #tech { width: min(660px, calc(100vw - 32px)); }
+/* Every tab's page in the same grid cell, only the chosen one visible: the window is as tall as the tallest
+   page, so it keeps its size (and its tabs their place) from tab to tab. */
+.tech-pages { display: grid; }
+.tech-page { grid-area: 1 / 1; visibility: hidden; }
+.tech-page.active { visibility: visible; }
 .tech-page > p { line-height: 1.5; margin: 0 0 12px; }
 /* A technology: its picture on the left; name, one-line summary, details and research on the right */
 .tech-card { display: flex; align-items: flex-start; gap: 14px; padding: 12px 14px; margin-bottom: 10px; border-radius: 8px;
@@ -525,7 +554,6 @@ figure.demo { margin: 0; width: 440px; }
 .tech-text { color: var(--muted); font-size: 12.5px; line-height: 1.45; margin: 5px 0 10px; }
 .tech-actions { display: flex; align-items: center; gap: 10px; }
 .tech-price { color: var(--paper-2); font-size: 13px; }
-.tech-price s { opacity: 0.6; }
 .tech-done { color: #8fdc8f; font-weight: 600; }
 .tech-progress { flex: 1; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
 .tech-progress i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #a9822f, #e6c26a); }
@@ -534,6 +562,9 @@ figure.demo { margin: 0; width: 440px; }
 .tech-queued { color: var(--gold); font-size: 13px; white-space: nowrap; }
 /* A technology that needs another one researched (or ordered) first: in the locked build buttons' amber. */
 .tech-locked { color: #ffc46b; font-size: 13px; font-weight: 600; white-space: nowrap; }
+/* Rebellion technologies seen by a player who is not a liberator: theirs only, nothing to unlock. */
+.tech-for { color: var(--paper-2); font-size: 13px; font-style: italic; white-space: nowrap; }
+.tech-for-mark { color: var(--gold); font-style: normal; font-variant-emoji: text; }
 /* Tech window: the levels queued after the research running (all tabs), each with ✕. */
 .plan-queue { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 12px; }
 .plan-item { display: inline-flex; align-items: center; gap: 6px; padding: 2px 3px 2px 8px; border-radius: 4px; font-size: 13px;
@@ -795,6 +826,7 @@ figure.demo { margin: 0; width: 440px; }
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
   color: var(--text); font-size: 12.5px; line-height: 1.45; white-space: pre-line;
 }
+.tooltip.bad { color: #ff8070; border-color: var(--danger); }
 
 .top-center { position: absolute; top: 60px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; max-width: calc(100vw - 32px); }
 .banner { background: rgba(20, 15, 10, 0.88); border: 1px solid var(--panel-border); padding: 10px 18px; border-radius: 8px; font-size: 15px; text-align: center; }

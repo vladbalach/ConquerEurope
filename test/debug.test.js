@@ -145,3 +145,40 @@ test('"Own" makes any city the sender\'s at once, like a capture, tells everyone
   game.handleCommand(a, { t: 'takeCity', city: paris.id });
   assert.equal(paris.owner, b.id, 'not for spectators');
 });
+
+test('"loseallcities" makes every city of the sender neutral, refunds their queues and tells everyone (debug builds only)', () => {
+  const { game, a, b, city, spawn } = setup();
+  game.options = { ...game.options, countdown: 'none', death: 'liberator' };
+  const events = [];
+  b.client = { send: (m) => { if (m.t === 'event') events.push(m); } };
+  const paris = city('Paris');
+  assert.equal(paris.owner, a.id);
+  paris.addUpgrade('wall');
+  a.gold = UNITS.infantry.cost;
+  game.handleCommand(a, { t: 'build', cities: [paris.id], item: 'infantry' });
+  assert.equal(a.gold, 0);
+  const mine = game.cities.filter((c) => c.owner === a.id), theirs = game.cities.filter((c) => c.owner === b.id);
+  spawn(a.id, 'infantry', paris.x + 30, paris.y);       // a unit left: A is still in the game
+
+  game.handleCommand(a, { t: 'loseCities' });
+  if (!DEBUG) {
+    assert.ok(mine.every((c) => c.owner === a.id), 'ignored outside debug builds');
+    assert.equal(events.length, 0);
+    return;
+  }
+  assert.ok(mine.every((c) => c.owner === -1), 'every city of A is neutral');
+  assert.ok(theirs.every((c) => c.owner === b.id), "B's cities are not touched");
+  assert.ok(paris.upgrades.has('wall'), 'as it stands: upgrades kept');
+  assert.deepEqual(paris.queue, []);
+  assert.equal(a.gold, UNITS.infantry.cost, 'the queue refunded');
+  assert.deepEqual(events, [{ t: 'event', kind: 'citiesLost', player: a.id, count: mine.length }]);
+  assert.equal(a.cityCount, 0);
+  assert.equal(a.liberator, false, 'their units keep them in the game');
+
+  events.length = 0;
+  game.handleCommand(a, { t: 'loseCities' });
+  assert.equal(events.length, 0, 'no city left: nothing to tell');
+  for (const u of game.units.values()) if (u.owner === a.id) game.units.delete(u.id);
+  game.recount();
+  assert.equal(a.liberator, true, 'no city and no unit: they fall as usual');
+});

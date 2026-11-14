@@ -2,7 +2,7 @@
 import { Net } from './net.js';
 import { GameClient } from './client.js';
 import { RoomChat } from './chat.js';
-import { GAME, DEBUG, CHAT } from '/shared/config.js';
+import { GAME, DEBUG, CHAT, COMMUNITY } from '/shared/config.js';
 import { PROTOCOL_VERSION } from '/shared/protocol.js';
 import { applyBalance } from '/shared/balance.js';
 import {
@@ -17,11 +17,22 @@ import { decodeMask, encodeMask } from '/shared/mountains.js';
 initTooltips();
 initSound();
 
+// Join our Discord (start screen, foot of the lobby): shown once the config has the server's invite link.
+for (const box of document.querySelectorAll('.discord')) {
+  box.hidden = !COMMUNITY.discord;
+  box.querySelector('a').href = COMMUNITY.discord;
+}
+
 const $ = (id) => document.getElementById(id);
 const SCREENS = ['screen-name', 'screen-lobby', 'screen-room', 'screen-game'];
 const NAME_KEY = 'coe.name';
 const RESUME_KEY = 'coe.resume';   // this tab's current game (sessionStorage): silent resume after refresh
 const TOKENS_KEY = 'coe.tokens';   // gameId -> token for every game you play (localStorage): "Rejoin" in lobby
+// This tab reloaded itself because the game was updated (sessionStorage, see reloadIfOutdated):
+// UPDATED_KEY the server's protocol version it reloaded for (never twice for one version),
+// BACK_KEY set until the reloaded page is up, which then goes straight back to the lobby.
+const UPDATED_KEY = 'coe.updatedTo';
+const BACK_KEY = 'coe.backToLobby';
 
 const net = new Net();
 let map = null;
@@ -38,6 +49,7 @@ let mapState = { pending: 0, busy: false };   // admins: cities moved since the 
 // it: a HostSession when this page hosts, a PeerSession otherwise (p2p.js).
 let session = null;
 let balanceValues = null;    // the server's current game balance, for a game this page hosts
+let serverProtocol = null;   // the lobby server's PROTOCOL_VERSION, from its last welcome or joined
 // Lost the host during a game: the lobby server hands the game to another player's browser and tells
 // us to connect to it. Only if nothing comes for this long is the game over for us.
 const HOST_WAIT_MS = 60000;
@@ -397,11 +409,13 @@ function leaveGame() {
     s.handOver().then(() => {
       net.send({ t: 'leave', gameId });
       s.destroy();
+      reloadSoon();
     });
   } else {
     if (s && !s.isHost && givingUp) s.link.send({ t: 'leave' });
     endSession(true);
     net.send({ t: 'leave' });
+    reloadSoon();
   }
   if (joined) saveToken(joined.gameId, null);
   store(sessionStorage, RESUME_KEY, null);
@@ -457,15 +471,47 @@ net.onclose = () => {
   reconnectTimer = setTimeout(() => net.connect(), 1500);
 };
 
-// The page files are always read fresh from disk, but a server process keeps the code it
-// started with. If they differ, say so instead of showing a half-working lobby.
+// The server and this page speak different protocol versions. The page files are always read fresh
+// from disk, but a server process keeps the code it started with: a server older than the page needs
+// restarting. A server newer than the page was updated while the page stayed open (a laptop that
+// slept): the page reloads itself (reloadIfOutdated), and until it can, the lobby says why.
 function checkProtocol(msg) {
-  const outdated = msg.protocol !== PROTOCOL_VERSION;
-  const text = 'The running game server is older than this page, so the lobby and game may not work. ' +
-    'Close all game and server windows, run start-server.bat again, then refresh this page.';
+  serverProtocol = Number.isInteger(msg.protocol) ? msg.protocol : 0;
+  let text = '';
+  if (serverProtocol < PROTOCOL_VERSION) {
+    text = 'The running game server is older than this page, so the lobby and game may not work. ' +
+      'Close all game and server windows, run start-server.bat again, then refresh this page.';
+  } else if (serverProtocol > PROTOCOL_VERSION) {
+    text = gameRunning()
+      ? 'The game was updated since this page was opened: it reloads itself once you leave this game.'
+      : 'The game was updated since this page was opened: refresh this page to play.';
+  }
   $('lobby-warning').textContent = text;
-  $('lobby-warning').hidden = !outdated;
-  if (outdated) toast(text);
+  $('lobby-warning').hidden = !text;
+  if (text) toast(text);
+}
+
+// A game goes on in this page: one it plays, hosts or watches (not one over, on its results screen).
+function gameRunning() {
+  return !!session || (!!game && !game.ended);
+}
+
+// The game was updated while this page stayed open: its code and map are older than the server's, and
+// a game it hosted or joined would not match everyone else's. Another map numbers the cities
+// differently, so a host showed its own cities grey while its units came out of them. Load the page
+// again, never over a game in progress (leaving it reloads: reloadSoon). Once per server version: if a
+// reload did not help (an old copy cached on the way), the lobby says to refresh instead.
+function reloadIfOutdated() {
+  if (!(serverProtocol > PROTOCOL_VERSION) || gameRunning()) return;
+  if (load(sessionStorage, UPDATED_KEY) === String(serverProtocol)) return;
+  store(sessionStorage, UPDATED_KEY, String(serverProtocol));
+  store(sessionStorage, BACK_KEY, '1');
+  location.reload();
+}
+
+// Just left a game: the last messages (leave, to the host and the lobby server) get a moment to go out.
+function reloadSoon() {
+  setTimeout(reloadIfOutdated, 1000);
 }
 
 net.on('welcome', (msg) => {
@@ -482,6 +528,7 @@ net.on('welcome', (msg) => {
   store(sessionStorage, RESUME_KEY, null);
   show('screen-lobby');
   drawBackdrop();
+  reloadIfOutdated();
 });
 
 net.on('games', (msg) => {
@@ -506,6 +553,8 @@ net.on('joined', (msg) => {
   } else if (msg.spectator && !game) {
     toast('Connecting to the game…');
   }
+  // Before the game reaches an outdated page (a running one resumes after the reload).
+  reloadIfOutdated();
 });
 
 // The waiting room (lobby server). In a game, players come from the host instead.
@@ -802,8 +851,11 @@ async function boot() {
   drawBackdrop();
   $('name-submit').disabled = false;
   $('conn-status').textContent = '';
-  // Resume an in-progress game in this tab (e.g. after a refresh) without asking again.
-  if (load(sessionStorage, RESUME_KEY) && $('name-input').value) myName = $('name-input').value;
+  // Resume an in-progress game in this tab (e.g. after a refresh) without asking again, and go straight
+  // back to the lobby after reloading for an update (reloadIfOutdated).
+  const back = load(sessionStorage, BACK_KEY);
+  store(sessionStorage, BACK_KEY, null);
+  if ((back || load(sessionStorage, RESUME_KEY)) && $('name-input').value) myName = $('name-input').value;
   net.connect();
 }
 

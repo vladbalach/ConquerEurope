@@ -12,7 +12,7 @@ everyone is revealed.
 - **No colours before the game.** The lobby and the waiting room never show player colours.
 - **Colours are random.** They are assigned at random when the game starts. They don't depend on join order, on
   being the host, or on the nickname.
-- **In the game, players are known only by their colour,** e.g. "Red" or "Teal". Your own empire is "You".
+- **In the game, players are known only by their colour,** e.g. "Red" or "Teal". Your own empire is your colour with "(you)", e.g. "Red (you)".
 - **No nickname anywhere while the game is played:** not on the map, in the panels, in the players overlay, in
   event messages or in tooltips.
 - **Nothing outside the game gives it away either.** For a game in progress, the lobby lists nicknames only:
@@ -32,7 +32,7 @@ everyone is revealed.
 - Colours are dealt at random when the game starts, and again when a duel restarts (Restart on the results
   screen). The lobby and the waiting room show no colours.
 - Each colour has a name (`PLAYER_COLOR_NAMES` in [shared/config.js](shared/config.js)). The Players overlay, the
-  event feed and the city and unit panels call players "Red", "Navy", "Lime", ... and your own empire "You".
+  event feed and the city and unit panels call players "Red", "Navy", "Lime", ... and your own empire by its colour with "(you)", e.g. "Red (you)".
 - While the game runs, the server sends no nickname to game clients: not in `start`, `room` or `score`, and not in
   events. Players are told apart by id and colour only.
 - Player ids are shuffled when the game starts (and when a duel restarts). In the waiting room ids follow join order

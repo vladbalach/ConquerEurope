@@ -5,6 +5,7 @@
 //   fell (a disbanded one only when an enemy gets the kill). Hovering one shows the gold it was worth: the
 //   Kills and Losses of the Players list (Tab). They come with the scores, once a second.
 // - Cities are counted as the map shows them, like the top bar's.
+// - A disconnected player's name shows in their colour half faded (style.css, tr.gone).
 // - Its head folds it away to just the head, and back; the page remembers that (localStorage).
 // - Gone once the game is over: the results screen has it all.
 import { el } from './hud.js';
@@ -117,7 +118,8 @@ export class Standings {
         r.label = label;
         r.name.replaceChildren(g.who(p.id));
       }
-      r.tr.className = [p.id === g.you ? 'me' : '', p.eliminated ? 'out' : ''].filter(Boolean).join(' ');
+      r.tr.className = [p.id === g.you ? 'me' : '', p.eliminated ? 'out' : '', p.connected === false ? 'gone' : '']
+        .filter(Boolean).join(' ');
       setTip(r.name, statusOf(p));
       setText(r.cities, num(cities));
       const kills = p.killCount || 0, deaths = p.deathCount || 0;

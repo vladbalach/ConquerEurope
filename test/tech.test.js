@@ -1,8 +1,8 @@
-// Technologies (Tech window) and the Rebellion tab: Supporters, Influencer, Smuggling. Run with: npm test
+// Technologies (Tech window) and the Rebellion tab: Supporters, Influencer, Smuggling, Sanctuary. Run with: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LIBERATOR, TECHS, TECH_TYPES, ECONOMY } from '../shared/config.js';
-import { liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows } from '../shared/tech.js';
+import { LIBERATOR, TECHS, TECH_TYPES, TECH_TABS, ECONOMY } from '../shared/config.js';
+import { liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, safeSeconds, liberatorsOnly, techsInTabOrder } from '../shared/tech.js';
 import { setup, map, nav } from './helpers.js';
 import { Game } from '../server/game.js';
 
@@ -30,7 +30,8 @@ function game2(death = 'liberator') {
 }
 
 test('research costs gold up front and takes game time; cancelling refunds it', () => {
-  const { game, a, order, run, events } = game2();
+  const { game, a, strip, order, run, events } = game2();
+  strip(a);                                           // a liberator: Rebellion technologies are theirs
   a.gold = 1000;
   order(a, { t: 'research', tech: 'supporters' });
   assert.equal(a.gold, 1000 - TECHS.supporters.levels[0].cost);
@@ -48,37 +49,46 @@ test('research costs gold up front and takes game time; cancelling refunds it', 
   assert.equal(game.playerList().find((p) => p.id === a.id).tech.smuggling, 1, 'levels are public');
 });
 
-test(`a liberator pays ${LIBERATOR.rebellionCost * 100}% for Rebellion technologies, the full price for the others; refunds give back what was paid`, () => {
-  const { game, b, strip, order, events } = game2();
+test('Rebellion technologies are ordered only by a liberator; one ordered goes on if they come back', () => {
+  const { game, a, b, strip, citiesOf, order, run, events } = game2();
   const S = TECHS.supporters.levels, sea = TECHS.seafaring.levels[0].cost;
   b.gold = 1000;
-  order(b, { t: 'research', tech: 'supporters' });           // still in the game: the full price
-  assert.equal(b.gold, 1000 - S[0].cost);
+  for (const tech of TECH_TYPES.filter(liberatorsOnly)) order(b, { t: 'research', tech });
+  assert.equal(b.research, null, 'still in the game: no Rebellion technology');
+  assert.equal(b.gold, 1000);
+  order(b, { t: 'research', tech: 'seafaring' });
+  assert.equal(b.research?.tech, 'seafaring', 'the other tabs: anyone');
+  order(b, { t: 'cancelResearch' });
+
   strip(b);
   assert.ok(b.liberator, 'fallen');
   b.gold = 1000;
-  order(b, { t: 'research', tech: 'supporters' });           // level 2, queued as a liberator
-  const less = Math.ceil(S[1].cost * LIBERATOR.rebellionCost);
-  assert.ok(less < S[1].cost);
-  assert.equal(b.gold, 1000 - less);
+  order(b, { t: 'research', tech: 'supporters' });
+  order(b, { t: 'research', tech: 'supporters' });
   order(b, { t: 'research', tech: 'seafaring' });
-  assert.equal(b.gold, 1000 - less - sea, 'a Sea technology: the full price');
+  assert.equal(b.gold, 1000 - S[0].cost - S[1].cost - sea, 'each its price, no discount');
 
   // Each player's page learns what was paid, for the refunds it shows.
   game.sendSnapshots();
   const snap = events.b.filter((m) => m.t === 'snap').pop();
   assert.deepEqual([snap.r[0], snap.r[2]], [TECH_TYPES.indexOf('supporters'), S[0].cost]);
-  assert.deepEqual(snap.rq, [[TECH_TYPES.indexOf('supporters'), less], [TECH_TYPES.indexOf('seafaring'), sea]]);
+  assert.deepEqual(snap.rq, [[TECH_TYPES.indexOf('supporters'), S[1].cost], [TECH_TYPES.indexOf('seafaring'), sea]]);
 
-  // Cancelling level 1 takes level 2 out too: each gives back what it cost, level 1 the full price.
-  order(b, { t: 'cancelResearch', tech: 'supporters', level: 1 });
-  assert.equal(b.gold, 1000 - sea + S[0].cost);
-  assert.equal(b.research?.tech, 'seafaring');
+  // Back in the game: what was ordered goes on, but no more Rebellion technologies can be ordered.
+  order(b, { t: 'influence', city: citiesOf(a)[0].id });
+  assert.equal(b.liberator, false, 'back');
+  run(S[0].time + S[1].time + 0.2);
+  assert.equal(b.tech.supporters, 2, 'both levels done');
+  b.gold = 1000;
+  order(b, { t: 'research', tech: 'smuggling' });
+  assert.notEqual(b.research?.tech, 'smuggling', 'refused once back');
+  assert.ok(!b.researchQueue.some((e) => e.tech === 'smuggling'));
 });
 
 test('research ordered while one runs is queued, paid at once, and starts when the one before it is done', () => {
-  const { a, order, run } = game2();
+  const { a, strip, order, run } = game2();
   const S = TECHS.supporters.levels, M = TECHS.smuggling.levels;
+  strip(a);
   a.gold = 1000;
   for (const tech of ['supporters', 'smuggling', 'supporters']) order(a, { t: 'research', tech });
   assert.equal(a.research.tech, 'supporters', 'one research at a time');
@@ -97,8 +107,9 @@ test('research ordered while one runs is queued, paid at once, and starts when t
 });
 
 test('the queue stops at the last level; cancelling a level refunds it and the higher levels of it after it', () => {
-  const { a, order } = game2();
+  const { a, strip, order } = game2();
   const S = TECHS.supporters.levels, M = TECHS.smuggling.levels;
+  strip(a);
   a.gold = 10000;
   for (let i = 0; i <= M.length; i++) order(a, { t: 'research', tech: 'smuggling' });
   assert.equal(a.researchQueue.length, M.length - 1, `${M.length} levels in all, no more`);
@@ -106,25 +117,26 @@ test('the queue stops at the last level; cancelling a level refunds it and the h
   assert.equal(a.gold, 10000, 'every level refunded');
 
   a.gold = 1000;
-  for (const tech of ['supporters', 'smuggling', 'supporters', 'supporters']) order(a, { t: 'research', tech });
-  order(a, { t: 'cancelResearch', tech: 'supporters', level: 2 });
-  assert.deepEqual(a.researchQueue.map((e) => [e.tech, e.level]), [['smuggling', 1]], 'level 3 needs level 2: gone too');
-  assert.equal(a.gold, 1000 - S[0].cost - M[0].cost, 'both refunded');
+  for (const tech of ['smuggling', 'supporters', 'smuggling', 'smuggling']) order(a, { t: 'research', tech });
+  order(a, { t: 'cancelResearch', tech: 'smuggling', level: 2 });
+  assert.deepEqual(a.researchQueue.map((e) => [e.tech, e.level]), [['supporters', 1]], 'level 3 needs level 2: gone too');
+  assert.equal(a.gold, 1000 - M[0].cost - S[0].cost, 'both refunded');
 
-  order(a, { t: 'research', tech: 'supporters' });
+  order(a, { t: 'research', tech: 'smuggling' });
   assert.equal(a.researchQueue.at(-1).level, 2, 'ordered again: level 2 again');
-  order(a, { t: 'cancelResearch', tech: 'supporters', level: 1 });
-  assert.deepEqual([a.research.tech, a.research.level, a.research.progress], ['smuggling', 1, 0], 'the running one cancelled: the next starts');
-  assert.deepEqual(a.researchQueue, [], 'level 2 needs level 1: gone too');
-  assert.equal(a.gold, 1000 - M[0].cost);
-  order(a, { t: 'cancelResearch', tech: 'nonsense', level: 1 });
   order(a, { t: 'cancelResearch', tech: 'smuggling', level: 1 });
+  assert.deepEqual([a.research.tech, a.research.level, a.research.progress], ['supporters', 1, 0], 'the running one cancelled: the next starts');
+  assert.deepEqual(a.researchQueue, [], 'level 2 needs level 1: gone too');
+  assert.equal(a.gold, 1000 - S[0].cost);
+  order(a, { t: 'cancelResearch', tech: 'nonsense', level: 1 });
+  order(a, { t: 'cancelResearch', tech: 'supporters', level: 1 });
   assert.equal(a.research, null);
   assert.equal(a.gold, 1000);
 });
 
 test('research needs the gold, stops at the last level, and Rebellion needs Death: Liberator', () => {
-  const { a, order, research } = game2();
+  const { a, strip, order, research } = game2();
+  strip(a);
   a.gold = 10;
   order(a, { t: 'research', tech: 'supporters' });
   assert.equal(a.research, null, 'not enough gold');
@@ -142,22 +154,35 @@ test('research needs the gold, stops at the last level, and Rebellion needs Deat
   assert.equal(spect.a.research, null, 'no Rebellion tab without liberators');
 });
 
-test('Supporters: +20 / +40 / +60 liberator gold per turn, researched while still alive', () => {
-  assert.deepEqual([0, 1, 2, 3].map((n) => liberatorIncome({ supporters: n })),
-    [LIBERATOR.goldPerTurn, LIBERATOR.goldPerTurn + 20, LIBERATOR.goldPerTurn + 40, LIBERATOR.goldPerTurn + 60]);
-  const { game, b, strip, research } = game2();
-  research(b, 'supporters', 2);                       // learned as a player
+test('the Rebellion tab comes last, in the Tech window and in lists of technologies', () => {
+  assert.equal(TECH_TABS.at(-1).id, 'rebellion');
+  const order = techsInTabOrder();
+  assert.deepEqual([...order].sort(), [...TECH_TYPES].sort(), 'every technology once');
+  const first = order.findIndex(liberatorsOnly);
+  assert.ok(first > 0 && order.slice(first).every(liberatorsOnly), 'the Rebellion ones at the end');
+});
+
+test('Supporters: +20 / +40 liberator gold per turn (2 levels)', () => {
+  assert.deepEqual([0, 1, 2].map((n) => liberatorIncome({ supporters: n })),
+    [LIBERATOR.goldPerTurn, LIBERATOR.goldPerTurn + 20, LIBERATOR.goldPerTurn + 40]);
+  assert.equal(TECHS.supporters.levels.length, 2);
+  const { game, b, strip, order, research } = game2();
   strip(b);
   assert.equal(b.liberator, true);
+  research(b, 'supporters', 2);
+  b.gold = 1000;
+  order(b, { t: 'research', tech: 'supporters' });
+  assert.equal(b.research, null, 'no level 3');
+  b.gold = 0;
   game.endTurn();
   assert.equal(b.gold, LIBERATOR.goldPerTurn + 40);
 });
 
 test('Influencer: mark cities one per turn; the last one liberates them all, visible to everyone', () => {
   const { game, a, b, strip, citiesOf, order, research, events } = game2();
+  strip(b);
   research(b, 'influencer', 2);                       // limit 3
   assert.equal(influenceLimit(b.tech), 3);
-  strip(b);
   const [c1, c2, c3] = citiesOf(a);
   order(b, { t: 'influence', city: c1.id });
   assert.deepEqual(b.influence, [c1.id]);
@@ -179,9 +204,9 @@ test('Influencer: mark cities one per turn; the last one liberates them all, vis
 
 test('Influencer: "liberate now" takes the marked cities early; protection is checked city by city', () => {
   const { game, a, b, strip, citiesOf, order, research } = game2();
+  strip(b);
   research(b, 'influencer', 3);                       // limit 4
   strip(a, LIBERATOR.protectedCities + 1);            // A: 6 cities
-  strip(b);
   const mine = citiesOf(a);
   for (const c of mine.slice(0, 2)) {
     order(b, { t: 'influence', city: c.id });
@@ -195,6 +220,36 @@ test('Influencer: "liberate now" takes the marked cities early; protection is ch
   assert.equal(b.liberator, false);
 });
 
+test('Sanctuary: a liberated city is safe 3 or 4 minutes instead of 2; the level when it is liberated counts', () => {
+  assert.deepEqual([0, 1, 2].map((n) => safeSeconds({ sanctuary: n })), [120, 180, 240]);
+  assert.equal(TECHS.sanctuary.levels.length, 2);
+  const { game, a, b, strip, citiesOf, order, research, events } = game2();
+  strip(b);
+  research(b, 'sanctuary', 1);
+  const first = citiesOf(a)[0];
+  order(b, { t: 'influence', city: first.id });
+  assert.equal(first.owner, b.id);
+  assert.equal(first.safeUntil, game.time + 180, '3 minutes');
+  assert.equal(events.a.find((m) => m.kind === 'capture' && m.city === first.id).safe, 180, 'everyone is told how long');
+  game.sendSnapshots();
+  assert.deepEqual(events.a.filter((m) => m.t === 'snap').pop().sc.filter((_, i) => i % 3 !== 1), [first.id, 180]);
+
+  // Level 2, researched after falling again: 4 minutes for the next one.
+  strip(b);
+  for (let i = 0; i < LIBERATOR.cooldownTurns; i++) game.endTurn();
+  research(b, 'sanctuary', 1);
+  assert.equal(b.tech.sanctuary, 2);
+  b.gold = 1000;
+  order(b, { t: 'research', tech: 'sanctuary' });
+  assert.equal(b.research, null, 'no level 3');
+  const second = citiesOf(a)[0];
+  order(b, { t: 'influence', city: second.id });
+  assert.equal(second.owner, b.id);
+  assert.equal(second.safeFor, 240, '4 minutes');
+  assert.equal(second.safeUntil, game.time + 240);
+  assert.ok(first.safeUntil < second.safeUntil, 'the city liberated before keeps its own time');
+});
+
 test('without Influencer a mark liberates the city at once, as before', () => {
   const { b, a, strip, citiesOf, order } = game2();
   strip(b);
@@ -205,9 +260,9 @@ test('without Influencer a mark liberates the city at once, as before', () => {
 
 test(`Smuggling: ${TECHS.smuggling.share * 100}% of a marked city's income goes from its owner to the liberator`, () => {
   const { game, a, b, strip, citiesOf, order, research, events } = game2();
+  strip(b);
   research(b, 'smuggling', 2);                        // two marks
   assert.equal(smugglingLimit(b.tech), 2);
-  strip(b);
   const [c1, c2, c3] = citiesOf(a);
   c1.addUpgrade('farm');
   order(b, { t: 'smuggle', city: c1.id });
