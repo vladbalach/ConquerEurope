@@ -24,7 +24,8 @@ const DT = 1 / GAME.tickRate;
 const withMountains = (navData, map) => (map.mountains ? { ...navData, mountains: map.mountains.code } : navData);
 
 export class HostEngine {
-  // roster: [{ id, color, goldPercent }] from the lobby server (no nicknames). options: the host's game options
+  // roster: [{ id, color, goldPercent, bot }] from the lobby server (no nicknames; `bot`: a bot, played here by
+  // server/bots.js). options: the host's game options
   // (shared/options.js). send(to, msg): deliver to a player. onEnded(winner): the game is over, so
   // the page can tell the lobby server.
   // Taking over a game from a host who left: `save` (server/save.js) instead of a roster, and
@@ -50,7 +51,8 @@ export class HostEngine {
     this.awaiting = null;
     if (save) {
       for (const id of departed) if (this.game.players.has(id)) this.game.removePlayer(id);
-      this.awaiting = new Set([...this.game.players.values()].filter((p) => p.connected && p.id !== hostId).map((p) => p.id));
+      // Bots are played here now: online as they were, with nobody to wait for.
+      this.awaiting = new Set([...this.game.players.values()].filter((p) => p.connected && !p.bot && p.id !== hostId).map((p) => p.id));
       this.awaitSteps = GAME.startWait * GAME.tickRate;
     }
   }
@@ -82,7 +84,7 @@ export class HostEngine {
       return;
     }
     const p = g.players.get(id);
-    if (!p) return;
+    if (!p || p.bot) return;            // a bot is played here, by nobody's page
     this.awaiting?.delete(id);
     if (!p.everConnected) {
       p.everConnected = true;
@@ -104,7 +106,7 @@ export class HostEngine {
       return;
     }
     const p = this.game.players.get(id);
-    if (p && p.connected) this.game.disconnect(p);
+    if (p && p.connected && !p.bot) this.game.disconnect(p);
   }
 
   // A message from a player: a command, 'leave' (giving up: their cities become neutral), or
@@ -119,7 +121,7 @@ export class HostEngine {
       return;
     }
     const p = this.game.players.get(from);
-    if (!p) return;
+    if (!p || p.bot) return;
     if (msg.t === 'leave') {
       this.game.removePlayer(from);
       if (this.game.prestart) this.game.sendPrestart();   // one player fewer to wait for

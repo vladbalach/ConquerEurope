@@ -12,7 +12,7 @@ import {
   roadSpeedFactor, safeSeconds, liberatorsOnly,
 } from '../shared/tech.js';
 import {
-  sanitizeOptions, citiesToWin, GOLD_PERCENT, sanitizeGoldPercent, scaleGold, scaleGoldWhole,
+  sanitizeOptions, citiesToWin, GOLD_PERCENT, sanitizeGoldPercent, scaleGold, scaleGoldWhole, botCount,
 } from '../shared/options.js';
 import { higherGrades } from '../shared/upgrades.js';
 import { formationSlots, formationRole, SHIP_SPACING } from '../shared/formation.js';
@@ -22,6 +22,7 @@ import { createUnit } from './units/index.js';
 import { HERO_KIND_SHIFT, CARGO_SHIFT, SPECTATOR_ID_BASE } from '../shared/protocol.js';
 import { History } from './history.js';
 import { Projectiles } from './projectiles.js';
+import { Bots } from './bots.js';
 
 // Secret token a player rejoins with.
 function randomToken() {
@@ -74,7 +75,14 @@ function newPlayer(id, client) {
     // Traditions (Honor window): the ones learned, the one being learned { tradition, time, progress, cost },
     // and the ones queued after it [{ tradition, cost }], each paid when queued.
     traditions: [], learning: null, learnQueue: [],
+    bot: false,                  // a computer player (newBot)
   };
+}
+
+// A bot (game option "With bots": BOTS in shared/config.js), played by the browser that runs the game
+// (server/bots.js). It has no page: always online, and the start never waits for it. Everyone knows it is one.
+function newBot(id, color) {
+  return { ...newPlayer(id, null), color, bot: true, everConnected: true };
 }
 
 // A spectator (Watch in the lobby): in the game without a place in it. No colour, cities, units, gold or
@@ -128,6 +136,12 @@ export class Game {
     this.prestart = null;
     // Victory rules the host picks in the waiting room (shared/options.js).
     this.options = sanitizeOptions(options, map.cities.length);
+    // The host set "With bots" by hand: it no longer follows how many are in the room (autoBots).
+    this.botsByHand = false;
+    // The lobby server's record of a started game: its bots, { id, color } (the host's browser has them as players).
+    this.bots = [];
+    // The browser that runs the game: what plays its bots (server/bots.js), made on the first tick; null: no bots.
+    this.ai = undefined;
     this.players = new Map();         // slot id (0..19) -> player
     // Spectators: id (SPECTATOR_ID_BASE and up, never used twice in a game) -> spectator (newSpectator).
     this.spectators = new Map();
@@ -224,7 +238,15 @@ export class Game {
     };
     this.players.set(slot, player);
     if (this.hostId === null) this.hostId = slot;
+    this.autoBots();
     return { player };
+  }
+
+  // "With bots" follows the waiting room until the host sets it: on while one player is in it, off with more.
+  autoBots() {
+    if (this.status !== 'lobby' || this.botsByHand) return;
+    const alone = this.players.size <= 1;
+    if (this.options.bots !== alone) this.options = { ...this.options, bots: alone };
   }
 
   // ------------------------------------------------------------ spectators
@@ -275,11 +297,13 @@ export class Game {
 
   // Browser-to-browser play: the host player's browser runs the game. The lobby server has
   // already shuffled the ids and dealt the colours; the roster has no nicknames, so the host
-  // never learns who is who. Players start offline and come online as they connect.
+  // never learns who is who. Players start offline and come online as they connect; bots (`bot`) are
+  // played here and are online from the start.
   static hosted({ id, title, map, nav, roster, hostId, options }) {
     const game = new Game({ id, title, map, nav, options });
     for (const r of roster) {
-      const p = { ...newPlayer(r.id, null), color: r.color, goldPercent: sanitizeGoldPercent(r.goldPercent), connected: false };
+      const p = r.bot ? newBot(r.id, r.color)
+        : { ...newPlayer(r.id, null), color: r.color, goldPercent: sanitizeGoldPercent(r.goldPercent), connected: false };
       game.players.set(r.id, p);
     }
     game.hostId = hostId;
@@ -318,11 +342,11 @@ export class Game {
   }
 
   // For the players: { loaded, total, left } (left: whole seconds of the countdown, null while
-  // players are still loading), or null once the game has started.
+  // players are still loading), or null once the game has started. Bots load nothing: not counted.
   prestartInfo() {
     const s = this.prestart;
     if (!s) return null;
-    const list = [...this.players.values()];
+    const list = [...this.players.values()].filter((p) => !p.bot);
     return {
       loaded: list.filter((p) => p.everConnected).length, total: list.length,
       left: s.countdown === null ? null : Math.ceil(s.countdown / GAME.tickRate),
@@ -394,6 +418,7 @@ export class Game {
       const next = this.players.keys().next();
       this.hostId = next.done ? null : next.value;
     }
+    this.autoBots();
     this.broadcastRoom();
   }
 
@@ -443,9 +468,11 @@ export class Game {
     return this.beginStart();
   }
 
-  // The host changed the game options in the waiting room. Everyone there sees them at once.
+  // The host changed the game options in the waiting room. Everyone there sees them at once. Their page sends
+  // `bots` only when they changed it: from then on it stays as they set it, whoever comes or goes (autoBots).
   setOptions(raw) {
     if (this.status !== 'lobby' || !raw || typeof raw !== 'object') return false;
+    if (typeof raw.bots === 'boolean') this.botsByHand = true;
     this.options = sanitizeOptions({ ...this.options, ...raw }, this.cities.length);
     this.broadcastRoom();
     return true;
@@ -534,37 +561,44 @@ export class Game {
   }
 
   // Colours are dealt at random when the game starts, so they never depend on join order
-  // and nobody can know them in the lobby (see GAME_DESIGN.md, "Anonymous players").
+  // and nobody can know them in the lobby (see GAME_DESIGN.md, "Anonymous players"). Bots get theirs from the
+  // same deal.
   dealColors() {
     const colors = shuffle([...PLAYER_COLORS]);
     let k = 0;
-    for (const p of this.players.values()) p.color = colors[k++];
+    for (const p of [...this.players.values(), ...this.bots]) p.color = colors[k++];
   }
 
   // In the lobby, player ids follow join order and the room lists them with nicknames. New random
-  // ids at the start keep anyone from matching those ids to the colours the game reveals.
+  // ids at the start keep anyone from matching those ids to the colours the game reveals. Bots draw
+  // theirs with the players: the ids left for the players tell nothing either.
   shuffleIds() {
     const host = this.players.get(this.hostId);
-    const list = shuffle([...this.players.values()]);
+    const list = shuffle([...this.players.values(), ...this.bots]);
     list.forEach((p, i) => { p.id = i; });
-    this.players = new Map(list.map((p) => [p.id, p]));
+    this.players = new Map(list.filter((p) => !this.bots.includes(p)).map((p) => [p.id, p]));
     this.hostId = host ? host.id : null;
   }
 
-  // The waiting room becomes a game: new random ids and colours (secret from the lobby).
-  // The lobby server stops here for browser-to-browser play and hands the game to the host.
+  // The waiting room becomes a game: new random ids and colours (secret from the lobby), and its bots
+  // with "With bots" on. The lobby server stops here for browser-to-browser play and hands the game to
+  // the host (bots in `this.bots`, not among its players: they have no page, nickname or place in the lobby).
+  // `startedWith` counts the players, not the bots (a duel of two players can be restarted).
   beginStart() {
     if (this.status !== 'lobby' || this.players.size === 0) return false;
     this.status = 'running';
+    this.bots = Array.from({ length: botCount(this.options, this.players.size) }, () => ({ id: -1, color: null }));
     this.shuffleIds();
     this.dealColors();
     this.startedWith = this.players.size;
     return true;
   }
 
-  // Start and simulate here (tests, and anything that runs a game in one place).
+  // Start and simulate here (tests, and anything that runs a game in one place). Bots join as players.
   start() {
     if (!this.beginStart()) return;
+    for (const b of this.bots) this.players.set(b.id, newBot(b.id, b.color));
+    this.startedWith = this.players.size;
     for (const p of this.players.values()) this.giveStartingCities(p);
     for (const p of this.players.values()) this.giveStartingGold(p);
     for (const p of this.players.values()) this.sendStart(p);
@@ -591,11 +625,12 @@ export class Game {
   // Players as game clients see them. While the game runs nobody may learn who is who
   // (GAME_DESIGN.md, "Anonymous players"): ids and colours only, never a nickname, and no gold
   // percentage (the waiting room showed them by nickname). In the waiting room there are no colours
-  // yet, and once the game has ended everyone is revealed.
+  // yet, and once the game has ended everyone is revealed. Bots are known as bots (`bot`) all along.
   playerList() {
     const secret = this.status === 'running';
     return [...this.players.values()].map((p) => ({
-      id: p.id, ...(secret ? {} : { name: p.name, goldPercent: p.goldPercent }), color: p.color, connected: p.connected,
+      id: p.id, ...(secret ? {} : { name: p.name, goldPercent: p.goldPercent }), ...(p.bot ? { bot: true } : {}),
+      color: p.color, connected: p.connected,
       eliminated: p.eliminated, surrendered: p.surrendered, cities: p.cityCount, units: p.unitCount, kills: p.kills, losses: p.losses,
       killCount: p.killCount, deathCount: p.deathCount,
       liberator: p.liberator, liberateAt: p.liberateAt, influence: p.influence, influenceAt: p.influenceAt,
@@ -1971,6 +2006,9 @@ export class Game {
     for (const c of this.cities) c.regenerate(dt);
 
     this.recount();
+    // Bots give their orders for the next tick, as players' orders arrive between ticks.
+    if (this.ai === undefined) this.ai = [...this.players.values()].some((p) => p.bot) ? new Bots(this) : null;
+    if (this.ai && this.status === 'running') this.ai.update();
   }
 
   // Kills and losses are counted in gold: the cost of the unit that died. The kill goes to
@@ -2302,9 +2340,12 @@ export class Game {
     // turn: checkCityVictory). Liberators are never eliminated: while one of them is left, the game goes on.
     // Players who surrendered are eliminated, and those who left are gone: when everyone else has done
     // either, the last one wins. Not in a game started alone (to practise): it goes on until its player is out too.
+    // Bots count like anyone, but they don't play on by themselves: once no player is left in the game, the
+    // bot with the most cities wins.
     const alive = [...this.players.values()].filter((p) => !p.eliminated);
     if (this.startedWith >= 2 && alive.length === 1) this.end(alive[0].id);
     else if (alive.length === 0) this.end(-1);
+    else if (alive.every((p) => p.bot)) this.end(alive.reduce((a, b) => (b.cityCount > a.cityCount ? b : a)).id);
   }
 
   // At the end of every turn: whoever holds the target number of cities of the turn that is ending

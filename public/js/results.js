@@ -133,7 +133,8 @@ function buildModel(g, winner) {
     return {
       id, color, live, stats, values, peak, peakTurn,
       name: live?.name || g.revealed?.get(id) || null,
-      colorName: PLAYER_COLOR_NAMES[color] || 'Someone',
+      // A bot has no nickname: "Blue (bot)" wherever a player's name goes.
+      colorName: `${PLAYER_COLOR_NAMES[color] || 'Someone'}${live?.bot ? ' (bot)' : ''}`,
       cities: live ? live.cities : 0,
       units: live ? live.units : 0,
       income: live ? incomes.get(id) || 0 : 0,

@@ -420,6 +420,51 @@ export const GAME = {
   checkpointEvery: 5,
 };
 
+// ------------------------------------------------------------------ bots
+//  Computer players (server/bots.js), for someone who would otherwise play alone. The game option "With bots"
+//  (shared/options.js) adds `count` of them when the game starts; it is on while the host is alone in the waiting
+//  room and goes off when someone joins, unless the host set it. Everyone sees them as bots: "Blue (bot)".
+//  They play by the rules of any player (the same gold, the same orders): they train an army and attack cities,
+//  the nearest neutral ones first. They don't research, learn traditions or sail.
+//    thinkSeconds   how often each bot looks over its empire and gives orders (game time)
+//    maxUnits       a bot trains no more units once it has this many
+//    queue          units a bot keeps queued in each of its cities at most; it fills one city's queue before the
+//                   next, so an army gathers there (the start gold: `queue` infantry in one city)
+//    trainShare     the share of its cities a bot trains in: those where its units already gather
+//    infantryTurns  for the first this many turns bots train infantry only
+//    mix            then how often each unit type is trained (weights; a type left out is never trained);
+//                   knights only once the bot has richGold gold
+//    groupRadius    km: a bot's idle units this close together march as one army
+//    attackNeutral  the fewest infantry an army marches on a neutral city with...
+//    attackPlayer   ...and the fewest units on a player's city; both times the city's HP over CITY.hp, plus the
+//                   enemy units around it, at most maxArmy. An army without infantry never attacks a city
+//    playerCityPenalty  km a player's city counts as farther than a neutral one when a bot picks a target, so
+//                   bots spread over neutral land first and fight over cities once that is far
+//    graceTurns     for the first this many turns bots march on neutral cities only: time for someone new to the
+//                   game to learn it before a bot comes for their cities (they still defend their own)
+//    nearTarget     km: an army this close to its target attacks the city itself
+//    defendRadius   km: enemy units this close to a bot's city bring its idle units within helpRadius km
+//    helpRadius
+export const BOTS = {
+  count: 5,
+  thinkSeconds: 2,
+  maxUnits: 200,
+  queue: 4,
+  trainShare: 1 / 3,
+  infantryTurns: 1,
+  mix: { infantry: 5, archer: 3, knight: 1 },
+  richGold: 400,
+  groupRadius: 120,
+  attackNeutral: 4,
+  attackPlayer: 10,
+  maxArmy: 40,
+  playerCityPenalty: 300,
+  graceTurns: 5,
+  nearTarget: 120,
+  defendRadius: 100,
+  helpRadius: 300,
+};
+
 // Chat in the waiting room and in the game (server/index.js, "chat"; public/js/chat.js): the longest message in
 // characters, and how many of the last messages are kept, for those who come in (or back) and on screen.
 export const CHAT = { maxLength: 200, keep: 50 };

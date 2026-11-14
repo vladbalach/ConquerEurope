@@ -55,6 +55,9 @@ everyone is revealed.
   [shared/protocol.js](shared/protocol.js)), are in no player list, and the host's browser never has their
   nicknames. The lobby and the waiting room list spectators by nickname only, apart from the players, never with a
   colour, and nobody in the game is told when one comes or goes. They get every nickname with the others at the end.
+- **Bots** (game option With bots) are not people, so nothing about them is secret: everyone sees them as bots by
+  colour, "Blue (bot)", from the start. They have no nickname, take part in the colour and id deal with the players
+  (so the ids left to the players give nothing away), and the reveal at the end lists them as bots.
 - **Chat** goes through the lobby server, which says who wrote each message (the host's browser never sees it, so it
   can't change who said what). In the waiting room by nickname, without colours. While the game runs a player's
   message carries their id and colour only, and a spectator's reaches the other spectators only, without a nickname:

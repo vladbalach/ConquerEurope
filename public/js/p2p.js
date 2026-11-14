@@ -7,6 +7,35 @@
 // game's messages (start, snap, event, score, room, gameover), exactly like the old server did.
 // Snapshots and scores travel as changes to the last one sent on that link (delta.js).
 import { DeltaEncoder, DeltaDecoder } from './delta.js';
+import { logger } from './log.js';
+
+const log = logger('p2p');
+
+// The ICE servers a link tries, for the console: kinds only (STUN, TURN), never their passwords.
+function describeIce(ice) {
+  const urls = (ice.iceServers || []).flatMap((s) => [].concat(s.urls || []));
+  const kinds = urls.map((u) => String(u).split(':')[0]);
+  return `${urls.length} ICE server URL(s) [${[...new Set(kinds)].join(', ') || 'none'}]${ice.relayOnly ? ', TURN only' : ''}`;
+}
+
+// A candidate's kind (host = local network, srflx = through STUN, relay = through TURN) and protocol.
+function candidateKind(c) {
+  const m = / typ (\w+)/.exec(c.candidate || '');
+  return `${m ? m[1] : '?'}/${(/ (udp|tcp) /i.exec(c.candidate || '') || [])[1] || '?'}`;
+}
+
+// Logs how a peer connection goes: ICE gathering, connectivity checks, and the link itself.
+function watchConnection(pc, who) {
+  pc.addEventListener('icegatheringstatechange', () => log.info(`${who}: ICE gathering ${pc.iceGatheringState}`));
+  pc.addEventListener('iceconnectionstatechange', () => log.info(`${who}: ICE ${pc.iceConnectionState}`));
+  pc.addEventListener('connectionstatechange', () => {
+    const say = pc.connectionState === 'failed' ? log.warn : log.info;
+    say(`${who}: connection ${pc.connectionState}`);
+  });
+  pc.addEventListener('icecandidateerror', (e) => {
+    log.warn(`${who}: ICE server ${e.url || '?'} failed: ${e.errorCode} ${e.errorText || ''}`);
+  });
+}
 
 // No direct link after this long: go through the lobby server instead (relay). Direct links
 // normally open within a second or two; some networks (mobile data, some company or home
@@ -246,9 +275,11 @@ export class HostSession {
   // A connection message from player `from`, passed on by the lobby server.
   async onSignal(from, data) {
     if (data.sdp && data.sdp.type === 'offer') {
+      log.info(`player ${from}: offer received, answering (${describeIce(this.ice)})`);
       this.dropPeer(from, false);    // a new offer replaces an old link (the player reconnects)
       this.relayed.delete(from);
       const pc = new RTCPeerConnection(rtcConfig(this.ice));
+      watchConnection(pc, `player ${from}`);
       const peer = { pc, channel: null, candidates: new Candidates(pc), online: false, deflate: false, sending: Promise.resolve() };
       this.peers.set(from, peer);
       pc.onicecandidate = (e) => {
@@ -258,6 +289,7 @@ export class HostSession {
         const ch = (peer.channel = e.channel);
         peer.deflate = canDeflate && ch.protocol === DEFLATE;    // their page can decompress
         ch.onopen = () => {
+          log.info(`player ${from}: direct link open`);
           peer.online = true;
           this.worker.postMessage({ type: 'connect', id: from });
         };
@@ -285,10 +317,12 @@ export class HostSession {
   // A message from a player who plays through the server relay (no direct link).
   onRelay(from, msg) {
     if (msg.t === 'relayOpen') {
+      log.info(`player ${from}: plays through the server relay`);
       this.dropPeer(from, false);    // their direct link never opened
       this.relayed.add(from);
       this.worker.postMessage({ type: 'connect', id: from });
     } else if (msg.t === 'relayClose') {
+      log.info(`player ${from}: left the server relay`);
       this.outgoing.delete(from);
       if (this.relayed.delete(from)) this.worker.postMessage({ type: 'disconnect', id: from });
     } else if (this.relayed.has(from)) {
@@ -350,14 +384,20 @@ export class PeerSession {
       },
     };
 
+    log.info(`connecting to the host of game ${gameId} directly (${describeIce(ice)}); ` +
+      `the server relay after ${DIRECT_TIMEOUT_MS / 1000} s without a link`);
     const pc = (this.pc = new RTCPeerConnection(rtcConfig(ice)));
+    watchConnection(pc, 'host');
     this.candidates = new Candidates(pc);
     // The protocol tells the host this page can take compressed messages.
     const ch = (this.channel = pc.createDataChannel('game', { ordered: true, protocol: canDeflate ? DEFLATE : '' }));
     ch.binaryType = 'arraybuffer';
     this.inbound = Promise.resolve();  // compressed messages are read in the order they came
     pc.onicecandidate = (e) => {
-      if (e.candidate) this.net.send({ t: 'signal', data: { candidate: e.candidate.toJSON() } });
+      if (e.candidate) {
+        log.info('host: local candidate', candidateKind(e.candidate));
+        this.net.send({ t: 'signal', data: { candidate: e.candidate.toJSON() } });
+      }
     };
     ch.onopen = () => {
       if (this.relay || this.done) return;
@@ -381,14 +421,26 @@ export class PeerSession {
       if (this.open) this.linkLost();
       else this.useRelay();
     };
-    this.timer = setTimeout(() => { if (!this.open) this.useRelay(); }, DIRECT_TIMEOUT_MS);
+    this.timer = setTimeout(() => {
+      if (this.open) return;
+      log.warn(`host: no direct link after ${DIRECT_TIMEOUT_MS / 1000} s ` +
+        `(${this.answered ? 'the host answered' : 'no answer from the host'}, ICE ${pc.iceConnectionState})`);
+      this.useRelay();
+    }, DIRECT_TIMEOUT_MS);
     pc.createOffer()
       .then((offer) => pc.setLocalDescription(offer))
-      .then(() => this.net.send({ t: 'signal', data: { sdp: pc.localDescription.toJSON() } }))
-      .catch(() => this.useRelay());
+      .then(() => {
+        log.info('host: offer sent through the server');
+        this.net.send({ t: 'signal', data: { sdp: pc.localDescription.toJSON() } });
+      })
+      .catch((e) => {
+        log.error('host: could not make an offer:', e);
+        this.useRelay();
+      });
   }
 
   receive(msg) {
+    if (!this.heard) log.info(`host: first message (${msg.t}) ${this.relay ? 'through the relay' : 'over the direct link'}`);
     this.started = true;
     this.heard = true;
     if (msg.t === 'part') {
@@ -454,10 +506,14 @@ export class PeerSession {
   // since the relay runs over it.
   openRelay() {
     this.heard = false;
+    log.info(`host: asking for the game through the server relay (gives up after ${RELAY_TIMEOUT_MS / 1000} s)`);
+    if (!this.net.connected) log.warn('host: the lobby connection is down, so the relay cannot work until it is back');
     this.net.send({ t: 'relay', msg: { t: 'relayOpen' } });
     clearTimeout(this.timer);
     this.timer = setTimeout(() => {
-      if (!this.heard) this.lost('Could not reach the host, neither directly nor through the server.');
+      if (this.heard) return;
+      log.warn(`host: nothing through the relay in ${RELAY_TIMEOUT_MS / 1000} s: the host's page is not answering`);
+      this.lost('Could not reach the host, neither directly nor through the server.');
     }, RELAY_TIMEOUT_MS);
   }
 
@@ -478,8 +534,12 @@ export class PeerSession {
   onSignal(from, data) {
     if (this.done || this.relay) return;
     if (data.sdp && data.sdp.type === 'answer') {
-      this.pc.setRemoteDescription(data.sdp).then(() => this.candidates.flush()).catch(() => {});
+      log.info('host: answer received');
+      this.answered = true;
+      this.pc.setRemoteDescription(data.sdp).then(() => this.candidates.flush())
+        .catch((e) => log.error('host: could not use the answer:', e));
     } else if (data.candidate) {
+      log.info('host: remote candidate', candidateKind(data.candidate));
       this.candidates.add(data.candidate);
     }
   }
