@@ -2,17 +2,20 @@
 import { Net } from './net.js';
 import { GameClient } from './client.js';
 import { RoomChat } from './chat.js';
-import { GAME, DEBUG, CHAT, COMMUNITY } from '/shared/config.js';
+import { GAME, DEBUG, CHAT, COMMUNITY, BOTS } from '/shared/config.js';
 import { PROTOCOL_VERSION } from '/shared/protocol.js';
 import { applyBalance } from '/shared/balance.js';
 import {
-  OPTION_LIMITS, GOLD_PERCENT, sanitizeOptions, sanitizeGoldPercent, summarizeOptions, describeOptions,
+  OPTION_LIMITS, GOLD_PERCENT, sanitizeOptions, sanitizeGoldPercent, summarizeOptions, describeOptions, botCount,
 } from '/shared/options.js';
 import { initTooltips } from './tooltip.js';
 import { HostSession, PeerSession } from './p2p.js';
 import { initSound } from './sound.js';
 import { mapLines } from './render.js';
 import { decodeMask, encodeMask } from '/shared/mountains.js';
+import { logger } from './log.js';
+
+const log = logger('lobby');
 
 initTooltips();
 initSound();
@@ -236,11 +239,7 @@ function renderRoom() {
   if (!room || !joined) return;
   $('room-title').textContent = room.title;
   const isHost = room.hostId === joined.playerId, watching = !!joined.spectator;
-  const players = `${room.players.length}/${GAME.maxPlayers} players`;
-  $('room-info').textContent = isHost
-    ? `${players}. Start whenever you are ready — you can also start alone to practise against neutral cities.`
-    : watching ? `${players}. You are a spectator: once the host starts the game, you watch it without playing.`
-      : `${players}. Waiting for the host to start the game…`;
+  renderRoomInfo();
   // Alone in the room: the host is told the game is listed and can share the site's link.
   $('room-share').hidden = !(isHost && room.players.length === 1);
   renderRoomPlayers(isHost);
@@ -257,6 +256,18 @@ function renderRoom() {
     ? (role.disabled ? `The game is full (${GAME.maxPlayers} players)` : 'Take part in the game as a player')
     : role.disabled ? 'Someone has to play: you are the only player'
       : `Watch the game as a spectator instead of playing${isHost ? '. The next player becomes the host' : ''}`;
+}
+
+// The line under the room's title: how many are in, and what happens next (bots joining at the start too).
+function renderRoomInfo() {
+  const isHost = room.hostId === joined.playerId, watching = !!joined.spectator;
+  const players = `${room.players.length}/${GAME.maxPlayers} players`;
+  const bots = botCount(room.options, room.players.length);
+  const withBots = bots ? ` ${bots} bot${bots === 1 ? '' : 's'} join${bots === 1 ? 's' : ''} the game when it starts.` : '';
+  $('room-info').textContent = isHost
+    ? `${players}. Start whenever you are ready.${withBots || ' You can also start alone to practise against neutral cities.'}`
+    : watching ? `${players}. You are a spectator: once the host starts the game, you watch it without playing.${withBots}`
+      : `${players}. Waiting for the host to start the game…${withBots}`;
 }
 
 // Spectators by nickname, in the order they came: no colours before the game.
@@ -332,8 +343,11 @@ function sendGoldPercent(id, input) {
 // ------------------------------------------------------------------ game options (waiting room)
 // The host picks them; everyone else sees them read-only. The server keeps the real values and
 // sends them with every `room` message.
-const OPTION_INPUTS = ['opt-countdown', 'opt-countdown-turn', 'opt-win-cities', 'opt-death', 'opt-start-gold'];
+const OPTION_INPUTS = ['opt-countdown', 'opt-countdown-turn', 'opt-win-cities', 'opt-death', 'opt-start-gold', 'opt-bots'];
 const cityCount = () => (map ? map.cities.length : Infinity);
+const BOTS_TIP = `Computer players (${BOTS.count}) join the game when it starts, each with an empire of its own: they ` +
+  'train armies and attack cities, neutral ones first. Everyone sees them as bots, e.g. "Blue (bot)". ' +
+  'On while the host is alone in the room, off once someone joins, unless the host sets it.';
 
 // `force`: also overwrite the field the player is typing in (they just committed a value).
 function renderOptions(options, isHost, force = false) {
@@ -353,12 +367,17 @@ function renderOptions(options, isHost, force = false) {
   set(win, o.winCities);
   set($('opt-death'), o.death);
   set(gold, o.startGold);
+  set($('opt-bots'), o.bots ? 'yes' : 'no');
+  $('opt-bots').title = BOTS_TIP;
   turn.hidden = o.countdown !== 'turn';
   for (const id of OPTION_INPUTS) $(id).disabled = !isHost;
   $('opt-summary').textContent = describeOptions(o);
 }
 
-function sendOptions() {
+// "With bots" goes to the server only when the host changes it, and nothing else does then: until the host
+// sets it, the server keeps it in step with the room (on while they are alone), and another option sent with
+// an old value of it would count as setting it.
+function sendOptions(e) {
   if (!room || !joined || room.hostId !== joined.playerId || room.status !== 'lobby') return;
   const o = sanitizeOptions({
     countdown: $('opt-countdown').value,
@@ -366,10 +385,13 @@ function sendOptions() {
     winCities: $('opt-win-cities').value,
     death: $('opt-death').value,
     startGold: $('opt-start-gold').value,
+    bots: $('opt-bots').value === 'yes',
   }, cityCount());
   room.options = o;                    // show it at once; the server's copy follows in `room`
   renderOptions(o, true, true);
-  net.send({ t: 'setOptions', options: o });
+  renderRoomInfo();
+  const { bots, ...rest } = o;
+  net.send({ t: 'setOptions', options: e.target.id === 'opt-bots' ? { bots } : rest });
 }
 for (const id of OPTION_INPUTS) $(id).addEventListener('change', sendOptions);
 
@@ -488,7 +510,10 @@ function checkProtocol(msg) {
   }
   $('lobby-warning').textContent = text;
   $('lobby-warning').hidden = !text;
-  if (text) toast(text);
+  if (text) {
+    log.warn(`protocol mismatch: page ${PROTOCOL_VERSION}, server ${serverProtocol}`);
+    toast(text);
+  }
 }
 
 // A game goes on in this page: one it plays, hosts or watches (not one over, on its results screen).
@@ -552,6 +577,15 @@ net.on('joined', (msg) => {
     drawBackdrop();
   } else if (msg.spectator && !game) {
     toast('Connecting to the game…');
+    log.info(`watching game ${msg.gameId} (${msg.status}): waiting for the server to say where its host is`);
+    // The server tells a spectator to connect only while the game has a host (some player online).
+    setTimeout(() => {
+      if (joined && joined.gameId === msg.gameId && joined.spectator && !session && !game) {
+        log.warn(`still no connectHost for game ${msg.gameId} after 5 s: the game may have no host right now ` +
+          '(no player online), so there is nothing to watch yet. Clear this tab\'s resume with ' +
+          'sessionStorage.removeItem("coe.resume") and reload to get back to the lobby.');
+      }
+    }, 5000);
   }
   // Before the game reaches an outdated page (a running one resumes after the reload).
   reloadIfOutdated();
@@ -568,7 +602,11 @@ net.on('room', (msg) => {
 // WebRTC link per player) or connects to the host; the lobby server passes connection messages.
 const GAME_MESSAGES = {
   start(msg) {
-    if (!joined) return;
+    if (!joined) {
+      log.warn('the game started, but this page is in no game: ignored');
+      return;
+    }
+    log.info(`the game has reached this page (you: ${msg.you}${msg.spectator ? ', spectator' : ''})`);
     const link = session ? session.link : net;
     // The same game again: we reconnected to the host, or to the browser that took the game over from
     // it. (Not after a duel's Restart: a new game, same id.)
@@ -610,10 +648,12 @@ net.on('host', (msg) => {
   endSession();
   clearTimeout(hostWait);
   if (msg.save && game) game.hud.feed('The host is gone: the game now runs in your browser');
+  log.info(`this page hosts game ${msg.gameId} (epoch ${msg.epoch}${msg.save ? ', taken over from a checkpoint' : ''})`);
   session = new HostSession({
     net, gameId: msg.gameId, you: msg.you, epoch: msg.epoch, title: msg.title, options: msg.options, roster: msg.roster,
     save: msg.save || null, departed: msg.departed || [], ice: msg.ice,
-    balance: balanceValues, onMessage: onGameMessage, onError: (text) => toast(text),
+    balance: balanceValues, onMessage: onGameMessage,
+    onError: (text) => { log.error('host:', text); toast(text); },
   });
 });
 
@@ -622,16 +662,22 @@ net.on('host', (msg) => {
 net.on('connectHost', (msg) => {
   clearTimeout(hostWait);
   if (session && !session.isHost && session.gameId === msg.gameId && session.epoch === msg.epoch && !session.done) {
-    if (session.open) return;          // our lobby connection came back; the direct link is fine
+    if (session.open) {                // our lobby connection came back; the direct link is fine
+      log.info('connectHost: the direct link to the host is still open');
+      return;
+    }
     if (session.relay) {               // the relay runs over the lobby connection: pick it up again
+      log.info('connectHost: picking the server relay up again');
       session.openRelay();
       return;
     }
   }
   const wasHost = !!(session && session.isHost);
   endSession();                        // also a game this page ran: another browser has taken it over
+  log.info(`connecting to the host of game ${msg.gameId} (epoch ${msg.epoch}, you: ${msg.you}${msg.moved ? ', host moved' : ''})`);
   // Until the host's game arrives, the waiting room says what is happening.
   const status = (text) => {
+    log.info('status:', text);
     if (game) game.hud.feed(text);
     else {
       $('room-info').textContent = text;
@@ -647,6 +693,7 @@ net.on('connectHost', (msg) => {
   session = new PeerSession({
     net, gameId: msg.gameId, you: msg.you, epoch: msg.epoch, ice: msg.ice, onMessage: onGameMessage, onStatus: status,
     onLost: (text) => {
+      log.warn('link to the host lost:', text);
       session = null;
       if (game && game.restarting) {
         // A duel's Restart could not reach the host: back to the lobby, where Rejoin tries again.
@@ -781,6 +828,7 @@ $('name-form').addEventListener('submit', (e) => {
   if (!name) return;
   myName = name;
   store(localStorage, NAME_KEY, name);
+  log.info(`Continue as "${name}" (${net.connected ? 'connected' : 'not connected yet: hello goes once it is'})`);
   if (net.connected) hello();
   else $('conn-status').textContent = 'Connecting…';
 });
@@ -844,10 +892,12 @@ async function boot() {
   $('conn-status').textContent = 'Loading map…';
   try {
     map = await fetch('map.json').then((r) => r.json());
-  } catch {
+  } catch (e) {
+    log.error('could not load map.json:', e);
     $('conn-status').textContent = 'Could not load the map. Is the server running?';
     return;
   }
+  log.info(`page protocol ${PROTOCOL_VERSION}; map loaded`);
   drawBackdrop();
   $('name-submit').disabled = false;
   $('conn-status').textContent = '';

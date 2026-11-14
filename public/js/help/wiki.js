@@ -5,7 +5,7 @@
 // Advanced details sit in tooltips: a dotted underline, or a small ⓘ.
 import {
   UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES, ECONOMY, GAME, TECHS, TECH_TABS, TRADITIONS, TRADITION_TYPES,
-  HERO, HEALER, LIBERATOR, NAVAL, COMBAT, DISBAND, PLAYER_COLOR_NAMES,
+  HERO, HEALER, LIBERATOR, NAVAL, COMBAT, DISBAND, PLAYER_COLOR_NAMES, BOTS,
 } from '/shared/config.js';
 import { liberatorIncome, influenceLimit, safeSeconds } from '/shared/tech.js';
 import { describeOptions, GOLD_PERCENT } from '/shared/options.js';
@@ -223,6 +223,10 @@ const PAGES = [
           'starts with a few cities. Train armies, storm cities, and be the first to hold enough of them.'),
         g.spectator ? null : p('You are ', el('b', { class: 'who', style: `color:${color}` }, name || 'your colour'),
           '. Your cities, territory and units are drawn in that colour; on the minimap your cities are outlined in white.'),
+        // Game option With bots: who the bots are, and what they do.
+        [...g.players.values()].some((q) => q.bot) ? p('Players named like ', b('Blue (bot)'), ' are bots: computer players ' +
+          'that train armies and attack cities, neutral ones first. For the first ', b(`${BOTS.graceTurns} turns`),
+          ' they leave players\' cities alone.') : null,
         h.card({ title: 'How to win' },
           p('Hold ', b(`${o.winCities ?? GAME.winCities} cities`), ' when a turn ends. ',
             term('More on the target', describeOptions(o)), '.'),

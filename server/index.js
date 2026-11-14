@@ -263,6 +263,19 @@ let lobbyDirty = false;
 
 const clean = (s, max) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, max) : '');
 
+// The lobby's log, one line per event: connections, games created, joined, watched, started, handed to a
+// host and ended (Render shows it under Logs). Each connection has a number (#7), so one browser tab can
+// be followed through it; tokens are never logged. Quiet under `node --test`, which runs this server too.
+const QUIET_LOG = !!process.env.NODE_TEST_CONTEXT;
+let nextConnId = 1;
+function log(...args) {
+  if (!QUIET_LOG) console.log(new Date().toISOString().slice(11, 19), ...args);
+}
+const who = (c) => (c ? `#${c.id}${c.name ? ` "${c.name}"` : ''}` : '(offline)');
+const gameLabel = (g) => `game ${g.id} "${g.title}"`;
+const roleOf = (p) => (p.spectator ? `spectator ${p.id}` : `player ${p.id}`);
+const onlineCount = (g) => [...g.players.values()].filter((p) => p.client).length;
+
 // Lobby view for one client: every game with its players, flagged when this client
 // can rejoin it, plus the names of everyone currently browsing the lobby.
 function gameList(client) {
@@ -293,8 +306,10 @@ function readTokens(raw) {
 // players about returns, so the lobby only records who is online.
 function rejoin(client, game, player) {
   if (client.game && client.game !== game) leaveCurrent(client);
+  log(`${who(client)} rejoins ${gameLabel(game)} as ${roleOf(player)}`);
   if (player.client && player.client !== client) {
     const old = player.client;
+    log(`${who(old)} kicked from ${gameLabel(game)}: the same ${roleOf(player)} opened in ${who(client)}`);
     old.game = null;
     old.player = null;
     old.send({ t: 'kicked', msg: 'You opened this game in another tab' });
@@ -316,6 +331,7 @@ function joinGame(client, game) {
   }
   client.game = game;
   client.player = res.player;
+  log(`${who(client)} joins ${gameLabel(game)} as ${roleOf(res.player)} (${game.players.size} in the room)`);
   sendJoined(client);
   lobbyDirty = true;
 }
@@ -332,6 +348,7 @@ function watchGame(client, game) {
   }
   client.game = game;
   client.player = res.spectator;
+  log(`${who(client)} watches ${gameLabel(game)} (${game.status}) as ${roleOf(res.spectator)}`);
   sendJoined(client);
   lobbyDirty = true;
 }
@@ -339,8 +356,10 @@ function watchGame(client, game) {
 // A spectator's page was refreshed, or their connection came back: they watch on.
 function rewatch(client, game, s) {
   if (client.game && client.game !== game) leaveCurrent(client);
+  log(`${who(client)} watches ${gameLabel(game)} again as ${roleOf(s)}`);
   if (s.client && s.client !== client) {
     const old = s.client;
+    log(`${who(old)} kicked from ${gameLabel(game)}: the same ${roleOf(s)} opened in ${who(client)}`);
     old.game = null;
     old.player = null;
     old.send({ t: 'kicked', msg: 'You opened this game in another tab' });
@@ -383,6 +402,7 @@ function setRole(client, role) {
     client.send({ t: 'error', msg: res.error });
     return;
   }
+  log(`${who(client)} is now a ${role} in ${gameLabel(g)} (${roleOf(client.player)})`);
   sendJoined(client);                  // a new id and token; everyone in the room sees the change
   lobbyDirty = true;
 }
@@ -407,6 +427,7 @@ function leaveCurrent(client) {
   const g = client.game;
   if (!g) return;
   const p = client.player;
+  log(`${who(client)} leaves ${gameLabel(g)} (${roleOf(p)}, game ${g.status})`);
   if (p.spectator) {
     // Nothing changes in the game. Their page has told the host already (or its link just closes).
     g.removeSpectator(p.id);
@@ -436,6 +457,7 @@ function leaveCurrent(client) {
 // A game is deleted. Its spectators go back to the lobby, told why; those of a finished game stay on
 // its results screen (like its players), only no longer in it.
 function deleteGame(g, reason = 'The game was closed') {
+  log(`${gameLabel(g)} deleted (${g.status}): ${reason}`);
   clearTimeout(g.hostTimer);
   games.delete(g.id);
   for (const s of spectatorsOf(g)) {
@@ -468,6 +490,7 @@ function restartGame(g) {
   g.departed = null;
   if (!g.players.has(g.hostId)) g.hostId = g.players.keys().next().value ?? null;   // its host left the game
   if (!g.restart()) return;
+  log(`${gameLabel(g)} restarts (duel)`);
   // Pages drop the finished game first; the host's start follows, as for a game started in the room.
   // Its spectators watch the new one.
   for (const p of g.players.values()) p.client.send({ t: 'restarted', gameId: g.id });
@@ -509,8 +532,15 @@ async function handOver(g) {
   const epoch = (g.hostEpoch = (g.hostEpoch || 0) + 1);
   const ice = await iceConfig();
   if (g.hostEpoch !== epoch || g.status !== 'running') return;
-  // With each player's gold percentage (set in the waiting room): the host's browser pays them by it.
-  const roster = [...g.players.values()].map((p) => ({ id: p.id, color: p.color, goldPercent: p.goldPercent }));
+  // With each player's gold percentage (set in the waiting room): the host's browser pays them by it. Its bots
+  // (With bots) too: the host's browser plays them.
+  const roster = [
+    ...[...g.players.values()].map((p) => ({ id: p.id, color: p.color, goldPercent: p.goldPercent })),
+    ...g.bots.map((b) => ({ id: b.id, color: b.color, bot: true })),
+  ];
+  const host = g.players.get(g.hostId);
+  log(`${gameLabel(g)} epoch ${epoch}: hosted by player ${g.hostId} ${who(host && host.client)}; ` +
+    `${onlineCount(g)}/${g.players.size} players online, ${g.bots.length} bots, ${spectatorsOf(g).length} spectators`);
   for (const p of g.players.values()) {
     if (!p.client) continue;
     if (p.id === g.hostId) {
@@ -532,6 +562,7 @@ async function moveHost(g) {
   g.hostTimer = 0;
   if (g.status !== 'running') return;
   if (!g.checkpoint) {
+    log(`${gameLabel(g)}: the host left before the first checkpoint, so the game ends`);
     endHosted(g, -1, 'The host left the game.');
     return;
   }
@@ -539,8 +570,13 @@ async function moveHost(g) {
   const next = online.find((p) => g.checkpoint.active.includes(p.id)) || online[0] || null;
   g.hostId = next ? next.id : null;
   lobbyDirty = true;
-  if (!next) return;
+  if (!next) {
+    log(`${gameLabel(g)}: no player online, so the game has no host until one comes back ` +
+      `(${spectatorsOf(g).length} spectators wait)`);
+    return;
+  }
   const epoch = ++g.hostEpoch;
+  log(`${gameLabel(g)} epoch ${epoch}: the game moves to player ${next.id} ${who(next.client)}`);
   next.client.hosting = { gameId: g.id, epoch };
   const ice = await iceConfig();
   if (g.hostEpoch !== epoch || g.status !== 'running') return;    // moved on meanwhile
@@ -565,9 +601,11 @@ async function moveHost(g) {
 function hostAway(g, client) {
   clearTimeout(g.hostTimer);
   if (!runsGame(client, g)) {
+    log(`${gameLabel(g)}: its host ${who(client)} has gone (page closed or reloaded)`);
     moveHost(g);
     return;
   }
+  log(`${gameLabel(g)}: its host ${who(client)} lost the connection; ${timing.hostGrace / 1000} s to come back`);
   g.hostTimer = setTimeout(() => moveHost(g), timing.hostGrace);
   g.hostTimer.unref?.();
 }
@@ -577,14 +615,19 @@ function hostAway(g, client) {
 // to come back, and tells its spectators to connect then, as moveHost does).
 async function resumeHosted(client, g, p) {
   if (p.spectator) {
-    if (g.hostId === null) return;
+    if (g.hostId === null) {
+      log(`${who(client)} waits to watch ${gameLabel(g)}: no player online, so it has no host`);
+      return;
+    }
     const ice = await iceConfig();
     if (client.player === p && g.status === 'running') {
+      log(`${who(client)} (${roleOf(p)}) connects to the host of ${gameLabel(g)}, player ${g.hostId}`);
       client.send({ t: 'connectHost', gameId: g.id, you: p.id, epoch: g.hostEpoch, ice });
     }
     return;
   }
   if (runsGame(client, g) && (g.hostId === p.id || g.hostId === null)) {
+    log(`${gameLabel(g)}: its host ${who(client)} is back and still runs the game`);
     // The host's connection dropped and came back: its page still runs the game, and stays the host.
     // Players relayed through this server lost it meanwhile: told again, they pick their relay up again.
     clearTimeout(g.hostTimer);
@@ -605,6 +648,7 @@ async function resumeHosted(client, g, p) {
     return;
   }
   const ice = await iceConfig();
+  log(`${who(client)} (${roleOf(p)}) connects to the host of ${gameLabel(g)}, player ${g.hostId}`);
   client.send({ t: 'connectHost', gameId: g.id, you: p.id, epoch: g.hostEpoch, ice });
 }
 
@@ -612,12 +656,14 @@ async function resumeHosted(client, g, p) {
 // nickname and colour (GAME_DESIGN.md, "Anonymous players").
 function endHosted(g, winner, reason = null) {
   if (g.status !== 'running') return;
+  log(`${gameLabel(g)} ended: winner ${winner}${reason ? ` (${reason})` : ''}`);
   clearTimeout(g.hostTimer);
   g.checkpoint = null;
   g.status = 'ended';
   g.winner = winner;
   g.endedAt = Date.now();
   const players = [...g.players.values(), ...(g.departed || [])].map((p) => ({ id: p.id, name: p.name, color: p.color }));
+  for (const b of g.bots) players.push({ id: b.id, name: null, color: b.color, bot: true });     // bots have no nickname
   for (const p of g.players.values()) {
     if (p.client) p.client.send({ t: 'reveal', winner, players, reason });
   }
@@ -720,6 +766,8 @@ function handle(client, msg) {
       if (client.admin) client.send({ t: 'mapState', ...editor.state() });
       // Same tab reconnecting (page refresh, network drop): resume silently.
       const r = msg.resume;
+      log(`${who(client)} hello${r && typeof r === 'object' ? `, resuming game ${r.gameId}` : ''}` +
+        `${client.hosting ? `, hosting game ${client.hosting.gameId} epoch ${client.hosting.epoch}` : ''}`);
       if (r && typeof r === 'object' && typeof r.token === 'string') {
         const g = games.get(String(r.gameId));
         const p = g ? g.findRejoinable(null, r.token) : null;
@@ -732,6 +780,7 @@ function handle(client, msg) {
           rewatch(client, g, s);
           return;
         }
+        log(`${who(client)} cannot resume game ${r.gameId} (${g ? `${g.status}, not in it` : 'gone'}): to the lobby`);
       }
       client.send({ t: 'welcome', name: client.name, protocol: PROTOCOL_VERSION });
       sendGameList(client);
@@ -747,6 +796,7 @@ function handle(client, msg) {
       const title = clean(msg.title, 32) || `${client.name}'s game`;
       const g = new Game({ id: String(nextGameId++), title, map, nav });
       games.set(g.id, g);
+      log(`${who(client)} created ${gameLabel(g)}`);
       joinGame(client, g);
       return;
     }
@@ -810,6 +860,7 @@ function handle(client, msg) {
     case 'start': {
       const g = client.game;
       if (g && g.status === 'lobby' && client.player && g.hostId === client.player.id && g.beginStart()) {
+        log(`${who(client)} started ${gameLabel(g)}`);
         clearChat(g);                  // the waiting room's, by nickname
         handOver(g);                   // the host's browser runs the game from here on
         lobbyDirty = true;
@@ -817,7 +868,7 @@ function handle(client, msg) {
       return;
     }
     case 'setOptions': {
-      // Game options (cities to win, countdown): only the host, only in the waiting room.
+      // Game options (cities to win, countdown, bots): only the host, only in the waiting room.
       const g = client.game;
       if (g && client.player && g.hostId === client.player.id && g.setOptions(msg.options)) lobbyDirty = true;
       return;
@@ -834,7 +885,12 @@ function handle(client, msg) {
       const g = client.game, p = client.player;
       if (!g || !p || g.status !== 'running' || !msg.data || typeof msg.data !== 'object') return;
       const target = p.id === g.hostId ? g.member(msg.to) : g.players.get(g.hostId);
-      if (!target || target === p || !target.client) return;
+      const sdp = msg.data.sdp && msg.data.sdp.type;   // offer or answer; ICE candidates are not logged
+      if (!target || target === p || !target.client) {
+        if (sdp) log(`${gameLabel(g)}: ${sdp} from ${roleOf(p)} ${who(client)} dropped: its peer is offline`);
+        return;
+      }
+      if (sdp) log(`${gameLabel(g)}: ${sdp} ${roleOf(p)} ${who(client)} -> ${roleOf(target)} ${who(target.client)}`);
       target.client.send({ t: 'signal', from: p.id, data: msg.data });
       return;
     }
@@ -886,6 +942,10 @@ function handle(client, msg) {
         if (target && target !== p && target.client) target.client.send({ t: 'relay', msg: msg.msg });
       } else {
         const host = g.players.get(g.hostId);
+        if (msg.msg.t === 'relayOpen') {
+          log(`${gameLabel(g)}: ${roleOf(p)} ${who(client)} plays through the server relay` +
+            `${host && host.client ? '' : ', but the game has no host online'}`);
+        }
         if (host && host.client) host.client.send({ t: 'relay', from: p.id, msg: msg.msg });
       }
       return;
@@ -929,12 +989,14 @@ const wss = new WebSocketServer({
 
 wss.on('connection', (ws) => {
   const client = {
-    ws, name: '', game: null, player: null, tokens: {}, seenAt: Date.now(),
+    id: nextConnId++, ws, name: '', game: null, player: null, tokens: {}, seenAt: Date.now(),
     send(msg) {
+      if (msg.t === 'error') log(`${who(client)} refused: ${msg.msg}`);
       if (ws.readyState === 1) ws.send(JSON.stringify(msg));
     },
   };
   clients.add(client);
+  log(`${who(client)} connected (${clients.size} online)`);
   ws.on('pong', () => { client.seenAt = Date.now(); });
   ws.on('message', (data) => {
     client.seenAt = Date.now();
@@ -951,9 +1013,10 @@ wss.on('connection', (ws) => {
       console.error('Error handling', msg.t, e);
     }
   });
-  ws.on('close', () => {
+  ws.on('close', (code) => {
     clients.delete(client);
     const g = client.game, p = client.player;
+    log(`${who(client)} disconnected (code ${code})${g && p ? ` from ${gameLabel(g)} as ${roleOf(p)}` : ''}`);
     if (g && p) {
       if (g.status === 'lobby') {
         if (p.spectator) g.removeSpectator(p.id);

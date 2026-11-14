@@ -221,7 +221,9 @@ export class Hud {
     box.hidden = !show;
     if (!show) return;
     const g = this.g, out = g.isOut();
-    const others = [...g.players.keys()].some((id) => id !== g.you);
+    // Other players: bots don't count, as a game ends once no player is left in it.
+    const others = [...g.players.values()].some((p) => p.id !== g.you && !p.bot);
+    const bots = [...g.players.values()].some((p) => p.bot && !p.eliminated);
     const close = () => this.showLeave(false);
     const option = (button, text) => el('div', { class: 'leave-option' }, button, el('p', {}, text));
     box.replaceChildren(
@@ -229,7 +231,8 @@ export class Hud {
       out ? null : option(
         el('button', { type: 'button', class: 'primary', onclick: () => { close(); g.surrender(); } }, 'Surrender and watch'),
         'Your cities become neutral and your units are gone, but you stay as a spectator and see how the game ends. ' +
-        (others ? 'Once everyone else has surrendered or left, the last player wins.' : 'Playing alone, this ends the game.')),
+        (others ? 'Once everyone else has surrendered or left, the last player wins.'
+          : bots ? 'With only bots left, this ends the game: the bot with the most cities wins.' : 'Playing alone, this ends the game.')),
       option(
         el('button', { type: 'button', onclick: () => { close(); g.leave(); } }, 'Leave game'),
         out ? 'Stop watching and go back to the lobby.' : 'Your cities become neutral and you go back to the lobby.'),

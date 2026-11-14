@@ -23,8 +23,9 @@ npm test             # automated tests (test/*.test.js)
 ```
 
 Open the URL, type a name, then create a game or join one from the lobby. All games are public, and the lobby
-lists every game with its players (offline players are greyed out). The host starts the game; it can be started
-solo to practise against neutral cities. Once a game has started, nobody new can join it, but anyone can watch it.
+lists every game with its players (offline players are greyed out). The host starts the game. A host alone in the
+waiting room plays against 5 bots by default (**With bots**, see the game options), or starts without them to practise
+against neutral cities. Once a game has started, nobody new can join it, but anyone can watch it.
 The start screen and the foot of the lobby have a gold **Join our Discord** button: the invite link is
 `COMMUNITY.discord` in [shared/config.js](shared/config.js) (empty: no button).
 
@@ -441,9 +442,10 @@ it sooner and rank it higher.
 - **Neutral cities:** these are the cities nobody was given. They shoot at everyone.
 - **Winning:** a player who holds the target number of cities when a turn ends wins. Reaching it during the turn is not
   enough: if they lose cities again and are below the target when the turn ends, the game goes on. The last player
-  standing wins at once if the game started with 2 or more players: everyone else is eliminated, has surrendered or
-  has left. A game started alone (to practise) has no such win: it goes on until you surrender or leave. The host sets
-  the target in the waiting room (**Game options**):
+  standing wins at once if the game started with 2 or more players (bots count): everyone else is eliminated, has
+  surrendered or has left. A game started alone without bots (to practise) has no such win: it goes on until you
+  surrender or leave. With bots, the game ends once no player is left in it: the bot with the most cities wins. The
+  host sets the target in the waiting room (**Game options**):
   - **Cities to win:** the starting target, 140 by default (11 up to every city on the map).
   - **Countdown:** *From turn N* (the default, N = 10) keeps the target until turn N is over, then lowers it by one
     city at the end of every turn. *From start* lowers it from the first turn: 140 in the first turn, 139 in the
@@ -489,6 +491,27 @@ it sooner and rank it higher.
 - **Start gold** (also a game option): the gold every player has at the start, the same for everyone. 60 by default
   (`startGold` in `ECONOMY` in [shared/config.js](shared/config.js)), 0–100000. The lobby's game list shows it when it
   isn't the default.
+- **With bots** (also a game option, Yes or No): 5 computer players join the game when it starts, each with an empire
+  of its own, for someone who would otherwise play alone. The option is on while the host is alone in the waiting room
+  and goes off when someone joins (on again when they are alone again). Once the host sets it by hand it stays as they
+  set it, whoever joins or leaves. The lobby's game list says "with bots".
+  - Everyone sees them as bots, by colour: "Blue (bot)" in the feed, the standings, the Players list, the panels and the
+    results screen. They have no nickname, and the start doesn't wait for them.
+  - They play by the rules of any player: the same start gold and income, the same orders, sent by the browser that
+    runs the game ([server/bots.js](server/bots.js)). Every 2 seconds a bot:
+    - trains units in a third of its cities (those where its units gather), filling one city's queue (4 units) before
+      the next, so an army gathers there. In the first turn it trains infantry only: its start gold makes 4 infantry
+      in one city, its first army. Then infantry, archers and, once it has 400 gold, knights; never cavalry.
+    - sends its idle units to fight enemies that come close to its cities;
+    - sends each gathering of idle units that is big enough against the nearest city it can walk to: 4 infantry for a
+      neutral city (archers don't count), 10 units for a player's city (more for walls and defenders), and never an
+      army without infantry. Neutral cities first: a player's city only when the nearest neutral one is more than
+      300 km farther. In the first 5 turns they march on neutral cities only, with a plain move, so they don't take a
+      player's city they pass by; later on an attack-move, fighting what they meet on the way.
+    - As liberators they take a neutral city back whenever they may. They don't research, learn traditions, build
+      upgrades or sail.
+  - Once no player is left in the game (all surrendered, out or gone), it ends: the bot with the most cities wins.
+  - The numbers are in `BOTS` in [shared/config.js](shared/config.js).
 - **Gold percentage** (waiting room): to even out players of different strength, the host sets a percentage for each
   player next to their name (100% by default, 10–500%): less for a strong player, more for a weaker one. Everything that
   player earns in the game is scaled by it: what their cities pay each turn (whole regions and Farms included), their
@@ -760,6 +783,7 @@ server/data/beach-edits.json     Coast painted as beach or cliff by admins (crea
 server/data/mountain-edits.json  Mountains painted or erased by admins (created on the first stroke)
 server/data/label-edits.json     Region names moved or resized by admins (created on the first change)
 server/game.js          One match: players, commands, formations, tick, collisions, snapshots
+server/bots.js          Bots (With bots): computer players that train armies and attack cities, run with the game
 server/history.js       What happened in a game, for the results screen: the map and every player's numbers turn by turn, totals
 server/City.js          City: shooting, regeneration, capture, spawn points, port (coastal cities)
 server/nav.js           Land grid, line of sight, A* pathfinding around seas and mountains (landmark estimates); seas, coasts and ships' paths

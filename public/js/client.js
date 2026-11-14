@@ -289,12 +289,12 @@ export class GameClient {
   }
 
   // How a player is called during the game: by colour only, never by nickname
-  // (GAME_DESIGN.md, "Anonymous players"). Your own empire is "Red (you)".
+  // (GAME_DESIGN.md, "Anonymous players"). Your own empire is "Red (you)", a bot "Blue (bot)".
   nameOf(owner) {
     if (owner < 0) return 'neutral';
-    const color = this.players.get(owner)?.color;
-    const name = PLAYER_COLOR_NAMES[color] || 'Someone';
-    return owner === this.you ? `${name} (you)` : name;
+    const p = this.players.get(owner);
+    const name = PLAYER_COLOR_NAMES[p?.color] || 'Someone';
+    return owner === this.you ? `${name} (you)` : p?.bot ? `${name} (bot)` : name;
   }
 
   // The page's estimate of the game clock runs on this, not on performance.now(): real milliseconds

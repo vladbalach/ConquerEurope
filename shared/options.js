@@ -1,11 +1,11 @@
 // Game options the host sets in the waiting room: how many cities win the game, whether that
-// number counts down as the game goes on, what happens to a player who loses everything, and the
-// gold everyone starts with. Also each player's gold percentage (GOLD_PERCENT below).
+// number counts down as the game goes on, what happens to a player who loses everything, the
+// gold everyone starts with, and whether bots play too. Also each player's gold percentage (GOLD_PERCENT below).
 //
 // The lobby server keeps them with the game and hands them to the host's browser at the start
 // (server/game.js runs there and decides who wins); every player's page gets them in `start` and
 // shows the current target. Both sides use citiesToWin() below, so they always agree.
-import { GAME, LIBERATOR, ECONOMY } from './config.js';
+import { GAME, LIBERATOR, ECONOMY, BOTS } from './config.js';
 
 // Countdown: 'none'  the target never changes
 //            'start' it drops by one city at the end of every turn
@@ -17,12 +17,16 @@ export const COUNTDOWN_MODES = ['none', 'start', 'turn'];
 //   'liberator'  they lose all their gold and become a liberator (LIBERATOR in shared/config.js)
 export const DEATH_MODES = ['spectator', 'liberator'];
 
+// With bots (`bots`): BOTS.count computer players join the game when it starts (server/bots.js). A new waiting
+// room has it on; the room keeps it on while its host is alone and turns it off once someone joins (and on again
+// when they are alone again), until the host sets it by hand (Game.setOptions): then it stays as they set it.
 export const DEFAULT_OPTIONS = Object.freeze({
   countdown: 'turn',
   countdownTurn: 10,
   winCities: GAME.winCities,
   death: 'liberator',
   startGold: ECONOMY.startGold,     // every player's gold at the start (not scaled by gold percentages)
+  bots: true,
 });
 
 export const OPTION_LIMITS = {
@@ -48,7 +52,14 @@ export function sanitizeOptions(raw, cityCount = Infinity) {
     winCities: int(o.winCities, Math.min(DEFAULT_OPTIONS.winCities, maxCities), OPTION_LIMITS.winCities.min, maxCities),
     death: DEATH_MODES.includes(o.death) ? o.death : DEFAULT_OPTIONS.death,
     startGold: int(o.startGold, DEFAULT_OPTIONS.startGold, sg.min, sg.max),
+    bots: typeof o.bots === 'boolean' ? o.bots : DEFAULT_OPTIONS.bots,
   };
+}
+
+// How many bots a game with `players` players gets when it starts: BOTS.count with the option on, as many as
+// there is room for (GAME.maxPlayers in all).
+export function botCount(options, players) {
+  return options && options.bots ? Math.max(0, Math.min(BOTS.count, GAME.maxPlayers - players)) : 0;
 }
 
 // Gold percentage: the host sets one for each player in the waiting room, to even out players of
@@ -91,7 +102,8 @@ export function summarizeOptions(options) {
   const countdown = o.countdown === 'none' ? 'no countdown'
     : o.countdown === 'start' ? 'countdown from the start' : `countdown after turn ${o.countdownTurn}`;
   const gold = o.startGold !== undefined && o.startGold !== DEFAULT_OPTIONS.startGold ? ` · ${o.startGold} start gold` : '';
-  return `${o.winCities} cities to win · ${countdown} · death: ${o.death === 'liberator' ? 'liberator' : 'spectator'}${gold}`;
+  const bots = o.bots ? ' · with bots' : '';
+  return `${o.winCities} cities to win · ${countdown} · death: ${o.death === 'liberator' ? 'liberator' : 'spectator'}${gold}${bots}`;
 }
 
 // What happens to a player who loses everything, in a sentence.

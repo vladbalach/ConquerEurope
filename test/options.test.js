@@ -14,8 +14,8 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-test('defaults: 140 cities, countdown after turn 10, fallen players become liberators', () => {
-  const defaults = { countdown: 'turn', countdownTurn: 10, winCities: 140, death: 'liberator', startGold: ECONOMY.startGold };
+test('defaults: 140 cities, countdown after turn 10, fallen players become liberators, with bots', () => {
+  const defaults = { countdown: 'turn', countdownTurn: 10, winCities: 140, death: 'liberator', startGold: ECONOMY.startGold, bots: true };
   assert.deepEqual({ ...DEFAULT_OPTIONS }, defaults);
   assert.deepEqual(sanitizeOptions(undefined, 208), defaults);
   assert.deepEqual(new Game({ id: '1', title: 't', map, nav }).options, { ...DEFAULT_OPTIONS });
@@ -37,7 +37,9 @@ test('options are checked and clamped: unknown modes, junk and out-of-range numb
   assert.deepEqual(sanitizeOptions({ countdown: 'sometimes', countdownTurn: 'x', winCities: null }, 208),
     { ...DEFAULT_OPTIONS });
   assert.deepEqual(sanitizeOptions({ countdown: 'turn', countdownTurn: '25', winCities: '150', death: 'liberator', startGold: '400' }, 208),
-    { countdown: 'turn', countdownTurn: 25, winCities: 150, death: 'liberator', startGold: 400 }, 'numbers from form fields');
+    { countdown: 'turn', countdownTurn: 25, winCities: 150, death: 'liberator', startGold: 400, bots: true }, 'numbers from form fields');
+  assert.equal(sanitizeOptions({ bots: false }, 208).bots, false);
+  assert.equal(sanitizeOptions({ bots: 'no' }, 208).bots, true, 'bots: true or false, nothing else');
   assert.equal(sanitizeOptions({ startGold: -5 }, 208).startGold, 0, 'start gold: none at all is allowed');
   assert.equal(sanitizeOptions({ startGold: 1e9 }, 208).startGold, 100000);
   assert.equal(sanitizeOptions({ startGold: 'lots' }, 208).startGold, ECONOMY.startGold);
@@ -138,7 +140,7 @@ test('without a countdown the target stays where the host set it', () => {
 test('the host\'s browser runs the game with the options from the lobby, and tells every player', () => {
   const readJson = (...p) => JSON.parse(fs.readFileSync(path.join(ROOT, ...p), 'utf8'));
   const sent = [];
-  const options = { countdown: 'turn', countdownTurn: 3, winCities: 60, death: 'liberator', startGold: 250 };
+  const options = { countdown: 'turn', countdownTurn: 3, winCities: 60, death: 'liberator', startGold: 250, bots: false };
   const engine = new HostEngine({
     gameId: '9', title: 'opts', map: readJson('public', 'map.json'), navData: readJson('server', 'data', 'navgrid.json'),
     roster: [{ id: 0, color: '#e6194b' }, { id: 1, color: '#4363d8' }], hostId: 0, options,
@@ -195,11 +197,11 @@ test('only the host sets the options in the waiting room; everyone sees them and
   const { gameId } = await host.waitFor('joined');
   guest.send({ t: 'join', gameId });
   const room = await guest.waitFor('room', (m) => m.players.length === 2);
-  assert.deepEqual(room.options, { ...DEFAULT_OPTIONS }, 'a new game has the defaults');
+  assert.deepEqual(room.options, { ...DEFAULT_OPTIONS, bots: false }, 'a new game has the defaults (no bots: the host is not alone)');
 
   host.send({ t: 'setOptions', options: { countdown: 'turn', countdownTurn: 15, winCities: 999, death: 'liberator', startGold: 500 } });
   const changed = await guest.waitFor('room', (m) => m.options.countdownTurn === 15);
-  const expected = { countdown: 'turn', countdownTurn: 15, winCities: map.cities.length, death: 'liberator', startGold: 500 };
+  const expected = { countdown: 'turn', countdownTurn: 15, winCities: map.cities.length, death: 'liberator', startGold: 500, bots: false };
   assert.deepEqual(changed.options, expected, 'clamped');
 
   guest.inbox.length = 0;

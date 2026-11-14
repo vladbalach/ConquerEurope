@@ -1,5 +1,21 @@
 # Patch notes
 
+## 14 November 2026: Bots
+
+- **Play against bots:** a new game option, **With bots** (Yes or No), adds 5 computer players to the game when it
+  starts, each with an empire of its own. They train armies and attack cities: neutral ones first, then each other's
+  and yours. For the first 5 turns they leave players' cities alone, so there is time to learn the game.
+- **How a bot plays:** in the first turn it trains infantry only, 4 of them in one city, and as soon as the 4 are out
+  they storm the nearest neutral city. A neutral city takes 4 infantry, a player's city 10 units; an army without
+  infantry never attacks. Bots train infantry, archers and, once rich, knights, but no cavalry.
+- **On by itself when you are alone:** a new waiting room has bots on while its host is alone in it. When someone
+  joins it switches to No, and back to Yes if they leave. Once the host picks Yes or No by hand, it stays that way,
+  whoever comes or goes.
+- **Everyone sees who is a bot:** "Blue (bot)" in the messages, the standings, the Players list, the city and unit
+  panels and the results screen. The lobby's game list says "with bots".
+- Bots play by the same rules and with the same gold as everyone. Once no player is left in a game with bots, the
+  game ends and the bot with the most cities wins.
+
 ## 14 November 2026: Join our Discord
 
 - **The game has a Discord server:** a gold **Join our Discord** button on the start screen and at the foot of the
