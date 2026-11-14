@@ -710,6 +710,7 @@ export function traditionSmallIconURL(key, color) {
 //   supporters  a crowd behind a gold coin (liberator gold every turn)
 //   influencer  a castle in the dashed ring that marks a city about to be liberated
 //   smuggling   gold flowing from a castle to a coin rimmed in your colour (the smuggling mark)
+//   sanctuary   a gatehouse with its portcullis down, a shield in your colour over the gate (tradition-icons.js)
 export function techIconURL(key, color) {
   if (key === 'seafaring') return unitIconURL(color, UNIT_TYPES.indexOf('transport'));
   if (key === 'warships') return unitIconURL(color, UNIT_TYPES.indexOf('battleship'));
@@ -719,7 +720,7 @@ export function techIconURL(key, color) {
   const [c, ctx] = makeCanvas();
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  if (key === 'navigation' || key === 'gunnery' || key === 'roads') {
+  if (key === 'navigation' || key === 'gunnery' || key === 'roads' || key === 'sanctuary') {
     drawTechEmblem(ctx, key, color);
   } else if (key === 'supporters') {
     drawPerson(ctx, 14, 20, 0.95, color);

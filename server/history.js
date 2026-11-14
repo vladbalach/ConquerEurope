@@ -7,7 +7,7 @@
 //    their treasury (private while the game runs; the results screen shows everyone's).
 //  - every player's totals, for their page of advanced stats: units trained, lost and destroyed by type,
 //    city upgrades built, cities taken and lost, gold earned and spent, honor, when each technology and
-//    tradition was learned, Heroes and Healers made, War Cries, and when they fell, surrendered or left.
+//    tradition was learned, Heroes and Healers made, War Cries, and when they fell (or renounced), surrendered or left.
 // Players who leave keep their history (colour, numbers until then). It all goes out once, with the
 // game-over message (Game.end).
 //
@@ -44,7 +44,7 @@ function newStats() {
     spentUnits: 0, spentUpgrades: 0, spentResearch: 0,  // gold spent on what was finished (cancelled items are refunded)
     honorKills: 0, honorDead: 0, honorSpent: 0,         // honor earned by kills, by Honored Dead; spent on anything
     heroes: 0, healers: 0,
-    events: [],                                          // [turn, kind, what, level]: research, tradition, fell, back, out, surrendered, left, won
+    events: [],                                          // [turn, kind, what, level]: research, tradition, fell, renounced, back, out, surrendered, left, won
   };
 }
 

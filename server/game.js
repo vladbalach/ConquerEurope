@@ -9,7 +9,7 @@ import {
 } from '../shared/config.js';
 import {
   noTech, nextLevel, techAvailable, liberatorIncome, influenceLimit, smugglingLimit, smugglingFlows, hasSeafaring, canTrain,
-  roadSpeedFactor,
+  roadSpeedFactor, safeSeconds, liberatorsOnly,
 } from '../shared/tech.js';
 import {
   sanitizeOptions, citiesToWin, GOLD_PERCENT, sanitizeGoldPercent, scaleGold, scaleGoldWhole,
@@ -422,11 +422,15 @@ export class Game {
 
   // A player's empire falls apart: their cities become neutral (queues and rallies gone), their units vanish.
   releaseEmpire(id) {
-    for (const c of this.cities) {
-      if (c.owner !== id) continue;
-      c.owner = -1; c.queue = []; c.queueHonor = []; c.progress = 0; c.rally = null; c.seaRally = null;
-    }
+    for (const c of this.cities) if (c.owner === id) this.releaseCity(c);
     for (const [uid, u] of this.units) if (u.owner === id) this.units.delete(uid);
+  }
+
+  // A city becomes neutral as it stands (its upgrades and HP kept): its queue and rally points are gone, and
+  // it is no longer safe from attack.
+  releaseCity(c) {
+    c.owner = -1; c.queue = []; c.queueHonor = []; c.progress = 0; c.rally = null; c.seaRally = null;
+    c.safeUntil = 0; c.safeFor = 0;
   }
 
   // A finished game starts again with the same players (a duel's Restart, server/index.js): started as
@@ -814,6 +818,10 @@ export class Game {
         // Liberate every influenced city now, without waiting for the limit.
         if (player.liberator && player.influence.length) this.liberateInfluenced(player);
         return;
+      case 'renounce':
+        // Renounce (a button on your city's panel): a small empire gives up its cities and becomes a liberator (Death: Liberator).
+        this.renounce(player);
+        return;
       case 'smuggle': {
         const c = Number.isInteger(msg.city) ? this.cities[msg.city] : null;
         if (c) this.toggleSmuggling(player, c);
@@ -857,6 +865,10 @@ export class Game {
       case 'takeCity':
         // "Own" on a city's panel (debug builds only): the city becomes the sender's.
         if (DEBUG && Number.isInteger(msg.city)) this.takeCity(player, msg.city);
+        return;
+      case 'loseCities':
+        // Developer console "loseallcities" (debug builds only): every city of the sender becomes neutral.
+        if (DEBUG) this.loseCities(player);
         return;
       case 'rally': {
         // Right-click with cities selected. On land: the rally point of the units they train. On the
@@ -939,6 +951,28 @@ export class Game {
     this.sendScores();          // everyone sees at once that they are back
   }
 
+  // May `p` renounce? With Death: Liberator, a player still in the game (not a liberator) who holds
+  // LIBERATOR.renounceCities cities or fewer.
+  canRenounce(p) {
+    return this.status === 'running' && this.options.death === 'liberator' && !p.eliminated && !p.liberator &&
+      p.cityCount <= LIBERATOR.renounceCities;
+  }
+
+  // Renounce (a button on your city's panel): a small empire falls of its own will. Its cities turn neutral as they stand
+  // and its units are gone (a liberator has neither), then it falls like anyone who lost them: all its gold is
+  // lost and it is a liberator from now on. The cooldown of its last liberation still counts. Everyone is told.
+  renounce(p) {
+    if (!this.canRenounce(p)) return;
+    const cities = p.cityCount;
+    this.releaseEmpire(p.id);
+    p.liberator = true;
+    p.gold = 0;
+    this.history.event(this, p.id, 'renounced');
+    this.broadcast({ t: 'event', kind: 'renounced', player: p.id, cities });
+    this.recount();             // nothing left: a liberator already, so it does not count as falling again
+    this.sendScores();          // everyone sees at once that they are a liberator
+  }
+
   // Back in the game: no longer a liberator, and their marks are gone, so other liberators may
   // mark those cities (a city carries one mark of each kind).
   revive(p) {
@@ -961,13 +995,15 @@ export class Game {
   // ------------------------------------------------------------ technologies
   // Research is paid up front and runs on game time, one level at a time. Ordering more while one runs
   // queues them (paid at once too); each starts when the one before it is done. Rebellion technologies
-  // exist only with Death: Liberator (techAvailable). One that `requires` another (Warships: Seafaring)
-  // can be ordered once that one is researched or ordered.
+  // exist only with Death: Liberator (techAvailable), and only a liberator orders them (liberatorsOnly); a level
+  // already ordered goes on if they come back. One that `requires` another (Warships: Seafaring) can be ordered
+  // once that one is researched or ordered.
   startResearch(p, key) {
     if (!TECH_TYPES.includes(key) || p.eliminated || !techAvailable(key, this.options)) return;
+    if (liberatorsOnly(key) && !p.liberator) return;
     const need = TECHS[key].requires;
     if (need && this.plannedLevel(p, need) < 1) return;
-    const next = nextLevel(key, this.plannedLevel(p, key), p.liberator);    // a liberator pays less for Rebellion
+    const next = nextLevel(key, this.plannedLevel(p, key));
     if (!next || p.gold < next.cost) return;
     p.gold -= next.cost;
     if (p.research) p.researchQueue.push({ tech: key, level: next.level, cost: next.cost });
@@ -1073,6 +1109,24 @@ export class Game {
     const c = this.cities[ci];
     if (!c || c.owner === p.id || p.eliminated) return;
     this.captureCity(c, p.id, false, true);
+  }
+
+  // Every city of `p` becomes neutral at once, as when a player surrenders (debug builds only: the developer
+  // console's "loseallcities"); what their queues cost comes back. Their units stay: with none left they fall
+  // like anyone who loses their last city (a liberator, or out). Everyone is told.
+  loseCities(p) {
+    if (this.status !== 'running' || p.eliminated) return;
+    let count = 0;
+    for (const c of this.cities) {
+      if (c.owner !== p.id) continue;
+      c.queue.forEach((item, i) => this.giveBack(p, item, c.queueHonor[i]));
+      this.releaseCity(c);
+      count++;
+    }
+    if (!count) return;
+    this.broadcast({ t: 'event', kind: 'citiesLost', player: p.id, count });
+    this.recount();                      // may make them a liberator, or end the game
+    if (this.status === 'running') this.sendScores();
   }
 
   // ------------------------------------------------------------ honor: traditions and heroes
@@ -1809,13 +1863,14 @@ export class Game {
     return formationSlots(units, tx, ty, { spacing, ...shape, pos: at, role: (u) => formationRole(u.type, u.kind) });
   }
 
+  // The enemy unit or city `owner` can attack, or null: dead, theirs, or a city just liberated (City.isSafe).
   resolve(k, id, owner) {
     if (k === 'u') {
       const t = this.units.get(id);
       return t && t.hp > 0 && t.owner !== owner ? t : null;
     }
     const c = this.cities[id];
-    return c && c.owner !== owner ? c : null;
+    return c && c.owner !== owner && !c.isSafe ? c : null;
   }
 
   // ------------------------------------------------------------ simulation
@@ -2178,7 +2233,9 @@ export class Game {
   }
 
   // The previous owner gets back what they paid for everything still in the queue (gold, or honor
-  // for a Barracks bought with it). `liberated`: taken by a liberator rather than by force.
+  // for a Barracks bought with it). `liberated`: taken by a liberator rather than by force; nobody
+  // can attack it for a while (City.isSafe: LIBERATOR.safeSeconds, longer with the liberator's Sanctuary,
+  // the level they have now), so the liberator can raise troops there.
   // `debug`: given by the "Own" button (debug builds): not counted in the game's statistics.
   captureCity(c, newOwner, liberated = false, debug = false) {
     const prev = c.owner;
@@ -2192,10 +2249,15 @@ export class Game {
       });
     }
     c.capture(newOwner);
+    const safe = liberated ? safeSeconds(this.players.get(newOwner)?.tech) : 0;
+    if (safe) {
+      c.safeFor = safe;
+      c.safeUntil = this.time + safe;
+    }
     if (!debug) this.history.captured(prev, newOwner, liberated);
     this.broadcast({
       t: 'event', kind: 'capture', city: c.id, from: prev, to: newOwner, refund,
-      ...(refundHonor ? { refundHonor } : {}), ...(liberated ? { liberated: true } : {}), ...(debug ? { debug: true } : {}),
+      ...(refundHonor ? { refundHonor } : {}), ...(liberated ? { liberated: true, safe } : {}), ...(debug ? { debug: true } : {}),
     });
   }
 
@@ -2291,10 +2353,14 @@ export class Game {
     const ms = (t) => Math.round(t * 1000) / 1000;
     // Per city: owner, HP, upgrade flags (bit per UPGRADE_TYPES entry; max HP and damage follow from them).
     const cityArr = new Array(this.cities.length * 3);
+    // Cities just liberated, which nobody can attack yet: city id, the game time that ends and how many
+    // seconds it was given (Sanctuary makes it longer), for everyone.
+    const safe = [];
     this.cities.forEach((c, i) => {
       cityArr[i * 3] = c.owner;
       cityArr[i * 3 + 1] = Math.ceil(c.hp);
       cityArr[i * 3 + 2] = c.upgradeFlags;
+      if (c.isSafe) safe.push(c.id, ms(c.safeUntil), c.safeFor);
     });
     const time = Math.round(this.time * 1000) / 1000;
     // Debug builds report the average simulation tick time for `stat unit` / `stat unitgraph`.
@@ -2360,9 +2426,10 @@ export class Game {
         t: 'snap', time, u: us, c: cityArr, s: shots, d: deaths, g: Math.floor(p.gold), h: Math.floor(p.honor), q, b: cargo, w: plans, k: docks,
         ...(landPlans.length ? { wl: landPlans } : {}),
         ...(flying.length ? { f: flying } : {}),
+        ...(safe.length ? { sc: safe } : {}),
         turn: this.turn, next: this.nextTurnAt, ...debug, ...(this.timeScale !== 1 ? { ts: this.timeScale } : {}),
         // Your research (private): technology id, seconds done and the gold paid; the levels queued after it,
-        // in order: [id, gold paid] (a liberator pays less for Rebellion technologies, so the refund differs).
+        // in order: [id, gold paid] (what a cancel gives back: a level paid before a balance change keeps its price).
         r: p.research ? [TECH_TYPES.indexOf(p.research.tech), r1(p.research.progress), p.research.cost] : null,
         ...(p.researchQueue.length ? { rq: p.researchQueue.map((e) => [TECH_TYPES.indexOf(e.tech), e.cost]) } : {}),
         // Honor (private): traditions learned (ids), the one being learned [id, seconds done], the queued ones.

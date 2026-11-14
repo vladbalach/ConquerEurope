@@ -119,7 +119,9 @@ test('in a running game: colours, never nicknames; spectators talk among themsel
   const [ann, bob, sue, lou] = await lobby(...NAMES);
   const { gameId, joined } = await room('chat game', [ann, bob], [sue, lou]);
   ann.say('ready?');
-  await said(lou, 'ready?');
+  // Everyone has it (by nickname: still the waiting room) before the inboxes are emptied: one that came in
+  // after would look like a nickname sent during the game.
+  await Promise.all([ann, bob, sue, lou].map((x) => said(x, 'ready?')));
 
   for (const x of [ann, bob, sue, lou]) x.inbox.length = 0;
   ann.send({ t: 'start' });

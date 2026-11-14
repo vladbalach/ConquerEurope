@@ -99,6 +99,66 @@ test('only liberators may take cities; a neutral city works too; bad city ids ar
   assert.equal(neutral.owner, b.id);
 });
 
+test(`a liberated city can't be attacked for ${LIBERATOR.safeSeconds} s; one captured later by force can`, () => {
+  const { game, a, b, strip, cityOf, city: named, spawn, run, events } = game2('liberator');
+  strip(b);
+  const city = named('Paris');      // on open ground: units reach it (unprotected, an attack-move takes it down)
+  city.owner = a.id;
+  game.recount();
+  game.handleCommand(b, { t: 'influence', city: city.id });
+  assert.equal(city.owner, b.id);
+  assert.ok(city.isSafe, 'safe at once');
+  assert.equal(city.safeUntil, game.time + LIBERATOR.safeSeconds);
+  game.sendSnapshots();
+  const sc = events.a.filter((m) => m.t === 'snap').pop().sc;
+  assert.equal(sc[0], city.id, 'everyone is told...');
+  assert.ok(Math.abs(sc[1] - city.safeUntil) < 0.01, '...until when');
+
+  // A's army next to it, within its guns' reach: units standing by (it shoots them) and attack-moving onto it
+  // leave it alone, an attack order on it is refused, and even a deadly blow does nothing.
+  const x = city.x + 25, y = city.y;
+  const idle = spawn(a.id, 'infantry', x, y);
+  const order = spawn(a.id, 'infantry', x, y + 6);
+  game.handleCommand(a, { t: 'attack', ids: [order.id], k: 'c', id: city.id });
+  assert.notEqual(order.order.kind, 'attack', 'attack order refused');
+  game.handleCommand(a, { t: 'move', ids: [order.id], x: city.x, y: city.y, amove: true });
+  const hp = city.hp;
+  run(2);
+  assert.ok(order.hp < order.maxHp, 'the city fires at them');
+  assert.ok(city.hp > hp, 'nobody hit it: it only regenerated');
+  assert.ok(![idle, order].some((u) => u.target?.k === 'c' && u.target.id === city.id), 'no unit targets it');
+  city.receiveDamage(1e6, idle);
+  assert.equal(city.owner, b.id, 'even a deadly blow (a shot fired before) does nothing');
+  assert.equal(game.resolve('c', city.id, a.id), null);
+
+  // Time up: it can be attacked again.
+  game.time = city.safeUntil;
+  assert.equal(city.isSafe, false);
+  assert.equal(game.resolve('c', city.id, a.id), city);
+  game.sendSnapshots();
+  assert.equal(events.a.filter((m) => m.t === 'snap').pop().sc, undefined, 'no longer in the snapshots');
+
+  // A city B then takes by force is not safe.
+  const taken = cityOf(a);
+  taken.receiveDamage(taken.hp + 1, { owner: b.id, id: 0 });
+  assert.equal(taken.owner, b.id);
+  assert.equal(taken.isSafe, false, 'captured by force: attackable at once');
+  assert.ok(game.resolve('c', taken.id, a.id));
+});
+
+test('with Influencer every city liberated at once is safe', () => {
+  const { game, b, strip } = game2('liberator');
+  b.tech = { ...b.tech, influencer: 1 };
+  strip(b);
+  const neutral = game.cities.filter((c) => c.owner < 0).slice(0, 2);
+  game.handleCommand(b, { t: 'influence', city: neutral[0].id });
+  game.endTurn();
+  b.commandTokens = 20;
+  game.handleCommand(b, { t: 'influence', city: neutral[1].id });
+  assert.ok(neutral.every((c) => c.owner === b.id), 'both liberated');
+  assert.ok(neutral.every((c) => c.isSafe && c.safeUntil === game.time + LIBERATOR.safeSeconds), 'both safe');
+});
+
 test(`a player with ${LIBERATOR.protectedCities} cities or fewer is protected from liberators`, () => {
   const { game, a, b, strip, cityOf } = game2('liberator');
   strip(a, LIBERATOR.protectedCities + 1);       // A holds one city more than the protected number
@@ -118,4 +178,60 @@ test(`a player with ${LIBERATOR.protectedCities} cities or fewer is protected fr
   const neutral = game.cities.find((c) => c.owner < 0);
   game.handleCommand(b, { t: 'influence', city: neutral.id });
   assert.equal(neutral.owner, b.id, 'neutral cities are always free to take');
+});
+
+test(`renounce: with ${LIBERATOR.renounceCities} cities or fewer a player gives them up and is a liberator at once`, () => {
+  const { game, a, b, strip, cityOf, spawn, events } = game2('liberator');
+  strip(b, LIBERATOR.renounceCities + 1);
+  const mine = game.cities.filter((c) => c.owner === b.id);
+  const unit = spawn(b.id, 'infantry', mine[0].x + 30, mine[0].y);
+  b.gold = 300;
+  b.commandTokens = 20;
+  game.handleCommand(b, { t: 'renounce' });
+  assert.ok(mine.every((c) => c.owner === b.id), `refused: ${LIBERATOR.renounceCities + 1} cities are too many`);
+  assert.equal(b.liberator, false);
+
+  mine[0].owner = -1;
+  game.recount();
+  assert.equal(b.cityCount, LIBERATOR.renounceCities);
+  mine[1].addUpgrade('wall');
+  game.handleCommand(b, { t: 'renounce' });
+  assert.ok(mine.every((c) => c.owner === -1), 'every city of B is neutral');
+  assert.ok(mine[1].upgrades.has('wall'), 'as they stand');
+  assert.equal(game.units.has(unit.id), false, 'their units are gone: a liberator has none');
+  assert.equal(b.liberator, true);
+  assert.equal(b.eliminated, false, 'still in the game');
+  assert.equal(b.gold, 0, 'all gold lost, as when falling');
+  assert.equal(game.status, 'running');
+  assert.ok(events.a.some((m) => m.kind === 'renounced' && m.player === b.id && m.cities === LIBERATOR.renounceCities), 'everyone is told');
+  assert.ok(events.a.some((m) => m.t === 'score' && m.players.find((p) => p.id === b.id).liberator), 'the list says so at once');
+  assert.deepEqual(game.history.stat(b.id).events.map((e) => e[1]), ['renounced'], 'renounced, not "fell" on top of it');
+
+  // A liberator now: free to liberate a city at once.
+  const target = cityOf(a);
+  game.handleCommand(b, { t: 'influence', city: target.id });
+  assert.equal(target.owner, b.id);
+  assert.equal(b.liberator, false, 'back in the game');
+});
+
+test('renounce: not with Death: Spectator, not as a liberator, and the liberation cooldown still counts', () => {
+  const spect = game2('spectator');
+  spect.strip(spect.b, 1);
+  spect.game.handleCommand(spect.b, { t: 'renounce' });
+  assert.equal(spect.cityOf(spect.b).owner, spect.b.id, 'no liberators in this game');
+
+  const { game, a, b, strip, cityOf } = game2('liberator');
+  strip(b);
+  assert.equal(b.liberator, true);
+  game.handleCommand(b, { t: 'renounce' });                  // already one: nothing happens
+  const first = cityOf(a);
+  game.handleCommand(b, { t: 'influence', city: first.id });
+  assert.equal(first.owner, b.id, 'liberated: back with one city');
+  b.commandTokens = 20;
+  game.handleCommand(b, { t: 'renounce' });
+  assert.equal(first.owner, -1, 'renounced again at once');
+  assert.equal(b.liberator, true);
+  const second = cityOf(a);
+  game.handleCommand(b, { t: 'influence', city: second.id });
+  assert.equal(second.owner, a.id, `the next liberation still waits ${LIBERATOR.cooldownTurns} turns`);
 });

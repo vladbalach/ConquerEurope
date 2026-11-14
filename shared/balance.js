@@ -27,6 +27,7 @@ const UPGRADE_FIELDS = [
   { key: 'cost', label: 'Cost', min: 0, max: 100000 },
   { key: 'buildTime', label: 'Build s', min: 0.1, max: 3600 },
   { key: 'hp', label: '+HP', min: 0, max: 100000, optional: true },
+  { key: 'healPercent', label: 'Heal %', min: 0, max: 100, optional: true },
   { key: 'rangePercent', label: '+Range %', min: 0, max: 1000, optional: true },
   { key: 'damage', label: '+Damage/s', min: 0, max: 10000, optional: true },
   { key: 'goldPerTurn', label: '+Gold/turn', min: 0, max: 100000, optional: true },

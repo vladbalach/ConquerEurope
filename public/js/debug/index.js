@@ -136,6 +136,16 @@ export function createDebug({ getGame = () => null } = {}) {
     con.log(`honor: sent to the game. Every player gets ${honor.toLocaleString('en-US')} honor.`);
   });
 
+  con.register('loseallcities', 'loseallcities: every one of your cities becomes neutral (your units stay)', () => {
+    const game = getGame();
+    if (!game || game.ended || game.spectator) {
+      con.log('loseallcities: works only for a player in a running game', 'err');
+      return;
+    }
+    game.link.send({ t: 'loseCities' });
+    con.log('loseallcities: sent to the game. All your cities become neutral; with no units left you fall.');
+  });
+
   // A visible reminder that this is a debug build, and a line in the in-game help.
   const badge = document.createElement('div');
   badge.className = 'dev-badge';
@@ -146,7 +156,7 @@ export function createDebug({ getGame = () => null } = {}) {
     const row = helpTable.insertRow();
     row.insertCell().textContent = '~';
     row.insertCell().textContent = 'Developer console (debug builds): stat fps, stat unit, stat unitgraph, show navigation, reset hp, gold N, ' +
-      'honor N, slomo N. Any city\'s panel also has an Own button: the city becomes yours';
+      'honor N, slomo N, loseallcities. Any city\'s panel also has an Own button: the city becomes yours';
   }
 
   return {

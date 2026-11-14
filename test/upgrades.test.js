@@ -20,7 +20,7 @@ test('each upgrade is built through the production queue and gives its bonus', (
   run(1.1);
   assert.ok(paris.upgrades.has('wall'));
   assert.equal(paris.maxHp, CITY.hp + wall.hp);
-  assert.equal(paris.hp, CITY.hp + wall.hp, 'a new wall adds its HP straight away');
+  assert.equal(paris.hp, CITY.hp + wall.hp, 'a city at full HP is still at full HP with its new wall');
 
   game.handleCommand(a, { t: 'build', cities: [paris.id], item: 'tower' });
   run(tower.buildTime + 0.1);
@@ -30,6 +30,29 @@ test('each upgrade is built through the production queue and gives its bonus', (
   run(castle.buildTime + 0.1);
   assert.equal(paris.damage, CITY.damage + castle.damage, `castle: +${castle.damage} damage`);
   assert.equal(game.status, 'running', 'the game is still on, so orders were really processed');
+});
+
+test('a finished wall grade keeps the city at the same share of its HP, then heals 10% of the new maximum', () => {
+  const { city } = setup();
+  const paris = city('Paris');
+  assert.equal(wall.healPercent, 10);
+  assert.equal(wall2.healPercent, 10);
+  paris.hp = CITY.hp * 0.1;
+  paris.addUpgrade('wall');
+  assert.ok(Math.abs(paris.hp - (CITY.hp + wall.hp) * 0.2) < 1e-9, `10% kept + 10% healed = 20% of the new maximum, got ${paris.hp}`);
+  paris.hp = paris.maxHp / 2;
+  paris.addUpgrade('wall2');
+  assert.ok(Math.abs(paris.hp - paris.maxHp * 0.6) < 1e-9, 'Wall II too: half kept, then 60%');
+  paris.addUpgrade('tower');
+  assert.ok(Math.abs(paris.hp - paris.maxHp * 0.6) < 1e-9, 'an upgrade without HP changes nothing');
+});
+
+test('the heal of a wall never takes a city above its maximum HP', () => {
+  const { city } = setup();
+  const paris = city('Paris');
+  paris.hp = CITY.hp * 0.95;
+  paris.addUpgrade('wall');
+  assert.equal(paris.hp, paris.maxHp);
 });
 
 test('a Farm adds 5 gold per turn to its city, paid at the end of the turn', () => {
@@ -135,7 +158,7 @@ test('ordering the wall twice queues Wall I and then Wall II; a third order does
   run(wall2.buildTime);
   assert.ok(lyon.upgrades.has('wall2'));
   assert.equal(lyon.maxHp, CITY.hp + wall.hp + wall2.hp);
-  assert.equal(lyon.hp, CITY.hp + wall.hp + wall2.hp, 'each grade adds its HP straight away');
+  assert.equal(lyon.hp, CITY.hp + wall.hp + wall2.hp, 'at full HP after each grade');
 });
 
 test('the wall grades add up to the old single wall: 20 gold, 10 s, +250 HP', () => {

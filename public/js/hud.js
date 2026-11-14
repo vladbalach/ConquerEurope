@@ -3,7 +3,7 @@ import {
   UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES, PRODUCTION_ITEMS, ECONOMY, DISBAND, LIBERATOR, TECHS, TECH_TYPES,
   TECH_TABS, NAVAL, HONOR, TRADITIONS, TRADITION_TYPES, HERO, HEALER, GAME, DEBUG,
 } from '/shared/config.js';
-import { nextLevel, liberatorIncome, influenceLimit } from '/shared/tech.js';
+import { nextLevel, liberatorIncome, influenceLimit, safeSeconds, liberatorsOnly } from '/shared/tech.js';
 import { upgradeGrades, higherGrades, topGrades } from '/shared/upgrades.js';
 import { CARGO_SHIFT } from '/shared/protocol.js';
 import { GOLD_PERCENT } from '/shared/options.js';
@@ -24,6 +24,7 @@ const honorShareText = () => (HONOR.killShare === 1 ? 'its cost' : `${Math.round
 const honorFor = (type) => Math.floor(UNITS[type].cost * HONOR.killShare);
 // Seconds as m:ss, rounded up (a cooldown shows 0:01 until it is really over).
 const clock = (sec) => { const s = Math.ceil(sec); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+const RENOUNCE_CONFIRM_MS = 4000;    // the city panel's Renounce: how long the second click is awaited
 // How research goes, on every tab of the Tech window.
 const RESEARCH_QUEUE_TEXT = 'One research at a time; order more meanwhile and they are queued, each paid when ordered, ' +
   'and researched one after another. Cancel or remove one to get its gold back.';
@@ -107,13 +108,16 @@ export class Hud {
       [$('btn-mountain-del'), 'click', () => this.g.setBrush('mountain-del')],
       [$('btn-scores'), 'click', () => this.showScores($('scoreboard').hidden)],
       [$('btn-tech'), 'click', () => this.toggleTech()],
+      [$('stat-gold'), 'click', () => this.toggleTech()],
       [$('stat-honor'), 'click', () => this.toggleHonor()],
       [$('btn-help'), 'click', () => this.toggleHelp()],
       [$('btn-leave'), 'click', () => this.leaveClicked()],
       [window, 'keyup', (e) => { if (e.key === 'Shift') this.applyPicks(); }],
       [window, 'blur', () => this.applyPicks()],         // Shift released outside the page
+      // Capture phase: it runs before the map's own mousedown, so it can keep that click from the map.
+      [window, 'mousedown', (e) => this.closeOnOutsideClick(e), true],
     ];
-    for (const [t, ev, fn] of this.handlers) t.addEventListener(ev, fn);
+    for (const [t, ev, fn, opts] of this.handlers) t.addEventListener(ev, fn, opts);
 
     // A spectator has no empire: no gold, honor, cities, units or technologies of their own to show.
     $('topbar').classList.toggle('spectating', game.spectator);
@@ -122,7 +126,7 @@ export class Hud {
       `${ECONOMY.goldPerCityPerTurn} gold, +${ECONOMY.regionBonusPerCity} if you hold every city of its region, ` +
       `more with a Farm. Every kill pays ${killShareText()} of the unit's cost.` +
       (game.goldPercent !== GOLD_PERCENT.default ? ` The host set your gold to ${game.goldPercent}%: all of it is scaled by that.` : '') +
-      ' F1 → Economy explains it all.';
+      ' F1 → Economy explains it all. Click (or T) for the Technologies window: spend it on research.';
     $('stat-honor').title = `Honor: every enemy unit you destroy (your units and cities alike) gives you ${honorShareText()} ` +
       `in honor: ${UNITS.infantry.name} ${honorFor('infantry')}, ${UNITS.knight.name} ${honorFor('knight')}. ` +
       'Click (or O) for the Honor window: learn traditions with it, such as Heroes.';
@@ -175,7 +179,7 @@ export class Hud {
   }
 
   destroy() {
-    for (const [t, ev, fn] of this.handlers) t.removeEventListener(ev, fn);
+    for (const [t, ev, fn, opts] of this.handlers) t.removeEventListener(ev, fn, opts);
     clearTimeout(this.bannerTimer);
     clearTimeout(this.prestartTimer);
     $('prestart').hidden = true;
@@ -232,6 +236,20 @@ export class Hud {
       el('div', { class: 'leave-actions' }, el('button', { type: 'button', onclick: close }, 'Cancel')));
   }
 
+  // A left or right click outside the Tech or Honor window closes it. On the map that click only closes the
+  // window: it does not also select units or give an order. The buttons that open these windows (Tech, the
+  // gold, the honor star) are left to toggle them themselves; the middle button still pans the map.
+  closeOnOutsideClick(e) {
+    if (e.button !== 0 && e.button !== 2) return;
+    const open = [$('tech'), $('honor')].filter((box) => !box.hidden);
+    if (!open.length) return;
+    const t = e.target;
+    if (open.some((box) => box.contains(t))) return;
+    if (['btn-tech', 'stat-gold', 'stat-honor'].some((id) => $(id).contains(t))) return;
+    for (const box of open) box.hidden = true;
+    if (t === $('view')) e.stopPropagation();
+  }
+
   // F1: the help (help/wiki.js). It opens on the page it last showed.
   toggleHelp(force) {
     this.help.toggle(force);
@@ -249,14 +267,16 @@ export class Hud {
     this.renderTech();
   }
 
-  // Rebuilt only when what it shows changes (levels, the research running and queued, the tab), so a
-  // click never lands on a replaced button; progress and gold are kept current by refreshTech().
+  // Rebuilt only when what it shows changes (levels, the research running and queued), so a click never
+  // lands on a replaced button; progress and gold are kept current by refreshTech(). Every tab's page is
+  // built, stacked in one place with only the chosen one shown, so the window keeps the height of the
+  // tallest and does not jump as you go from tab to tab.
   renderTech() {
     const box = $('tech');
     if (box.hidden) return;
     const g = this.g, r = g.research;
-    const key = [this.techTab, JSON.stringify(g.myTech()), r ? r.tech : '', g.researchQueue.join(','), g.options.death,
-      g.isLiberator()].join('|');     // falling, or coming back, changes the price of Rebellion technologies
+    const key = [JSON.stringify(g.myTech()), r ? r.tech : '', g.researchQueue.join(','), g.options.death,
+      g.isLiberator()].join('|');     // falling, or coming back, locks or unlocks Rebellion technologies
     if (key === this.techKey) { this.refreshTech(); return; }
     this.techKey = key;
     this.techDyn = [];
@@ -264,22 +284,40 @@ export class Hud {
     for (const t of TECH_TABS) {
       const open = !t.death || g.options.death === t.death;
       tabs.append(el('button', {
-        type: 'button', role: 'tab', class: t.id === this.techTab ? 'active' : '',
+        type: 'button', role: 'tab', 'data-tab': t.id,
         title: open ? '' : 'Only in games with the option Death: Liberator',
-        onclick: () => { this.techTab = t.id; this.techKey = null; this.renderTech(); },
+        onclick: () => this.showTechTab(t.id),
       }, t.name));
     }
-    const tab = TECH_TABS.find((t) => t.id === this.techTab);
-    const body = el('div', { class: 'tech-page' });
+    const pages = el('div', { class: 'tech-pages' }, ...TECH_TABS.map((t) => this.techPage(t)));
+    box.replaceChildren(...[el('h3', {}, 'Technologies'), tabs, this.researchQueueLine(), pages,
+      el('button', { type: 'button', class: 'primary tech-close', onclick: () => this.toggleTech(false) }, 'Close')].filter(Boolean));
+    this.showTechTab(this.techTab, true);
+    this.refreshTech();
+  }
+
+  // Show one tab of the Tech window: its button lit, its page shown, the others kept (hidden) for their height.
+  // `keepScroll`: a rebuild of the window, not a click on a tab, which starts the new tab from the top.
+  showTechTab(id, keepScroll) {
+    const box = $('tech');
+    this.techTab = id;
+    for (const b of box.querySelectorAll('.help-tabs [data-tab]')) b.classList.toggle('active', b.dataset.tab === id);
+    for (const p of box.querySelectorAll('.tech-page')) p.classList.toggle('active', p.dataset.tab === id);
+    if (!keepScroll) box.scrollTop = 0;
+  }
+
+  // One tab's page of the Tech window: a line on what its technologies are, then a card for each.
+  techPage(tab) {
+    const g = this.g;
+    const body = el('div', { class: 'tech-page', 'data-tab': tab.id });
     if (tab.death && g.options.death !== tab.death) {
       body.append(el('p', { class: 'muted' }, `${tab.name} technologies exist only in games with the option ` +
         'Death: Liberator. This game uses Death: Spectator.'));
     } else {
       if (tab.id === 'rebellion') {
-        body.append(el('p', { class: 'muted small' }, 'Rebellion technologies work only while you are a liberator ' +
-          '(after losing every city and unit). You can research them at any time, also before you fall, but as a ' +
-          `liberator you pay only ${Math.round(LIBERATOR.rebellionCost * 100)}% of their price. ` +
-          `${RESEARCH_QUEUE_TEXT} F1 → Liberator explains it all.`));
+        body.append(el('p', { class: 'muted small' }, 'Rebellion technologies are researched, and work, only while you ' +
+          'are a liberator (after losing every city and unit, or renouncing). A level ordered as one still finishes if ' +
+          `you come back meanwhile, and works the next time you fall. ${RESEARCH_QUEUE_TEXT} F1 → Liberator explains it all.`));
       } else if (tab.id === 'sea') {
         body.append(el('p', { class: 'muted small' }, 'Ships and the sea. Sea technologies work as soon as they are ' +
           `researched. ${RESEARCH_QUEUE_TEXT}`));
@@ -289,9 +327,7 @@ export class Hud {
       }
       for (const k of TECH_TYPES.filter((t) => TECHS[t].tab === tab.id)) body.append(this.techCard(k));
     }
-    box.replaceChildren(...[el('h3', {}, 'Technologies'), tabs, this.researchQueueLine(), body,
-      el('button', { type: 'button', class: 'primary tech-close', onclick: () => this.toggleTech(false) }, 'Close')].filter(Boolean));
-    this.refreshTech();
+    return body;
   }
 
   // The levels queued after the research running, in order and across tabs, each with ✕ to take it out
@@ -358,6 +394,11 @@ export class Hud {
         '(or earlier with Liberate now). Everyone sees the marks. ' +
         then(`${influenceLimit({ influencer: level })} ${level ? 'cities' : 'city, taken at once'}`, `${influenceLimit({ influencer: level + 1 })}`);
     }
+    if (key === 'sanctuary') {
+      const min = (n) => `${safeSeconds({ sanctuary: n }) / 60} minutes`, per = T.sanctuary.safeSecondsPerLevel / 60;
+      return `Nobody can attack a city you liberate for ${min(0)}; each level adds ${per === 1 ? 'a minute' : `${per} minutes`}. ` +
+        'The level you have when you liberate it counts. ' + then(min(level), min(level + 1));
+    }
     return `Mark cities to smuggle from: at the end of every turn ${Math.round(T.smuggling.share * 100)}% of each ` +
       "one's income goes from its owner to you. Separate from influence marks. " +
       then(`${level * T.smuggling.citiesPerLevel} ${level === 1 ? 'city' : 'cities'}`, `${(level + 1) * T.smuggling.citiesPerLevel}`);
@@ -373,6 +414,7 @@ export class Hud {
     if (key === 'roads') return `Land units march ${T.roads.speedPercent}% faster in the regions you hold whole`;
     if (key === 'supporters') return `+${T.supporters.goldPerTurnPerLevel} gold per turn as a liberator, for each level`;
     if (key === 'influencer') return 'Liberate several cities at once';
+    if (key === 'sanctuary') return 'Cities you liberate stay safe from attack longer';
     return `Take ${Math.round(T.smuggling.share * 100)}% of the income of the cities you mark`;
   }
 
@@ -382,14 +424,9 @@ export class Hud {
     const g = this.g, def = TECHS[key], level = g.myTech()[key] || 0, max = def.levels.length;
     const r = g.research, running = r && r.tech === key ? nextLevel(key, level) : null;
     const plan = g.researchPlan().slice(1).filter((e) => e.tech === key), queued = plan.map((e) => e.level);
-    const next = nextLevel(key, g.plannedTechLevel(key), g.isLiberator());     // a liberator pays less for Rebellion
+    const next = nextLevel(key, g.plannedTechLevel(key));
     const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-    // The price of the next level: the full one struck out next to it when a liberator pays less.
-    const full = next ? def.levels[next.level - 1].cost : 0;
-    const price = () => (next.cost < full
-      ? el('span', { class: 'tech-price', title: `As a liberator you pay ${next.cost} gold instead of ${full}` },
-        el('s', {}, String(full)), ` ${next.cost} gold · ${fmt(next.time)}`)
-      : el('span', { class: 'tech-price' }, `${next.cost} gold · ${fmt(next.time)}`));
+    const price = () => el('span', { class: 'tech-price' }, `${next.cost} gold · ${fmt(next.time)}`);
     const body = el('div', { class: 'tech-body' },
       el('div', { class: 'tech-head' },
         el('b', {}, def.name),
@@ -417,7 +454,16 @@ export class Hud {
         }, 'Remove')));
     }
     const need = def.requires && g.plannedTechLevel(def.requires) < 1 ? TECHS[def.requires] : null;
-    if (next && need) {
+    if (next && liberatorsOnly(key) && !g.isLiberator()) {
+      // Rebellion: these belong to liberators. Nothing to unlock, so no lock: the liberator's flag (F1 → Liberator
+      // has it too), in quiet colours rather than a warning.
+      body.append(el('div', { class: 'tech-actions' },
+        el('span', {
+          class: 'tech-for',
+          title: 'Rebellion technologies are for liberators (players who lost every city and unit, or renounced): ' +
+            'only they research them, and they work only for them.',
+        }, el('span', { class: 'tech-for-mark' }, '⚑︎'), ' For liberators'), price()));
+    } else if (next && need) {
       // It needs another technology first (Warships: Seafaring): researched, or ordered before it.
       body.append(el('div', { class: 'tech-actions' },
         el('span', { class: 'tech-locked' }, `🔒 Needs ${need.name} first`), price()));
@@ -798,18 +844,16 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     const cities = (n) => `${n} ${n === 1 ? 'city' : 'cities'}`;
     const MAX_LINES = 4;
     for (const [id, n] of close.slice(0, MAX_LINES)) {
-      const you = id === g.you;
+      const you = id === g.you;         // named "Red (you)": the verbs stay in the third person
       let parts;
       if (id === winner) {
         const spare = n - need + 1;     // losing this many puts them below the target
-        parts = [you ? ` win when the turn ends${clock} unless you lose ${cities(spare)}`
-          : ` wins when the turn ends${clock} unless they lose ${cities(spare)}`];
+        parts = [` wins when the turn ends${clock} unless ${you ? 'you lose' : 'they lose'} ${cities(spare)}`];
       } else if (n >= need) {
-        const verb = you ? 'hold' : 'holds';
-        parts = winner >= 0 ? [` ${verb} enough cities, but `, g.who(winner), ` ${winner === g.you ? 'hold' : 'holds'} more`]
-          : [` ${verb} enough cities, but ${you ? 'are' : 'is'} tied for the most: a tie plays on`];
+        parts = winner >= 0 ? [' holds enough cities, but ', g.who(winner), ' holds more']
+          : [' holds enough cities, but is tied for the most: a tie plays on'];
       } else {
-        parts = [` ${you ? 'need' : 'needs'} ${need - n} more ${need - n === 1 ? 'city' : 'cities'} to win`];
+        parts = [` needs ${need - n} more ${need - n === 1 ? 'city' : 'cities'} to win`];
       }
       box.append(el('div', { class: `${id === winner ? 'wins' : ''}${you ? ' me' : ''}` }, g.who(id), ...parts));
     }
@@ -846,7 +890,11 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     $('hud-cities').textContent = String(myCities);
     this.updateWinTarget();
     this.updateRace(now);
-    $('hud-units').textContent = String(g.ownUnitCount());
+    // Units: how many you have / the most you can have, red once you have that many.
+    const units = g.ownUnitCount();
+    $('hud-units').textContent = String(units);
+    $('hud-units-max').textContent = `/${ECONOMY.maxUnitsPerPlayer}`;
+    $('stat-units').classList.toggle('full', g.atUnitLimit(units));
     // Death: Liberator. Every time you fall, say what you can do now.
     const liberator = g.isLiberator();
     if (liberator && !this.liberatorShown) {
@@ -874,7 +922,8 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
       const ci = g.selectedCity;
       const q = g.myQueues.get(ci);
       return {
-        key: `city:${ci}:${q ? q.queue.join(',') : ''}:${g.cityUpgrades[ci]}:${this.coastKey(ci)}:${this.regionKey(ci)}`,
+        // ...and once you may renounce (down to a few cities), or no longer may.
+        key: `city:${ci}:${q ? q.queue.join(',') : ''}:${g.cityUpgrades[ci]}:${this.coastKey(ci)}:${this.regionKey(ci)}:${g.canRenounce()}`,
         kind: 'city', id: ci, ids: [ci], q,
       };
     }
@@ -1111,6 +1160,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
   upgradeEffect(def) {
     const parts = [];
     if (def.hp) parts.push(`+${def.hp} HP`);
+    if (def.healPercent) parts.push(`heals ${def.healPercent}% when built`);
     if (def.rangePercent) parts.push(`+${def.rangePercent}% range`);
     if (def.damage) parts.push(`+${def.damage} damage`);
     if (def.goldPerTurn) parts.push(`+${def.goldPerTurn} gold/turn`);
@@ -1303,7 +1353,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     const myColor = g.colorOf(g.you);
 
     const queue = el('div', { class: 'queue' },
-      el('span', { class: 'label', title: 'Click an entry to cancel it · C cancels the last one' }, 'Queue'));
+      el('span', { class: 'label', title: 'Click an entry to cancel it · C cancels the last one' }, `Queue (max ${ECONOMY.maxQueue})`));
     const items = st.q ? st.q.queue : [];
     this.dyn.queueProg = null;
     items.forEach((id, idx) => {
@@ -1327,6 +1377,37 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     if (!items.length) queue.append(el('span', { class: 'label' }, '— empty'));
     queue.append(el('span', { class: 'label', style: 'margin-left:auto' }, 'Right-click land: rally point · water: rally point for ships · Alt + right-click: clear'));
     this.panel.append(queue);
+    if (g.canRenounce()) this.panel.append(this.renounceRow());
+  }
+
+  // Death: Liberator, down to LIBERATOR.renounceCities cities or fewer: give them all up and become a liberator.
+  // Two clicks: the first only asks, for RENOUNCE_CONFIRM_MS, so a slip of the mouse can't throw an empire away.
+  renounceRow() {
+    const g = this.g, n = g.cityCountOf(g.you);
+    const text = `Give up ${n === 1 ? 'your city' : `all ${n} of your cities`} (they turn neutral as they stand), your ` +
+      'units and all your gold, and become a liberator at once: liberate a city of your choice to come back. ' +
+      `Only with ${LIBERATOR.renounceCities} cities or fewer.`;
+    const note = el('span', { class: 'muted small' }, text);
+    let armedUntil = 0;
+    const button = el('button', {
+      type: 'button', title: text,
+      onclick: () => {
+        if (performance.now() < armedUntil) {
+          button.disabled = true;
+          g.renounce();
+          return;
+        }
+        armedUntil = performance.now() + RENOUNCE_CONFIRM_MS;
+        button.textContent = 'Click again to renounce';
+        note.textContent = `Sure? ${text}`;
+        setTimeout(() => {
+          if (button.disabled) return;
+          button.textContent = 'Renounce';
+          note.textContent = text;
+        }, RENOUNCE_CONFIRM_MS);
+      },
+    }, 'Renounce');
+    return el('div', { class: 'liberate' }, button, note);
   }
 
   buildCityInfo(ci) {
@@ -1439,15 +1520,18 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     const g = this.g, ci = m.ci;
     const inf = g.marks?.influence.get(ci) || [], sm = g.marks?.smuggle.get(ci) || [];
     const each = sm.length ? g.smuggling().byCity.get(ci) || 0 : 0;
-    const key = `${inf.join(',')}|${sm.join(',')}|${each}`;
+    const safe = Math.ceil(g.citySafeLeft(ci));          // just liberated: seconds before it can be attacked
+    const key = `${inf.join(',')}|${sm.join(',')}|${each}|${safe}`;
     if (key === m.key) return;
     m.key = key;
     const parts = [];
+    if (safe) parts.push(el('span', {}, 'Just liberated: nobody can attack it for ', el('b', {}, clock(safe))));
     for (const id of inf) {
       const p = g.players.get(id);
       parts.push(el('span', {}, 'Marked for liberation by ', g.who(id), ` (${p.influence.length}/${influenceLimit(p.tech)})`));
     }
-    for (const id of sm) parts.push(el('span', {}, 'Smuggled by ', g.who(id), each ? ` (${each} gold per turn)` : ''));
+    // A loss for the city's owner, never a bonus (neutral cities pay nothing).
+    for (const id of sm) parts.push(el('span', {}, 'Smuggled by ', g.who(id), each ? `: its owner loses ${each} gold per turn` : ''));
     m.el.replaceChildren(...parts);
     m.el.hidden = !parts.length;
   }
@@ -1778,6 +1862,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
     if (this.colButtons && st.ids) {
       // Usable while there is gold for one and at least one selected city can still take it.
       const full = (ci) => (g.myQueues.get(ci)?.queue.length || 0) >= ECONOMY.maxQueue;
+      const capped = g.atUnitLimit();     // as many units as you may have: none can be trained
       for (const b of this.colButtons) {
         if (b.honorBarracks) {
           const open = st.ids.filter((ci) => g.nextUpgrade(ci, 'barracks') && !full(ci));
@@ -1808,7 +1893,7 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
           const price = honor ? def.cost * TRADITIONS.eternalGlory.unitHonorFactor : def.cost;
           btn.classList.toggle('locked', locked);
           btn.classList.toggle('honor-buy', honor);
-          btn.disabled = !locked && ((honor ? g.honor : g.gold) < price || !ids.length || ids.every(full));
+          btn.disabled = !locked && (capped || (honor ? g.honor : g.gold) < price || !ids.length || ids.every(full));
           const text = locked ? `🔒 ${TECHS[def.tech].name}` : this.unitCostText(def, st.ids, honor);   // shorter once a Barracks is built
           if (b.shownCost !== `${honor}|${text}`) {
             b.shownCost = `${honor}|${text}`;
@@ -1819,8 +1904,10 @@ Once turn ${o.countdownTurn} is over, it drops by one city at the end of every t
           const tech = locked ? TECHS[def.tech] : null;
           const first = tech?.requires && !g.myTech()[tech.requires] ? ` It needs ${TECHS[tech.requires].name} first.` : '';
           const tip = locked ? `${def.name}: needs the ${tech.name} technology ` +
-            `(${tech.levels[0].cost} gold, ${tech.levels[0].time} s).${first} Click to open Technologies on the Sea tab.` : title;
+            `(${tech.levels[0].cost} gold, ${tech.levels[0].time} s).${first} Click to open Technologies on the Sea tab.`
+            : capped ? g.unitLimitText() : title;
           if (btn.title !== tip) btn.title = tip;
+          btn.toggleAttribute('data-tip-bad', !locked && capped);     // tooltip.js: the tooltip in red
           continue;
         }
         // An upgrade: what an order queues in each city, its next grade (null: every grade is built

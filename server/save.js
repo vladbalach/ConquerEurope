@@ -20,7 +20,7 @@ export const SAVE_VERSION = 1;
 const GAME_FIELDS = [
   'status', 'prestart', 'startedWith', 'nextUnitId', 'time', 'tickCount', 'turn', 'nextTurnAt', 'winner', 'timeScale',
 ];
-const CITY_FIELDS = ['owner', 'hp', 'queue', 'queueHonor', 'progress', 'rally', 'seaRally', 'target', 'regenAt'];
+const CITY_FIELDS = ['owner', 'hp', 'queue', 'queueHonor', 'progress', 'rally', 'seaRally', 'target', 'regenAt', 'safeUntil', 'safeFor'];
 const UNIT_SKIP = new Set(['game', 'cargo', 'ownStats']);
 // Units made while the old host ran past its last checkpoint are gone, but players' pages may still
 // have their ids (a selection): new units after a takeover get ids none of those can have.

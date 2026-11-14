@@ -1,9 +1,57 @@
 # Patch notes
 
+## 14 November 2026: Join our Discord
+
+- **The game has a Discord server:** a gold **Join our Discord** button on the start screen and at the foot of the
+  lobby opens it in a new tab. Game updates, bug reports, ideas and people to play with.
+
+## 14 November 2026: Gold opens technologies
+
+- **Click your gold in the top bar to open the Technologies window**, as the Tech button and T do. The honor star
+  already opened the Honor window the same way.
+- **A click outside the Technologies or Honor window closes it.** On the map that click only closes the window: it
+  doesn't select units or give an order. The middle button still pans the map with the window open.
+- **The Technologies window keeps its size from tab to tab:** it is as tall as its tallest tab, so the tabs no
+  longer jump under the mouse.
+
+## 14 November 2026: Walls keep the city's HP share
+
+- **A finished wall keeps the city's share of HP, then heals 10%.** The city no longer gets the wall's HP on top:
+  it keeps the same share of its HP and then heals 10% of the new maximum, for each grade. One at 10% when its
+  Wall I is done is at 20% of the new maximum, instead of getting the wall's +100 HP outright. A city at full HP
+  is still at full HP.
+
+## 14 November 2026: Unit count
+
+- **The top bar shows your units out of the most you can have** (e.g. 734/1000), in red once you reach 1000. At
+  1000 the unit buttons of a city grey out and say why, and their keys tell you in the messages instead of
+  queueing anything. City upgrades can still be built.
+- A city's queue says how much it holds: **Queue (max 10)**.
+
+## 14 November 2026: Safe liberation
+
+- **A city a liberator takes can't be attacked for 2 minutes**, and with Influencer that goes for every city
+  liberated at once. Units and ships leave it alone and an attack on it is refused, though the city still fires at
+  enemies. A gold ring round it runs down the time left. Cities the liberator captures afterwards, by force, can be
+  attacked as usual.
+- **New Rebellion technology: Sanctuary** (2 levels, 40 gold and 90 s each): the cities you liberate are safe for 3
+  or 4 minutes instead of 2.
+- **Rebellion technologies only for liberators:** you can research them only while you are one (a level already
+  ordered still finishes if you come back). Their prices are what liberators paid until now, half the old ones:
+  Supporters 60, Influencer 50, Smuggling 15 gold per level. The Rebellion tab stays the Tech window's last one, and
+  the results screen now lists Rebellion technologies last too.
+- **Supporters has 2 levels now** instead of 3: +20 or +40 liberator gold per turn, no longer +60.
+- **Renounce:** down to 5 cities or fewer (with Death: Liberator), click one of your cities: its panel has
+  **Renounce** (click it twice). Your cities turn neutral, your units and gold are gone, and you are a liberator at
+  once, free to liberate a city of your choice.
+- **Smuggling researches in 20 s** per level instead of 1 minute.
+- **A smuggled city's coin has a red arrow down** next to it, and its panel says its owner loses that gold: it no
+  longer looks like a bonus.
+
 ## 13 November 2026: Standings
 
-- **The standings, at the top right of the game:** every player's cities, kills and deaths, by colour, the most
-  cities first. Kills and deaths count units; hover a number for the gold it was worth. Disbanding a unit is no
+- **The standings, at the top right of the game:** every player's cities, kills and deaths, by colour (yours as
+  "Red (you)"), the most cities first. Kills and deaths count units; hover a number for the gold it was worth. Disbanding a unit is no
   death, unless an enemy hit it just before. Click **Standings** to fold it away, and again to bring it back: your
   browser remembers it.
 
@@ -30,8 +78,9 @@ Cities still outrange battleships (72 km against 68).
 - **The waiting room has a chat**, beside the game's card: everyone in the room, players and spectators, by
   nickname. Whoever comes in reads the last messages.
 - **Chat in the game:** press **Enter**, type, Enter again to send (Esc closes it). New messages show above the
-  minimap for a few seconds, each player in their colour ("Red", "Teal", ...; yours as "You"), never by nickname:
-  nobody learns who is who. Enter also opens every message so far, to scroll back.
+  minimap for a few seconds, each player in their colour ("Red", "Teal", ...; yours as "Red (you)"), never by nickname:
+  nobody learns who is who. Enter also opens every message so far, to scroll back. A small "Enter to type message"
+  just above the minimap says so.
 - **Spectators** talk among themselves while the game runs: players don't see what they write. Once the game is
   over everyone is named, in the chat too.
 

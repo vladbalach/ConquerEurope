@@ -25,6 +25,8 @@ npm test             # automated tests (test/*.test.js)
 Open the URL, type a name, then create a game or join one from the lobby. All games are public, and the lobby
 lists every game with its players (offline players are greyed out). The host starts the game; it can be started
 solo to practise against neutral cities. Once a game has started, nobody new can join it, but anyone can watch it.
+The start screen and the foot of the lobby have a gold **Join our Discord** button: the invite link is
+`COMMUNITY.discord` in [shared/config.js](shared/config.js) (empty: no button).
 
 **The guide at the start of a game** (`startGuide` in [public/js/client.js](public/js/client.js)): a box at the top
 tells you your colour and the goal, then one thing to do at a time, moving on as soon as it is done: click one of
@@ -72,13 +74,13 @@ from a game:
   host's browser. **Leave** takes them back to the lobby; so does the game ending because every player left.
 - At the end they see the results screen with everyone revealed, as the players do.
 
-**Players are anonymous during a game:** everyone is known only by colour ("Red", "Teal", ...; you are "You"), and
+**Players are anonymous during a game:** everyone is known only by colour ("Red", "Teal", ...; yours as "Red (you)"), and
 for a game in progress the lobby lists nicknames only. Everyone is revealed on the results screen. The rule is in
 [GAME_DESIGN.md](GAME_DESIGN.md).
 
 **Chat** ([public/js/chat.js](public/js/chat.js)): the waiting room has a chat beside its card, by nickname, for
 players and spectators alike. In the game, new messages show above the minimap for 12 seconds, each player by
-colour (a dot and "Red", "Teal", ...; your own as "You"); **Enter** opens the chat to write and to scroll back,
+colour (a dot and "Red", "Teal", ...; your own as "Red (you)"); **Enter** opens the chat to write and to scroll back,
 Enter sends, Esc closes it.
 - Messages go through the lobby server, never the host's browser, so nobody can pass one off as someone else's. While
   the game runs the server sends a player's id and colour with their message, never their nickname.
@@ -331,7 +333,9 @@ it sooner and rank it higher.
 - **City upgrades:** built in a city like units (they cost gold, take time, use a queue slot), once per city.
   The wall has two grades with one button (**A**): each order queues the next grade, so pressing A twice queues
   Wall I and then Wall II. Stop at Wall I when that is enough. Cancelling Wall I also cancels the Wall II queued
-  after it (both are refunded).
+  after it (both are refunded). A finished wall grade keeps the city at the same share of its HP (one at 10% is
+  at 10% of the new maximum, not topped up by the wall's HP) and then heals 10% of the new maximum: that city
+  ends at 20%.
 
   | Upgrade | Cost | Time | Effect |
   |---|---|---|---|
@@ -467,6 +471,18 @@ it sooner and rank it higher.
     hands like a capture (its upgrades are lost, its previous owner gets the gold of its queue back), and the liberator
     is back in the game. Cities can be taken this way at most once every 2 turns: a player who falls again soon after
     waits until 2 turns have passed since their last one. Falling again always costs all gold.
+  - **A liberated city can't be attacked for 2 minutes** of game time (`LIBERATOR.safeSeconds`; 3 or 4 with the
+    Rebellion technology Sanctuary), every one of them
+    when Influencer liberates several at once: units and ships neither target it nor damage it (a shot already in
+    flight does nothing), and an attack order on it is refused. It still fires at enemies. A pale gold ring round it
+    runs down the time left, and its panel counts it down. Cities the liberator captures later, by force, get no
+    such protection.
+  - **Renounce:** a player down to 5 cities or fewer (`LIBERATOR.renounceCities`) may become a liberator of their own
+    will: the panel of any of their cities has **Renounce** (two clicks: the first only asks, for 4 seconds). Their
+    cities turn neutral as they stand, their units are
+    gone, and they fall as anyone who lost everything does: all their gold is lost and they are a liberator at once
+    (the cooldown after their last liberation still counts). Everyone is told; the results timeline shows
+    "renounced". The host checks it again (`Game.canRenounce`).
   - Liberators are never eliminated, so with this option the game is won only by holding the target number of cities
     (or by being the only player left once everyone else has surrendered or left).
   - The numbers are in `LIBERATOR` in [shared/config.js](shared/config.js). F1 → **Liberator** explains it in the game.
@@ -506,20 +522,25 @@ it sooner and rank it higher.
     table of the land grid's cells, `regionGrid` in [shared/regions.js](shared/regions.js), cheap enough for every
     unit every tick).
 
-  The **Rebellion** tab exists only with Death: Liberator. Rebellion technologies can be researched at any time (also before you fall) but work only while you
-  are a liberator. **Ordered as a liberator they cost half** (`LIBERATOR.rebellionCost`, rounded up; the card shows the
-  full price struck out); levels ordered before you fell keep the full price, and cancelling gives back what was paid.
-  The prices below are the full ones:
-  - **Supporters** (3 levels: 120 gold, 2 min each): +20 / +40 / +60 liberator gold per turn.
-  - **Influencer** (3 levels: 100 gold, 2 min each): instead of taking one city, a liberator marks (influences) 2, 3 or 4
+  The **Rebellion** tab exists only with Death: Liberator, and is the Tech window's last tab. **Rebellion technologies
+  can be researched only while you are a liberator** (TECH_TABS `liberators`; the host checks it), and work only while
+  you are one. A level ordered as a liberator still finishes if you come back meanwhile, and counts the next time you
+  fall. Lists of technologies (the results screen) show them last too (`techsInTabOrder`).
+  - **Supporters** (2 levels: 60 gold, 2 min each): +20 / +40 liberator gold per turn.
+  - **Influencer** (3 levels: 50 gold, 2 min each): instead of taking one city, a liberator marks (influences) 2, 3 or 4
     cities, one per turn. Marking the last one liberates them all at once; **Liberate now** takes the marked ones
     earlier. Everyone sees the marks (a turning dashed ring in the liberator's colour), and only one liberator can mark a
     city for liberation. The protection of small empires
     is checked city by city when they are liberated. Without Influencer the limit is 1: the city is taken at once.
-  - **Smuggling** (3 levels: 30 gold, 1 min each): mark 1, 2 or 3 cities to smuggle from. At the end of every turn
+  - **Smuggling** (3 levels: 15 gold, 20 s each): mark 1, 2 or 3 cities to smuggle from. At the end of every turn
     each one's whole income goes from its owner to the liberator (neutral cities pay nothing). Only one liberator can
-    smuggle from a city. These marks are separate from influence marks (a gold coin on the map): one liberator may
+    smuggle from a city. These marks are separate from influence marks (on the map a gold coin rimmed in the smuggler's
+    colour, with a red arrow down: the city loses that gold): one liberator may
     influence a city while another smuggles from it. Click a smuggled city again to stop.
+  - **Sanctuary** (2 levels: 40 gold, 90 s each): a city the liberator takes can't be attacked for 3 or 4 minutes
+    instead of 2 (`safeSecondsPerLevel`: +1 minute per level). The level the liberator has when the city is liberated
+    counts; a city liberated earlier keeps the time it was given. The Tech window shows it as a gatehouse with its
+    portcullis down.
   - A liberator who is back in the game loses all their marks, so other liberators can mark those cities.
   - Costs and times are in `TECHS` in [shared/config.js](shared/config.js); new tabs are added in `TECH_TABS`.
 - **Surrendering and leaving:** pressing Leave during a game asks what you want:
@@ -702,6 +723,7 @@ Press **~** (the key left of 1) to open the console. ↑/↓ browse history, Tab
 | `gold N` | Sets every player's gold to N (0 or more, e.g. `gold 1000`). Like `reset hp`, it goes to the game's host, works only in debug builds, and every player sees who used it |
 | `honor N` | Sets every player's honor to N, like `gold N` (e.g. `honor 2000`: Cult of Heroes and ten Heroes) |
 | `slomo N` | Game speed: N times normal, from 0.1 to 10 (`slomo 4`: four times as fast; `slomo 1`: normal). Everything that runs on game time speeds up alike: moving, fighting, training, research, traditions, turns and their gold, cooldowns. The host's browser simulates N times as many steps per second (so very high speeds need a fast host); snapshots keep their normal pace. Everyone sees who changed it, and the top bar shows the speed next to the game's title. Debug builds only |
+| `loseallcities` | Every one of your cities becomes neutral at once, as it stands (upgrades kept; queues refunded, rally points gone), as when a player surrenders. Your units stay: with none left you fall like anyone who loses their last city (a liberator with Death: Liberator), handy for trying liberators out. Everyone sees who used it. Debug builds only |
 | `help`, `clear` | List commands, clear the console |
 
 Not in the console: click any city that is not yours and its panel has an **Own** button. The city becomes yours at

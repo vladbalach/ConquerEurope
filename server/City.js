@@ -26,6 +26,8 @@ export class City {
     this.seaRally = null;        // { x, y } on the sea: where new ships go (coastal cities)
     this.target = 0;
     this.regenAt = 0;            // game time it regenerates again after a shot (receiveDamage)
+    this.safeUntil = 0;          // game time until which nobody can attack it (just liberated: Game.captureCity)
+    this.safeFor = 0;            // ...and how many seconds that was (LIBERATOR.safeSeconds, more with Sanctuary)
     this.upgrades = new Set();   // built upgrades, e.g. 'wall', 'tower'
     this.port = null;            // { x, y, sea }: the nearest sea point, for coastal cities
     // Set by an admin in Edit map (map.json `coastal`): true or false, null = from the distance to the sea.
@@ -34,6 +36,8 @@ export class City {
 
   get isCity() { return true; }
   get r() { return CITY.size; }
+  // Just liberated (Game.captureCity): no unit or ship may attack it yet. It still fires at enemies.
+  get isSafe() { return this.game.time < this.safeUntil; }
 
   // Coastal or not, from where the city stands now (after an admin moved it, too): the sea within
   // NAVAL.portRange, unless an admin made it inland, or coastal with the sea a little farther.
@@ -81,11 +85,15 @@ export class City {
     return nextGrade(key, (k) => this.upgrades.has(k) || this.queue.includes(k));
   }
 
-  // An upgrade finished building: the city gets its bonus straight away.
+  // An upgrade finished building: the city gets its bonus straight away. One that raises its HP (a wall)
+  // keeps the share of HP it had: a city at 10% is at 10% of the new maximum, not given the bonus outright.
+  // Then it heals healPercent of the new maximum (a wall grade: 10%, so that city is at 20%).
   addUpgrade(key) {
     if (this.upgrades.has(key)) return;
+    const before = this.maxHp;
     this.upgrades.add(key);
-    this.hp += CITY_UPGRADES[key].hp || 0;
+    const max = this.maxHp;
+    this.hp = Math.min(max, this.hp * max / before + max * (CITY_UPGRADES[key].healPercent || 0) / 100);
   }
 
   // Fire at the nearest enemy unit in range (neutral cities fire at everyone) that no mountains hide: its
@@ -112,7 +120,9 @@ export class City {
   // port): an inland one in reach of its guns goes down to SHELLED_HP and no further, for troops to take.
   // A shot (from a unit with `reload`: a battleship) also stops its regeneration until that unit could fire
   // again: otherwise it would win back between shots what an attack every second keeps down.
+  // A city that is safe (just liberated) takes nothing, not even from a shot fired before it was.
   receiveDamage(amount, attacker) {
+    if (this.isSafe) return;
     this.hp -= amount;
     const reload = attacker.stats?.reload;
     if (reload) this.regenAt = Math.max(this.regenAt, this.game.time + reload);
@@ -127,8 +137,11 @@ export class City {
     if (this.hp < max && this.game.time >= this.regenAt) this.hp = Math.min(max, this.hp + CITY.hpRegen * dt);
   }
 
-  // Changes hands: its upgrades are destroyed and production stops.
+  // Changes hands: its upgrades are destroyed and production stops. Not safe any more (a liberation
+  // makes it safe again: Game.captureCity).
   capture(newOwner) {
+    this.safeUntil = 0;
+    this.safeFor = 0;
     this.upgrades.clear();
     this.owner = newOwner;
     this.hp = CITY.captureHp;

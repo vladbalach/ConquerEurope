@@ -7,7 +7,7 @@ import {
   UNITS, UNIT_TYPES, CITY, CITY_UPGRADES, UPGRADE_TYPES, ECONOMY, GAME, TECHS, TECH_TABS, TRADITIONS, TRADITION_TYPES,
   HERO, HEALER, LIBERATOR, NAVAL, COMBAT, DISBAND, PLAYER_COLOR_NAMES,
 } from '/shared/config.js';
-import { liberatorIncome, influenceLimit, techCost } from '/shared/tech.js';
+import { liberatorIncome, influenceLimit, safeSeconds } from '/shared/tech.js';
 import { describeOptions, GOLD_PERCENT } from '/shared/options.js';
 import { unitIconURL, upgradeIconURL, techIconURL, traditionIconURL } from '../sprites.js';
 import { Demo, DEMO_W, DEMO_H, demoColors } from './demo.js';
@@ -264,7 +264,7 @@ const PAGES = [
           bar,
           el('ol', { class: 'wiki-steps' },
             li(b('Turns'), ' played, and the time to the end of this one: then every city pays its gold.'),
-            li(b('Gold'), ', and how much you get at the end of the turn. Hover it for where it comes from.'),
+            li(b('Gold'), ', and how much you get at the end of the turn. Hover it for where it comes from; click it, or press ', k('T'), ', for technologies.'),
             li(b('Honor'), ' (the silver star): earned by kills, spent on traditions. Click it, or press ', k('O'), '.'),
             li(b('Cities'), ' you hold, next to the number that wins (▾ while it is counting down).'),
             li(b('Units'), ' you command, those on board your ships included.')),
@@ -477,7 +477,7 @@ const PAGES = [
     build(h) {
       const ups = UPGRADE_TYPES.map((key) => {
         const u = CITY_UPGRADES[key];
-        const effect = u.hp ? `+${u.hp} HP` : u.rangePercent ? `+${u.rangePercent}% attack range` : u.damage ? `+${u.damage} damage`
+        const effect = u.hp ? `+${u.hp} HP${u.healPercent ? `, heals ${u.healPercent}% when built` : ''}` : u.rangePercent ? `+${u.rangePercent}% attack range` : u.damage ? `+${u.damage} damage`
           : u.goldPerTurn ? `+${u.goldPerTurn} gold per turn` : u.trainSpeedPercent ? `units train ${1 + u.trainSpeedPercent / 100}× as fast` : '';
         return [el('span', { class: 'wiki-named' }, h.upgradeIcon(key), u.name), u.hotkey ? el('kbd', {}, u.hotkey) : el('kbd', {}, 'A A'), `${u.cost}`, `${u.buildTime} s`, effect];
       });
@@ -635,12 +635,13 @@ const PAGES = [
           const time = [...new Set(T.levels.map((l) => secs(l.time)))].join(' / ');
           cards.push(el('div', { class: 'wiki-tech' }, h.techIcon(key),
             el('div', {}, el('h4', {}, T.name, T.levels.length > 1 ? el('small', {}, ` ${T.levels.length} levels`) : null),
-              el('div', { class: 'muted small' }, `${price} gold · ${time}`, T.requires ? ` · needs ${TECHS[T.requires].name}` : ''),
+              el('div', { class: 'muted small' }, `${price} gold · ${time}`, T.requires ? ` · needs ${TECHS[T.requires].name}` : '',
+                tab.liberators ? ' · liberators only' : ''),
               p(g.hud?.techEffect ? g.hud.techEffect(key, 0) : ''))));
         }
       }
       return [
-        p(k('T'), ' or the ', b('Tech'), ' button opens the Technologies window. Research costs gold up front and takes time; one at a time. Order more while one runs and they queue. Cancelling gives the gold back.'),
+        p(k('T'), ', the ', b('Tech'), ' button or a click on your gold opens the Technologies window. Research costs gold up front and takes time; one at a time. Order more while one runs and they queue. Cancelling gives the gold back.'),
         ...cards,
         tabNote(g),
       ];
@@ -701,8 +702,13 @@ const PAGES = [
     build(h) {
       const g = h.g, L = LIBERATOR, T = TECHS;
       const on = (g.options?.death || 'liberator') === 'liberator';
-      const costs = (key) => `${T[key].levels.map((l) => l.cost).join(' / ')} gold (as a liberator ${T[key].levels.map((_, i) => techCost(key, i, true)).join(' / ')})`;
+      const costs = (key) => `${[...new Set(T[key].levels.map((l) => l.cost))].join(' / ')} gold`;
       const times = (key) => [...new Set(T[key].levels.map((l) => secs(l.time)))].join(' / ');
+      // What each level gives: "2 or 3".
+      const perLevel = (key, f) => {
+        const xs = T[key].levels.map((_, i) => f(i + 1));
+        return xs.length > 1 ? `${xs.slice(0, -1).join(', ')} or ${xs.at(-1)}` : String(xs[0]);
+      };
       return [
         p('With the game option ', b('Death: Liberator'), ' (the default), a player who loses every city and every unit is not out: they become a liberator and can take cities back. With ',
           b('Death: Spectator'), ' they are out and can only watch. ', b(on ? 'This game uses Liberator.' : 'This game uses Spectator: none of this applies.')),
@@ -711,14 +717,17 @@ const PAGES = [
             [b('Falling'), el('span', {}, 'You lose all your gold and become a liberator. Every turn you get ', b(`${L.goldPerTurn} gold`), '.')],
             [b('Liberating'), el('span', {}, 'Click any city and press ', b('Liberate'), ': it becomes yours, like a capture, and you are back in the game. The next one waits ', b(`${L.cooldownTurns} turns`), '.')],
             [b('Protection'), el('span', {}, 'A player with ', b(`${L.protectedCities} cities or fewer`), ' is safe from liberators. Neutral cities can always be taken.')],
+            [b('A safe start'), el('span', {}, 'Nobody can attack a city you liberate for ', b(secs(L.safeSeconds)), ' (longer with Sanctuary; every one of them, with Influencer); it still fires at enemies. A gold ring round it runs down the time left. Cities you capture later by force get no such protection.')],
             [b('Falling again'), 'All your gold is lost again, and you are a liberator again.'],
+            [b('Renouncing'), el('span', {}, 'Down to ', b(`${L.renounceCities} cities or fewer`), ', click one of your cities: its panel has ', b('Renounce'), ' (click it twice). Your cities turn neutral, your units and all your gold are gone, and you are a liberator at once. The wait after your last liberation still counts.')],
           ], 'rows')),
         h.card({ title: 'Rebellion technologies' },
-          p('The Tech window\'s Rebellion tab. They work only while you are a liberator, and cost ', b(`${Math.round(L.rebellionCost * 100)}%`), ' when ordered as one.'),
+          p('The Tech window\'s Rebellion tab. You can research them, and they work, ', b('only while you are a liberator'), '. A level ordered as one still finishes if you come back meanwhile, and works the next time you fall.'),
           table(null, [
-            [el('span', { class: 'wiki-named' }, h.techIcon('supporters'), b('Supporters')), `+${T.supporters.goldPerTurnPerLevel} gold per turn per level (now up to ${liberatorIncome({ supporters: 3 })}). ${costs('supporters')}, ${times('supporters')} each.`],
-            [el('span', { class: 'wiki-named' }, h.techIcon('influencer'), b('Influencer')), `Mark ${influenceLimit({ influencer: 1 })}, ${influenceLimit({ influencer: 2 })} or ${influenceLimit({ influencer: 3 })} cities, one per turn; when the last is marked they are all yours (Liberate now takes them earlier). ${costs('influencer')}, ${times('influencer')} each.`],
+            [el('span', { class: 'wiki-named' }, h.techIcon('supporters'), b('Supporters')), `+${T.supporters.goldPerTurnPerLevel} gold per turn per level (now up to ${liberatorIncome({ supporters: T.supporters.levels.length })}). ${costs('supporters')}, ${times('supporters')} each.`],
+            [el('span', { class: 'wiki-named' }, h.techIcon('influencer'), b('Influencer')), `Mark ${perLevel('influencer', (n) => influenceLimit({ influencer: n }))} cities, one per turn; when the last is marked they are all yours (Liberate now takes them earlier). ${costs('influencer')}, ${times('influencer')} each.`],
             [el('span', { class: 'wiki-named' }, h.techIcon('smuggling'), b('Smuggling')), `Mark 1, 2 or 3 cities: at the end of every turn ${Math.round(T.smuggling.share * 100)}% of each one's income goes from its owner to you. ${costs('smuggling')}, ${times('smuggling')} each.`],
+            [el('span', { class: 'wiki-named' }, h.techIcon('sanctuary'), b('Sanctuary')), `A city you liberate is safe from attack for ${perLevel('sanctuary', (n) => safeSeconds({ sanctuary: n }) / 60)} minutes instead of ${L.safeSeconds / 60} (the level you have when you liberate it counts). ${costs('sanctuary')}, ${times('sanctuary')} each.`],
           ], 'rows')),
       ];
     },
